@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Jeu de Dames — Mindspille</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.4/socket.io.min.js"></script>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+body {
+  background:#0e0e14; color:#fff;
+  font-family:'Segoe UI',sans-serif;
+  min-height:100vh; display:flex;
+  flex-direction:column; align-items:center;
+  padding:8px; overflow-x:hidden;
+}
+
+/* HEADER */
+.header {
+  width:100%; max-width:500px;
+  display:flex; justify-content:space-between; align-items:center;
+  padding:8px 4px; margin-bottom:8px;
+}
+.player-badge {
+  display:flex; align-items:center; gap:8px;
+  background:#1a1628; border-radius:20px; padding:6px 14px;
+  border:1px solid #2a2040; font-size:13px; font-weight:bold;
+}
+.turn-indicator {
+  padding:6px 16px; border-radius:20px; font-size:13px; font-weight:bold;
+  transition: all 0.3s;
+}
+.my-turn    { background:#6fcf9722; color:#6fcf97; border:1px solid #6fcf97; }
+.their-turn { background:#eb575722; color:#eb5757; border:1px solid #eb5757; }
+.finished   { background:#C9A84C22; color:#C9A84C; border:1px solid #C9A84C; }
+
+.btn-resign {
+  padding:6px 14px; background:#eb575722; color:#eb5757;
+  border:1px solid #eb5757; border-radius:20px;
+  font-size:12px; font-weight:bold; cursor:pointer;
+}
+
+/* MSG */
+.msg {
+  width:100%; max-width:500px;
+  background:#1a2a1a; border:1px solid #6fcf97;
+  border-radius:8px; padding:8px 12px;
+  color:#6fcf97; font-size:12px; margin-bottom:8px;
+  text-align:center;
+}
+.msg.error { background:#2a1a1a; border-color:#eb5757; color:#eb5757; }
+
+/* BOARD */
+.board-wrap {
+  width:100%; max-width:500px;
+  border-radius:10px; overflow:hidden;
+  border:3px solid #2a2040;
+  box-shadow:0 8px 32px rgba(0,0,0,0.7);
+  touch-action:none;
+}
+.board {
+  display:grid; grid-template-columns:repeat(10,1fr);
+  width:100%;
+}
+.cell {
+  aspect-ratio:1; display:flex;
+  align-items:center; justify-content:center;
+  cursor:pointer; position:relative;
+  transition:background 0.15s;
+}
+.piece {
+  width:76%; height:76%; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  font-size:13px; font-weight:bold;
+  box-shadow:0 3px 8px rgba(0,0,0,0.6);
+  transition:transform 0.15s;
+  pointer-events:none;
+}
+.piece.white {
+  background:radial-gradient(circle at 35% 35%,#fff 0%,#d0d0d0 100%);
+  border:2px solid #aaa; color:#666;
+}
+.piece.black {
+  background:radial-gradient(circle at 35% 35%,#c0392b 0%,#7b241c 100%);
+  border:2px solid #5d1a13; color:#ffb3ab;
+}
+.dot {
+  width:30%; height:30%; border-radius:50%;
+  background:rgba(111,207,151,0.6);
+  pointer-events:none;
+}
+
+/* RESULT OVERLAY */
+.overlay {
+  position:fixed; inset:0; background:rgba(0,0,0,0.88);
+  display:flex; align-items:center; justify-content:center;
+  z-index:999; padding:16px;
+}
+.result-card {
+  background:#1a1628; border-radius:20px; padding:36px 28px;
+  text-align:center; border:2px solid #C9A84C;
+  max-width:320px; width:100%;
+  animation:popIn 0.3s ease;
+}
+@keyframes popIn {
+  from { transform:scale(0.85); opacity:0; }
+  to   { transform:scale(1);    opacity:1; }
+}
+.result-icon  { font-size:72px; margin-bottom:12px; }
+.result-title { font-size:28px; font-weight:bold; margin-bottom:8px; }
+.result-sub   { color:#888; font-size:14px; margin-bottom:24px; }
+.btn-primary  {
+  width:100%; padding:14px; background:#C9A84C;
+  color:#000; border:none; border-radius:12px;
+  font-weight:bold; font-size:16px; cursor:pointer;
+}
+
+/* LOADING */
+.loading {
+  display:flex; flex-direction:column; align-items:center;
+  justify-content:center; min-height:60vh; gap:16px;
+}
+.spinner {
+  width:48px; height:48px; border:4px solid #2a2040;
+  border-top:4px solid #C9A84C; border-radius:50%;
+  animation:spin 1s linear infinite;
+}
+@keyframes spin { to { transform:rotate(360deg); } }
+.loading-text { color:#888; font-size:14px; }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div class="loading">
+    <div class="spinner"></div>
+    <p class="loading-text">Chargement de la partie...</p>
+  </div>
+</div>
+
+<script>
+// ── LIRE LES PARAMS URL ───────────────────────────────────
+// Lovable passe : /game?gameId=xxx&token=yyy&player=zzz&username=www
+const params   = new URLSearchParams(window.location.search);
+const GAME_ID  = params.get('gameId');
+const TOKEN    = params.get('token');
+const PLAYER   = params.get('player');   // userId interne
+const USERNAME = params.get('username') || 'Joueur';
+const API      = window.location.origin;
+
+// ── ÉTAT ──────────────────────────────────────────────────
+const EMPTY=0,WHITE=1,BLACK=2,WKING=3,BKING=4;
+const isWhite = p=>p===WHITE||p===WKING;
+const isBlack = p=>p===BLACK||p===BKING;
+const isKing  = p=>p===WKING||p===BKING;
+
+let state = {
+  board: null,
+  youAre: null,       // 'white' | 'black'
+  currentPlayer: null,
+  status: 'loading',
+  winner: null,
+  betAmount: 0,
+  opponentName: '',
+  selected: null,
+  validMoves: [],
+  message: '',
+  isError: false,
+};
+
+let socket = null;
+
+// ── DÉMARRAGE ─────────────────────────────────────────────
+async function init() {
+  if (!GAME_ID || !TOKEN) {
+    showError('Paramètres manquants. Relance le match depuis Mindspille.');
+    return;
+  }
+
+  // Charger l'état de la partie
+  try {
+    const res = await fetch(`${API}/games/${GAME_ID}`, {
+      headers: { Authorization: `Bearer ${TOKEN}` }
+    });
+    const data = await res.json();
+    if (data.error) { showError(data.error); return; }
+
+    state.board         = data.board;
+    state.youAre        = data.youAre;
+    state.currentPlayer = data.currentPlayer;
+    state.status        = data.status;
+    state.winner        = data.winner;
+    state.betAmount     = data.betAmount;
+    state.opponentName  = data.opponentName || 'Adversaire';
+
+    connectSocket();
+    render();
+  } catch(e) {
+    showError('Impossible de rejoindre la partie. Vérifie ta connexion.');
+  }
+}
+
+// ── SOCKET.IO ─────────────────────────────────────────────
+function connectSocket() {
+  socket = io(API, { transports: ['websocket','polling'] });
+
+  socket.on('connect', () => {
+    socket.emit('auth', { token: TOKEN });
+  });
+
+  socket.on('auth:ok', () => {
+    socket.emit('game:join_room', { gameId: GAME_ID });
+  });
+
+  socket.on('game:move', (data) => {
+    state.board         = data.board;
+    state.currentPlayer = data.currentPlayer;
+    state.status        = data.status;
+    state.winner        = data.winner;
+    state.selected      = null;
+    state.validMoves    = [];
+    state.message       = '';
+    if (data.winner) endGame(data.winner);
+    else render();
+  });
+
+  socket.on('game:over', (data) => {
+    endGame(data.winnerColor || data.winner);
+    // Envoyer postMessage à Mindspille
+    window.parent.postMessage(data, '*');
+  });
+}
+
+function endGame(winner) {
+  state.status = 'finished';
+  state.winner = winner;
+  render();
+  // Notifier Mindspille
+  window.parent.postMessage({
+    type:    'game_over',
+    gameId:  GAME_ID,
+    winner:  winner === state.youAre ? 'player1' : 'player2',
+    winnerColor: winner,
+  }, '*');
+}
+
+// ── COUPS ─────────────────────────────────────────────────
+function inBounds(r,c){ return r>=0&&r<10&&c>=0&&c<10; }
+
+function getValidMoves(r, c) {
+  const board  = state.board;
+  const player = state.youAre;
+  const piece  = board[r][c];
+  if (!piece) return [];
+
+  const isEnemy = p => player==='white'?(p===BLACK||p===BKING):(p===WHITE||p===WKING);
+  const moves   = [];
+
+  // Chercher captures
+  for(const[dr,dc]of[[-1,-1],[-1,1],[1,-1],[1,1]]){
+    if(!isKing(piece)&&((player==='white'&&dr===1)||(player==='black'&&dr===-1))) continue;
+    const mr=r+dr,mc=c+dc,lr=r+2*dr,lc=c+2*dc;
+    if(inBounds(lr,lc)&&isEnemy(board[mr][mc])&&board[lr][lc]===EMPTY) moves.push([lr,lc,'capture']);
+    if(isKing(piece)){
+      let nr=r+dr,nc=c+dc,found=false;
+      while(inBounds(nr,nc)){
+        if(board[nr][nc]!==EMPTY){
+          if(isEnemy(board[nr][nc])&&!found){found=true;let jr=nr+dr,jc=nc+dc;while(inBounds(jr,jc)&&board[jr][jc]===EMPTY){moves.push([jr,jc,'capture']);jr+=dr;jc+=dc;}}
+          break;
+        }
+        nr+=dr;nc+=dc;
+      }
+    }
+  }
+  if(moves.length) return moves;
+
+  // Déplacements simples
+  for(const[dr,dc]of[[-1,-1],[-1,1],[1,-1],[1,1]]){
+    if(!isKing(piece)&&((player==='white'&&dr===1)||(player==='black'&&dr===-1))) continue;
+    if(!isKing(piece)){
+      const nr=r+dr,nc=c+dc;
+      if(inBounds(nr,nc)&&board[nr][nc]===EMPTY) moves.push([nr,nc,'move']);
+    } else {
+      let nr=r+dr,nc=c+dc;
+      while(inBounds(nr,nc)&&board[nr][nc]===EMPTY){moves.push([nr,nc,'move']);nr+=dr;nc+=dc;}
+    }
+  }
+  return moves;
+}
+
+async function playMove(fr,fc,tr,tc) {
+  const res = await fetch(`${API}/games/${GAME_ID}/move`, {
+    method:'POST',
+    headers:{'Content-Type':'application/json', Authorization:`Bearer ${TOKEN}`},
+    body: JSON.stringify({fromRow:fr,fromCol:fc,toRow:tr,toCol:tc})
+  });
+  const data = await res.json();
+  if(data.error){
+    state.message  = '❌ '+data.error;
+    state.isError  = true;
+    state.selected = null;
+    state.validMoves = [];
+    render();
+  }
+}
+
+function cellClick(row, col) {
+  if(state.status!=='playing') return;
+  if(state.currentPlayer!==state.youAre) return;
+  const board = state.board;
+  const piece = board[row][col];
+  const mine  = state.youAre==='white'?(piece===WHITE||piece===WKING):(piece===BLACK||piece===BKING);
+
+  if(state.selected){
+    const isValid = state.validMoves.some(m=>m[0]===row&&m[1]===col);
+    if(isValid){
+      playMove(state.selected[0],state.selected[1],row,col);
+      state.selected=null; state.validMoves=[];
+      return;
+    }
+  }
+  if(mine){
+    state.selected   = [row,col];
+    state.validMoves = getValidMoves(row,col);
+    state.message    = '';
+    state.isError    = false;
+  } else {
+    state.selected=null; state.validMoves=[];
+  }
+  render();
+}
+
+async function resign() {
+  if(!confirm('Abandonner la partie ?')) return;
+  await fetch(`${API}/games/${GAME_ID}/resign`,{
+    method:'POST', headers:{Authorization:`Bearer ${TOKEN}`}
+  });
+}
+
+// ── RENDU ─────────────────────────────────────────────────
+function render() {
+  const app = document.getElementById('app');
+  if(!state.board){ app.innerHTML=loadingHTML(); return; }
+
+  const isMyTurn   = state.currentPlayer===state.youAre;
+  const flipped    = state.youAre==='black';
+  const rows       = flipped?[9,8,7,6,5,4,3,2,1,0]:[0,1,2,3,4,5,6,7,8,9];
+  const cols       = flipped?[9,8,7,6,5,4,3,2,1,0]:[0,1,2,3,4,5,6,7,8,9];
+
+  let cells='';
+  for(const r of rows) for(const c of cols){
+    const isDark=(r+c)%2===1;
+    const piece=state.board[r]?.[c]??0;
+    const isSel=state.selected&&state.selected[0]===r&&state.selected[1]===c;
+    const isValid=state.validMoves.some(m=>m[0]===r&&m[1]===c);
+    let bg=isDark?'#4a7c59':'#f0d9b5';
+    if(isSel) bg='#f0c040';
+    else if(isValid&&isDark) bg='rgba(111,207,151,0.4)';
+    let inner='';
+    if(isDark&&piece!==EMPTY){
+      const cl=isWhite(piece)?'white':'black';
+      inner=`<div class="piece ${cl}">${isKing(piece)?'♛':''}</div>`;
+    } else if(isDark&&isValid){
+      inner=`<div class="dot"></div>`;
+    }
+    const click=isDark?`onclick="cellClick(${r},${c})"`:'';
+    cells+=`<div class="cell" style="background:${bg}" ${click}>${inner}</div>`;
+  }
+
+  let turnText, turnClass;
+  if(state.status==='finished'){
+    turnText = state.winner===state.youAre?'🏆 Victoire !':'💀 Défaite';
+    turnClass='finished';
+  } else if(isMyTurn){
+    turnText='Votre tour'; turnClass='my-turn';
+  } else {
+    turnText='Tour adverse'; turnClass='their-turn';
+  }
+
+  const colorLabel = state.youAre==='white'?'⬜ Blancs':'🔴 Rouges';
+  const msgHTML = state.message
+    ? `<div class="msg${state.isError?' error':''}">${state.message}</div>` : '';
+
+  const resultOverlay = state.status==='finished' ? `
+    <div class="overlay">
+      <div class="result-card">
+        <div class="result-icon">${state.winner===state.youAre?'🏆':'💀'}</div>
+        <h2 class="result-title" style="color:${state.winner===state.youAre?'#C9A84C':'#eb5757'}">
+          ${state.winner===state.youAre?'Victoire !':'Défaite...'}
+        </h2>
+        <p class="result-sub">
+          ${state.winner===state.youAre
+            ?`+${state.betAmount*2} HTG remportés`
+            :`${state.betAmount} HTG perdus`}
+        </p>
+        <button class="btn-primary" onclick="window.parent.postMessage({type:'close_game',gameId:'${GAME_ID}'},'*')">
+          Retour à Mindspille
+        </button>
+      </div>
+    </div>` : '';
+
+  app.innerHTML = `
+    ${resultOverlay}
+    <div class="header">
+      <div class="player-badge">${colorLabel} · ${USERNAME}</div>
+      <div class="turn-indicator ${turnClass}">${turnText}</div>
+      ${state.status==='playing'?`<button class="btn-resign" onclick="resign()">Abandon</button>`:'<div></div>'}
+    </div>
+    ${msgHTML}
+    <div class="board-wrap">
+      <div class="board">${cells}</div>
+    </div>
+  `;
+}
+
+function loadingHTML(){
+  return `<div class="loading"><div class="spinner"></div><p class="loading-text">Connexion à la partie...</p></div>`;
+}
+
+function showError(msg){
+  document.getElementById('app').innerHTML =
+    `<div class="loading"><p style="color:#eb5757;text-align:center;padding:20px">${msg}</p></div>`;
+}
+
+// Démarrer
+init();
+</script>
+</body>
+</html>
