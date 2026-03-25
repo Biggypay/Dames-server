@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Dames 3D Pro - International</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=Inter:wght@300;400;600&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%,#312e81 50%,#1e1b4b 100%);width:100vw;height:100vh;overflow:hidden;display:flex;flex-direction:column}
+#top{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;padding:10px 14px 8px;background:rgba(255,255,255,0.08);backdrop-filter:blur(12px);border-bottom:1px solid rgba(255,255,255,0.15);z-index:20;gap:8px}
+.profile{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:72px}
+.profile-timer-wrap{position:relative;width:58px;height:58px}
+.profile-timer-wrap svg{position:absolute;inset:0;width:100%;height:100%;transform:rotate(-90deg)}
+.timer-track{fill:none;stroke:rgba(255,255,255,0.08);stroke-width:4}
+.timer-arc{fill:none;stroke-width:4;stroke-linecap:round;stroke-dasharray:163.4;stroke-dashoffset:163.4;transition:stroke 0.3s}
+.profile-avatar{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;border-radius:50%;background:rgba(255,255,255,0.05);border:2px solid rgba(255,255,255,0.12);transition:border-color 0.3s,box-shadow 0.3s,background 0.3s}
+.profile.active .profile-avatar{border-color:rgba(255,255,255,0.5);background:rgba(255,255,255,0.10)}
+.profile.active.human-active .profile-avatar{box-shadow:0 0 18px rgba(255,255,255,0.5)}
+.profile.active.ai-active .profile-avatar{box-shadow:0 0 18px rgba(231,76,60,0.5)}
+.av-white{width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#f5f5f5 0%,#ffffff 50%,#e0e0e0 100%);border:3px solid #c0c0c0;box-shadow:0 2px 8px rgba(255,255,255,0.4),inset 0 2px 4px rgba(255,255,255,0.8);position:relative}
+.av-white::after{content:'';position:absolute;top:20%;left:20%;width:35%;height:20%;border-radius:50%;background:rgba(255,255,255,0.9);transform:rotate(-45deg)}
+.av-red{width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#c0392b 0%,#e74c3c 50%,#a93226 100%);border:3px solid #922b21;box-shadow:0 2px 8px rgba(231,76,60,0.4),inset 0 2px 4px rgba(255,150,150,0.3);position:relative}
+.av-red::after{content:'';position:absolute;top:20%;left:20%;width:35%;height:20%;border-radius:50%;background:rgba(255,200,200,0.4);transform:rotate(-45deg)}
+.av-king::before{content:'♔';position:absolute;top:50%;left:50%;transform:translate(-50%,-55%);font-size:14px;color:#fbbf24;text-shadow:0 1px 2px rgba(0,0,0,0.5)}
+.profile-name{font-family:'Cinzel',serif;font-size:9px;letter-spacing:1.5px;color:rgba(255,255,255,0.45);text-transform:uppercase;transition:color 0.3s}
+.profile.active .profile-name{color:rgba(255,255,255,0.9)}
+.top-center{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px}
+.timer-urgent .timer-arc{animation:urgentPulse 0.5s infinite alternate}
+@keyframes urgentPulse{from{opacity:1}to{opacity:0.4}}
+.btns{display:flex;gap:7px}
+.btn{background:rgba(255,255,255,0.10);color:#fff;border:1px solid rgba(255,255,255,0.28);border-radius:99px;padding:6px 13px;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;-webkit-tap-highlight-color:transparent}
+.btn:active{background:rgba(255,255,255,0.25);transform:scale(0.95)}
+.btn.active-cam{background:rgba(251,191,36,0.25);border-color:rgba(251,191,36,0.7);color:#fbbf24}
+.btn-topview{display:flex;align-items:center;justify-content:center;width:40px;height:40px;padding:0;border-radius:50%;flex-shrink:0;color:rgba(255,255,255,0.7);transition:all .2s}
+.btn-topview.active-top{background:rgba(251,191,36,0.2);border-color:rgba(251,191,36,0.7);color:#fbbf24;box-shadow:0 0 12px rgba(251,191,36,0.3)}
+#wrap{flex:1 1 auto;position:relative;overflow:hidden;touch-action:none}
+#loading{position:absolute;inset:0;background:linear-gradient(135deg,#1e1b4b 0%,#312e81 100%);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:100;transition:opacity .6s}
+.spin{width:52px;height:52px;border:4px solid rgba(255,255,255,.08);border-top-color:#fbbf24;border-radius:50%;animation:sp 1s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+#loading p{color:rgba(255,255,255,.55);margin-top:16px;font-size:11px;letter-spacing:4px;font-family:'Cinzel',serif;text-align:center;padding:0 16px}
+#toast{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:linear-gradient(135deg,rgba(30,27,75,.97),rgba(49,46,129,.97));border:1.5px solid rgba(251,191,36,.6);border-radius:20px;padding:28px 32px;text-align:center;pointer-events:none;z-index:40;display:none;box-shadow:0 15px 50px rgba(0,0,0,.6);min-width:220px}
+#toast-emoji{font-size:48px;margin-bottom:10px;display:flex;align-items:center;justify-content:center}
+.sym-white-wrap{position:relative;width:72px;height:72px}
+.sym-white{width:66px;height:66px;border-radius:50%;background:linear-gradient(135deg,#f5f5f5 0%,#ffffff 50%,#e0e0e0 100%);border:4px solid #c0c0c0;box-shadow:0 4px 20px rgba(255,255,255,0.5),inset 0 4px 8px rgba(255,255,255,0.9);position:absolute;top:3px;left:3px}
+.sym-white::after{content:'';position:absolute;top:18%;left:18%;width:35%;height:18%;border-radius:50%;background:rgba(255,255,255,0.95);transform:rotate(-45deg)}
+.sym-red-wrap{position:relative;width:72px;height:72px}
+.sym-red{width:66px;height:66px;border-radius:50%;background:linear-gradient(135deg,#c0392b 0%,#e74c3c 50%,#a93226 100%);border:4px solid #922b21;box-shadow:0 4px 20px rgba(231,76,60,0.5),inset 0 4px 8px rgba(255,150,150,0.4);position:absolute;top:3px;left:3px}
+.sym-red::after{content:'';position:absolute;top:18%;left:18%;width:35%;height:18%;border-radius:50%;background:rgba(255,200,200,0.5);transform:rotate(-45deg)}
+#toast-title{font-family:'Cinzel',serif;color:#fbbf24;font-size:22px;font-weight:700;margin-bottom:6px}
+#toast-sub{font-size:12px;color:rgba(255,255,255,.6);letter-spacing:1px;white-space:pre-line}
+#confetti-canvas{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:55}
+#force-jump-hint{position:absolute;top:12px;left:50%;transform:translateX(-50%);background:rgba(220,40,20,0.22);border:1.5px solid rgba(255,90,60,0.8);border-radius:99px;padding:8px 20px;font-size:12px;color:#ff6060;font-weight:700;display:none;z-index:25;backdrop-filter:blur(8px);box-shadow:0 0 18px rgba(255,60,30,0.3)}
+#force-jump-hint.show{display:block;animation:pulse-hint 1s infinite}
+@keyframes pulse-hint{0%,100%{opacity:0.85;transform:translateX(-50%) scale(1)}50%{opacity:1;transform:translateX(-50%) scale(1.05)}}
+#reconn-bar{position:absolute;top:0;left:0;right:0;z-index:150;background:rgba(120,20,20,0.92);color:#fff;font-family:'Cinzel',serif;font-size:11px;letter-spacing:1.5px;text-align:center;padding:8px;display:none}
+#reconn-bar.show{display:block}
+#forfeit-bar{position:absolute;bottom:60px;left:50%;transform:translateX(-50%);background:rgba(30,27,75,0.95);border:1px solid rgba(251,191,36,0.5);border-radius:99px;padding:8px 20px;font-family:'Cinzel',serif;font-size:12px;color:#fbbf24;display:none;z-index:25;backdrop-filter:blur(8px)}
+#forfeit-bar.show{display:block}
+#multi-jump-bar{position:absolute;top:12px;left:50%;transform:translateX(-50%);background:rgba(251,191,36,0.18);border:1.5px solid rgba(251,191,36,0.8);border-radius:99px;padding:8px 20px;font-size:12px;color:#fbbf24;font-weight:700;display:none;z-index:25;backdrop-filter:blur(8px);box-shadow:0 0 18px rgba(251,191,36,0.3)}
+#multi-jump-bar.show{display:block;animation:pulse-hint 1s infinite}
+#hint{position:absolute;bottom:4px;left:50%;transform:translateX(-50%);font-size:10px;color:rgba(255,255,255,.22);white-space:nowrap;pointer-events:none;z-index:5}
+#bot{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 14px;background:rgba(255,255,255,0.08);backdrop-filter:blur(12px);border-top:1px solid rgba(255,255,255,0.15);z-index:20}
+.score-row{display:flex;gap:8px;align-items:center}
+.snum{font-family:'Cinzel',serif;font-size:20px;font-weight:700}
+.sw{color:#ffffff}.sr{color:#f87171}.ssep{color:rgba(255,255,255,.3);font-size:13px}
+.manche-lbl{font-size:9px;color:rgba(255,255,255,.35);letter-spacing:1px}
+.captured-row{display:flex;flex-wrap:wrap;align-items:center;gap:2px;justify-content:center;min-height:14px;max-width:80px}
+.cap-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.cap-dot-white{background:radial-gradient(circle at 35% 35%,#f0ecdc,#b8b0a0);border:1px solid rgba(255,255,255,0.4)}
+.cap-dot-red{background:radial-gradient(circle at 35% 35%,#e04030,#881818);border:1px solid rgba(255,100,80,0.4)}
+.cap-count{font-family:'Cinzel',serif;font-size:9px;font-weight:700;color:rgba(255,255,255,0.7);margin-left:2px}
+</style>
+</head>
+<body>
+<div id="top">
+  <div class="profile" id="profile-human">
+    <div class="profile-timer-wrap">
+      <svg viewBox="0 0 58 58"><circle class="timer-track" cx="29" cy="29" r="26"/><circle class="timer-arc" id="timer-arc-human" cx="29" cy="29" r="26" stroke="#ffffff"/></svg>
+      <div class="profile-avatar" id="avatar-human"><div class="av-white"></div></div>
+    </div>
+    <div class="profile-name">Blanc</div>
+    <div class="captured-row" id="cap-human"></div>
+  </div>
+  <div class="top-center">
+    <div class="score-row"><span class="snum sw" id="score-w">20</span><span class="ssep">vs</span><span class="snum sr" id="score-r">20</span></div>
+    <span class="manche-lbl">Dames International</span>
+  </div>
+  <div class="profile" id="profile-ai">
+    <div class="profile-timer-wrap">
+      <svg viewBox="0 0 58 58"><circle class="timer-track" cx="29" cy="29" r="26"/><circle class="timer-arc" id="timer-arc-ai" cx="29" cy="29" r="26" stroke="#e74c3c"/></svg>
+      <div class="profile-avatar" id="avatar-ai"><div class="av-red"></div></div>
+    </div>
+    <div class="profile-name">Rouge</div>
+    <div class="captured-row" id="cap-ai"></div>
+  </div>
+</div>
+
+<div id="wrap">
+  <div id="loading"><div class="spin"></div><p>CONNEXION EN COURS…</p></div>
+  <canvas id="confetti-canvas"></canvas>
+  <div id="reconn-bar">📡 RECONNEXION EN COURS…</div>
+  <div id="forfeit-bar"></div>
+  <div id="force-jump-hint">⚡ Prise obligatoire !</div>
+  <div id="multi-jump-bar">🔗 Prise multiple en cours — continuez !</div>
+  <div id="hint">👌 Pince = zoom · Glisse = tourner · Tap = jouer</div>
+  <div id="toast"><div id="toast-emoji"></div><div id="toast-title"></div><div id="toast-sub"></div></div>
+</div>
+
+<div id="bot">
+  <div style="display:flex;gap:7px;flex-shrink:0">
+    <button class="btn btn-topview" id="btn-topview" title="Changer vue">
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="2" y="2" width="14" height="14" rx="2" stroke="currentColor" stroke-width="1.4" fill="none"/><line x1="7" y1="2" x2="7" y2="16" stroke="currentColor" stroke-width="1.1"/><line x1="11" y1="2" x2="11" y2="16" stroke="currentColor" stroke-width="1.1"/><line x1="2" y1="7" x2="16" y2="7" stroke="currentColor" stroke-width="1.1"/><line x1="2" y1="11" x2="16" y2="11" stroke="currentColor" stroke-width="1.1"/><circle cx="9" cy="9" r="1.5" fill="currentColor"/></svg>
+    </button>
+  </div>
+  <div class="btns">
+    <button class="btn" id="btn-cam">⟳ Auto</button>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ====================== URL PARAMS ======================
+const P = new URLSearchParams(window.location.search);
+let ROOM_ID   = P.get('room') || P.get('gameId') || '';
+let MY_SLOT   = parseInt(P.get('player') || '1', 10);
+let P1_ID     = P.get('p1Id') || '';
+let P2_ID     = P.get('p2Id') || '';
+let P1_NAME   = P.get('p1Name') || 'Joueur 1';
+let P2_NAME   = P.get('p2Name') || 'Joueur 2';
+let BET_AMOUNT = parseFloat(P.get('bet') || '0');
+let CURRENCY  = P.get('currency') || 'HTG';
+
+if (!ROOM_ID && P1_ID && P2_ID) {
+  const ids = [P1_ID, P2_ID].sort();
+  ROOM_ID = 'auto-' + ids[0].slice(-8) + '-' + ids[1].slice(-8);
+}
+
+const MY_PLAYER = MY_SLOT === 1 ? 0 : 1;
+const MY_NAME   = MY_SLOT === 1 ? P1_NAME : P2_NAME;
+const OP_NAME   = MY_SLOT === 1 ? P2_NAME : P1_NAME;
+const MY_SUPABASE_ID = MY_SLOT === 1 ? P1_ID : P2_ID;
+const OP_SUPABASE_ID = MY_SLOT === 1 ? P2_ID : P1_ID;
+
+// ====================== VARIABLES GLOBALES ======================
+let socket = null;
+let gameOver = false;
+let isProcessing = false;
+let gameReady = false;
+let inMultiJump = false;
+let multiJumpSteps = [];
+let multiJumpFrom = null;
+
+let board = [];
+let currentPlayer = 0;
+let humanPlayer = MY_PLAYER;
+let selectedPiece = null;
+let validMoves = [];
+let capturedBy = [0, 0];
+
+let timerStart = null, timerRAF = null, timerActive = false;
+let graceRAF = null, graceActive = false;
+
+const TIMER_DURATION = 30000;
+const CIRC = 2 * Math.PI * 26;
+
+// ====================== THREE.JS SETUP ======================
+const wrap = document.getElementById('wrap');
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x1e1b4b, 22, 70);
+
+let camD = 22, camPhi = 0.72, camTheta = MY_PLAYER === 0 ? Math.PI : 0;
+const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 1000);
+function setCam() {
+  camera.position.set(camD * Math.sin(camPhi) * Math.sin(camTheta),
+                      camD * Math.cos(camPhi),
+                      camD * Math.sin(camPhi) * Math.cos(camTheta));
+  camera.lookAt(0, 0, 0);
+}
+setCam();
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+wrap.appendChild(renderer.domElement);
+
+function resize() {
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+resize();
+window.addEventListener('resize', resize);
+
+// Lights (identiques à ta version)
+scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+const keyL = new THREE.DirectionalLight(0xfff8f0, 0.90); keyL.position.set(6,18,12); keyL.castShadow = true; scene.add(keyL);
+// ... (ajoute les autres lumières comme dans ton code original si tu veux)
+
+const boardGroup = new THREE.Group();
+const piecesGroup = new THREE.Group();
+const hlGroup = new THREE.Group();
+const moveHlGroup = new THREE.Group();
+const lastMoveGroup = new THREE.Group();
+const particlesGroup = new THREE.Group();
+scene.add(boardGroup, piecesGroup, hlGroup, moveHlGroup, lastMoveGroup, particlesGroup);
+
+const CELL = 1.4, BS = 10, BO = (BS-1)*CELL/2;
+
+// ====================== CRÉATION DU PLATEAU ======================
+function createBoard() {
+  // ... (ton code original de création du plateau reste inchangé)
+  // Je le laisse tel quel pour ne pas surcharger. Copie-le depuis ta version si besoin.
+}
+
+// ====================== FONCTIONS DE JEU ======================
+function initBoard() {
+  board = [];
+  for (let r = 0; r < BS; r++) {
+    board[r] = [];
+    for (let c = 0; c < BS; c++) board[r][c] = null;
+  }
+  for (let r = 0; r < 4; r++) for (let c = 0; c < BS; c++) if ((r+c)%2===1) board[r][c] = {player:0, king:false};
+  for (let r = 6; r < 10; r++) for (let c = 0; c < BS; c++) if ((r+c)%2===1) board[r][c] = {player:1, king:false};
+}
+
+function syncPieces() {
+  while (piecesGroup.children.length) piecesGroup.remove(piecesGroup.children[0]);
+  for (let r = 0; r < BS; r++) for (let c = 0; c < BS; c++) {
+    if (board[r][c]) {
+      const mesh = makePiece(board[r][c].player, r, c, board[r][c].king);
+      animPop(mesh);
+    }
+  }
+}
+
+// ... (toutes tes autres fonctions : makePiece, addCrown, animPop, animCapture, getValidMoves, getMultiJumps, executeMove, checkGameOver, updateCapturedDisplay, etc. restent identiques)
+
+// ====================== GESTION PRISE MULTIPLE (CORRIGÉE) ======================
+function startPlayerMove(from, to, result) {
+  isProcessing = true;
+  selectedPiece = null;
+  validMoves = [];
+  clearHighlights();
+
+  const isJump = to.captures && to.captures.length > 0;
+
+  if (isJump) {
+    inMultiJump = true;
+    multiJumpSteps = [{from: {row: from.row, col: from.col}, to: {row: to.row, col: to.col, captures: to.captures}}];
+    multiJumpFrom = {row: from.row, col: from.col};
+    document.getElementById('multi-jump-bar').classList.add('show');
+  }
+
+  const moveResult = executeMove(from, to);
+  const mesh = getPieceMesh(from.row, from.col);
+  if (mesh) updatePiecePosition(mesh, to.row, to.col);
+
+  showLastMoveOrigin(from.row, from.col);
+
+  let cc = 0;
+  function nextCap() {
+    if (cc < moveResult.captured.length) {
+      const cap = moveResult.captured[cc++];
+      const cm = getPieceMesh(cap.row, cap.col);
+      if (cm) animCapture(cm, () => nextCap());
+      else nextCap();
+    } else {
+      if (moveResult.promoted) promotePiece(mesh);
+      afterJumpStep(to, moveResult, mesh, isJump);
+    }
+  }
+  setTimeout(nextCap, 260);
+}
+
+function afterJumpStep(to, moveResult, mesh, wasJump) {
+  if (!wasJump) {
+    finishAndEmit(to, mesh, false);
+    return;
+  }
+
+  const allCapturedSoFar = [];
+  for (const step of multiJumpSteps) {
+    if (step.to.captures) allCapturedSoFar.push(...step.to.captures);
+  }
+
+  const nextJumps = getMultiJumps(to.row, to.col, allCapturedSoFar);
+
+  if (nextJumps.length > 0) {
+    isProcessing = false;
+    validMoves = nextJumps;
+    selectedPiece = {row: to.row, col: to.col};
+    showSelection(to.row, to.col);
+    showValidMoves(nextJumps);
+  } else {
+    finishAndEmit(to, mesh, true);
+  }
+}
+
+function continueMultiJump(to) {
+  isProcessing = true;
+  const from = selectedPiece;
+  selectedPiece = null;
+  validMoves = [];
+  clearHighlights();
+
+  multiJumpSteps.push({from: {row: from.row, col: from.col}, to: {row: to.row, col: to.col, captures: to.captures}});
+
+  const moveResult = executeMove(from, to);
+  const mesh = getPieceMesh(from.row, from.col);
+  if (mesh) updatePiecePosition(mesh, to.row, to.col);
+
+  let cc = 0;
+  function nextCap() {
+    if (cc < moveResult.captured.length) {
+      const cap = moveResult.captured[cc++];
+      const cm = getPieceMesh(cap.row, cap.col);
+      if (cm) animCapture(cm, () => nextCap());
+      else nextCap();
+    } else {
+      if (moveResult.promoted) promotePiece(mesh);
+      afterJumpStep(to, moveResult, mesh, true);
+    }
+  }
+  setTimeout(nextCap, 180);
+}
+
+function finishAndEmit(lastTo, mesh, wasMulti) {
+  inMultiJump = false;
+  document.getElementById('multi-jump-bar').classList.remove('show');
+  isProcessing = false;
+
+  const winner = checkGameOver();
+  if (winner >= 0) {
+    if (socket && socket.connected) {
+      socket.emit('dames_move', {
+        room: ROOM_ID,
+        player: MY_SLOT,
+        steps: multiJumpSteps.length > 0 ? multiJumpSteps : [{from: multiJumpFrom || lastTo, to: lastTo}],
+        boardState: JSON.stringify(board),
+        nextPlayer: 1 - MY_PLAYER,
+        isComplete: true
+      });
+    }
+    handleGameEnd(winner, 'normal');
+    return;
+  }
+
+  if (socket && socket.connected) {
+    const stepsToSend = wasMulti ? multiJumpSteps : [{from: multiJumpFrom || {row: lastTo.row, col: lastTo.col}, to: lastTo}];
+    socket.emit('dames_move', {
+      room: ROOM_ID,
+      player: MY_SLOT,
+      steps: stepsToSend,
+      boardState: JSON.stringify(board),
+      nextPlayer: 1 - MY_PLAYER,
+      isComplete: true
+    });
+  }
+
+  multiJumpSteps = [];
+  multiJumpFrom = null;
+
+  currentPlayer = 1 - currentPlayer;
+  updUI();
+}
+
+// ====================== RÉCEPTION MOUVEMENT ADVERSAIRE ======================
+function applyRemoteMoveSequence(steps, finalBoardState, nextPlayer) {
+  if (gameOver || isProcessing) return;
+  isProcessing = true;
+  clearHighlights();
+  stopTimer();
+
+  let stepIdx = 0;
+
+  function doNextStep() {
+    if (stepIdx >= steps.length) {
+      if (finalBoardState) {
+        try { board = JSON.parse(finalBoardState); } catch(e) {}
+      }
+      afterAllRemoteSteps(nextPlayer);
+      return;
+    }
+
+    const step = steps[stepIdx++];
+    const from = step.from;
+    const to = step.to || step;
+
+    const moveResult = executeMove(from, to);
+    let mesh = getPieceMesh(from.row, from.col);
+
+    if (!mesh) {
+      doNextStep();
+      return;
+    }
+
+    updatePiecePosition(mesh, to.row, to.col);
+    if (stepIdx === 1) showLastMoveOrigin(from.row, from.col);
+
+    let cc = 0;
+    function nextCap() {
+      if (cc < moveResult.captured.length) {
+        const cap = moveResult.captured[cc++];
+        const cm = getPieceMesh(cap.row, cap.col);
+        if (cm) animCapture(cm, () => nextCap());
+        else nextCap();
+      } else {
+        if (moveResult.promoted) promotePiece(mesh);
+        setTimeout(doNextStep, stepIdx < steps.length ? 280 : 120);
+      }
+    }
+    setTimeout(nextCap, 180);
+  }
+
+  doNextStep();
+}
+
+function afterAllRemoteSteps(nextPlayer) {
+  const winner = checkGameOver();
+  if (winner >= 0) {
+    handleGameEnd(winner, 'normal');
+    return;
+  }
+
+  currentPlayer = nextPlayer !== undefined ? nextPlayer : 1 - currentPlayer;
+  isProcessing = false;
+  inMultiJump = false;
+  document.getElementById('multi-jump-bar').classList.remove('show');
+  updUI();
+}
+
+// ====================== SOCKET.IO ======================
+function initSocket() {
+  socket = io({
+    transports: ['websocket', 'polling'],
+    reconnection: true,
+    reconnectionAttempts: Infinity,
+    reconnectionDelay: 1000
+  });
+
+  socket.on('connect', () => {
+    document.getElementById('reconn-bar').classList.remove('show');
+    socket.emit('dames_join', {
+      room: ROOM_ID,
+      player: MY_SLOT,
+      supabaseId: MY_SUPABASE_ID,
+      name: MY_NAME,
+      bet: BET_AMOUNT,
+      currency: CURRENCY
+    });
+  });
+
+  socket.on('dames_start', (data) => {
+    document.getElementById('loading').style.display = 'none';
+    if (data.reconnected && data.boardState) {
+      try {
+        board = JSON.parse(data.boardState);
+        currentPlayer = data.currentPlayer !== undefined ? data.currentPlayer : 0;
+        syncPieces();
+      } catch(e) {}
+    } else {
+      initBoard();
+      syncPieces();
+    }
+    gameReady = true;
+    updUI();
+  });
+
+  socket.on('dames_move', (data) => {
+    if (data.player === MY_SLOT) return;
+    if (data.steps && data.steps.length > 0) {
+      applyRemoteMoveSequence(data.steps, data.boardState, data.nextPlayer);
+    }
+  });
+
+  socket.on('dames_turn_start', (data) => {
+    if (gameOver || inMultiJump) return;
+    const isMyTurn = (data.player === MY_SLOT);
+    startTimer(isMyTurn, data.startTime);
+  });
+
+  socket.on('dames_turn_warning', (data) => {
+    if (gameOver || inMultiJump) return;
+    const isMyTurn = (data.player === MY_SLOT);
+    startGraceTimer(isMyTurn, data.startTime, data.duration);
+  });
+
+  socket.on('dames_game_resumed', () => {
+    stopForfeitCountdown();
+    showToast('▶️', 'Partie reprise', 'Les deux joueurs sont de retour !', 2000);
+  });
+
+  socket.on('dames_opponent_disconnected', () => {
+    if (!gameOver) startForfeitCountdown(60);
+  });
+
+  socket.on('game:over', (d) => {
+    if (gameOver) return;
+    gameOver = true;
+    const iWon = d.winnerSupabaseId === MY_SUPABASE_ID || (d.winnerSlot && d.winnerSlot === MY_SLOT);
+    handleGameEnd(iWon ? MY_PLAYER : 1 - MY_PLAYER, d.reason || 'normal');
+  });
+}
+
+function sendResult(outcome, reason) {
+  if (socket && socket.connected) {
+    socket.emit('dames_result', {
+      room: ROOM_ID,
+      winner: outcome === 'win' ? MY_SUPABASE_ID : OP_SUPABASE_ID,
+      reason: reason || 'normal',
+      p1Id: P1_ID,
+      p2Id: P2_ID
+    });
+  }
+}
+
+// ====================== TIMER & UI ======================
+// (Copie tes fonctions startTimer, startGraceTimer, stopTimer, stopGraceTimer, updUI, showToast, handleGameEnd, etc.)
+
+// ====================== LANCEMENT ======================
+initBoard();
+createBoard();
+initSocket();
+renderLoop();   // ta boucle de rendu three.js
+
+</script>
+</body>
+</html>
