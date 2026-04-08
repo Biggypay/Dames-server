@@ -1,0 +1,956 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Quoridor — Mindspille</title>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700;900&family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden}
+body{background:linear-gradient(135deg,#1e1b4b 0%,#312e81 50%,#1e1b4b 100%);height:100%;display:flex;flex-direction:column;align-items:center;font-family:'Cinzel',serif;color:#fbbf24}
+
+/* ── TOP BAR ── */
+#top{width:100%;padding:10px 14px 8px;background:rgba(255,255,255,0.08);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid rgba(255,255,255,0.15);display:flex;align-items:center;justify-content:space-between;flex-shrink:0;z-index:20;gap:8px}
+.profile{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:72px}
+.profile-timer-wrap{position:relative;width:58px;height:58px}
+.profile-timer-wrap svg{position:absolute;inset:0;width:100%;height:100%;transform:rotate(-90deg)}
+.timer-track{fill:none;stroke:rgba(255,255,255,0.08);stroke-width:4}
+.timer-arc{fill:none;stroke-width:4;stroke-linecap:round;stroke-dasharray:163.4;stroke-dashoffset:163.4;transition:stroke 0.3s}
+.profile-avatar{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;border-radius:50%;background:rgba(255,255,255,0.05);border:2px solid rgba(255,255,255,0.12);transition:border-color 0.3s,box-shadow 0.3s,background 0.3s}
+.profile.active .profile-avatar{border-color:rgba(255,255,255,0.5);background:rgba(255,255,255,0.10)}
+.profile.active.p1-active .profile-avatar{box-shadow:0 0 18px rgba(226,232,240,0.6)}
+.profile.active.p2-active .profile-avatar{box-shadow:0 0 18px rgba(248,113,113,0.6)}
+.av-w{width:22px;height:22px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#f0f0f0,#c0c0c0);border:2px solid #a0a0a0;box-shadow:0 2px 6px rgba(255,255,255,0.4)}
+.av-r{width:22px;height:22px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#f87171,#b91c1c);border:2px solid #991b1b;box-shadow:0 2px 6px rgba(248,113,113,0.4)}
+.walls-badge{display:flex;align-items:center;gap:4px;font-size:10px;color:rgba(255,255,255,0.55);letter-spacing:1px}
+.walls-num{font-size:18px;font-weight:700;color:#fbbf24;line-height:1}
+.profile-name{font-family:'Cinzel',serif;font-size:9px;letter-spacing:1.5px;color:rgba(255,255,255,0.45);text-transform:uppercase;transition:color 0.3s;text-align:center;max-width:72px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.profile.active .profile-name{color:rgba(255,255,255,0.9)}
+.goal-hint{font-size:8px;letter-spacing:1px;opacity:0.5}
+.timer-urgent .timer-arc{animation:urgentPulse 0.5s infinite alternate}
+@keyframes urgentPulse{from{opacity:1}to{opacity:0.4}}
+.top-center{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px}
+.top-center h1{font-size:17px;font-weight:900;letter-spacing:4px;color:#fbbf24;text-shadow:0 0 20px rgba(251,191,36,0.5)}
+.top-center .sub{font-size:8px;color:rgba(255,255,255,0.3);letter-spacing:2px}
+
+/* ── CANVAS ── */
+#canvasWrap{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:6px;width:100%;position:relative}
+canvas{display:block;touch-action:none}
+
+/* ── BOT BAR ── */
+#bot{width:100%;padding:8px 12px;background:rgba(255,255,255,0.08);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-top:1px solid rgba(255,255,255,0.15);display:flex;align-items:center;gap:6px;flex-shrink:0}
+.modeBtn{flex:1;padding:9px 4px;background:rgba(255,255,255,0.06);border:1px solid rgba(251,191,36,0.2);border-radius:8px;color:rgba(251,191,36,0.55);font-family:'Cinzel',serif;font-size:10px;letter-spacing:1px;cursor:pointer;transition:all 0.15s;-webkit-appearance:none;outline:none}
+.modeBtn.active{background:linear-gradient(135deg,#fbbf24,#f59e0b);color:#1e1b4b;border-color:transparent;font-weight:700}
+.modeBtn:disabled{opacity:0.28;pointer-events:none}
+#statusTxt{font-size:9px;color:#fbbf24;text-align:center;min-width:52px;letter-spacing:1px;line-height:1.3}
+
+/* ── OVERLAYS ── */
+#toast{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:linear-gradient(135deg,rgba(30,27,75,.97),rgba(49,46,129,.97));border:1.5px solid rgba(251,191,36,.6);border-radius:20px;padding:28px 32px;text-align:center;pointer-events:none;z-index:40;display:none;box-shadow:0 15px 50px rgba(0,0,0,.6);min-width:220px}
+#toast-emoji{font-size:42px;margin-bottom:10px}
+#toast-title{font-family:'Cinzel',serif;color:#fbbf24;font-size:20px;font-weight:700;margin-bottom:6px}
+#toast-sub{font-size:12px;color:rgba(255,255,255,.6);letter-spacing:1px;white-space:pre-line}
+#reconn-bar{position:absolute;top:0;left:0;right:0;z-index:150;background:rgba(120,20,20,0.92);color:#fff;font-family:'Cinzel',serif;font-size:11px;letter-spacing:1.5px;text-align:center;padding:8px;display:none}
+#reconn-bar.show{display:block}
+#forfeit-bar{position:absolute;bottom:60px;left:50%;transform:translateX(-50%);background:rgba(30,27,75,0.95);border:1px solid rgba(251,191,36,0.5);border-radius:99px;padding:8px 20px;font-family:'Cinzel',serif;font-size:12px;color:#fbbf24;display:none;z-index:25;backdrop-filter:blur(8px);white-space:nowrap}
+#forfeit-bar.show{display:block}
+</style>
+</head>
+<body>
+
+<div id="top">
+  <div class="profile" id="profile-me">
+    <div class="profile-timer-wrap">
+      <svg viewBox="0 0 58 58"><circle class="timer-track" cx="29" cy="29" r="26"/><circle class="timer-arc" id="arc-me" cx="29" cy="29" r="26" stroke="#e2e8f0"/></svg>
+      <div class="profile-avatar" id="avatar-me"><div class="av-w" id="dot-me"></div></div>
+    </div>
+    <div class="profile-name" id="name-me">Moi</div>
+    <div class="walls-badge"><span class="walls-num" id="walls-me">10</span><span>🧱</span></div>
+    <div class="goal-hint" id="goal-me">▲ OBJ</div>
+  </div>
+
+  <div class="top-center">
+    <h1>QUORIDOR</h1>
+    <div class="sub">EN LIGNE</div>
+  </div>
+
+  <div class="profile" id="profile-op">
+    <div class="profile-timer-wrap">
+      <svg viewBox="0 0 58 58"><circle class="timer-track" cx="29" cy="29" r="26"/><circle class="timer-arc" id="arc-op" cx="29" cy="29" r="26" stroke="#f87171"/></svg>
+      <div class="profile-avatar" id="avatar-op"><div class="av-r" id="dot-op"></div></div>
+    </div>
+    <div class="profile-name" id="name-op">Adversaire</div>
+    <div class="walls-badge"><span class="walls-num" id="walls-op">10</span><span>🧱</span></div>
+    <div class="goal-hint" id="goal-op">▼ OBJ</div>
+  </div>
+</div>
+
+<div id="canvasWrap">
+  <canvas id="c"></canvas>
+  <div id="reconn-bar">📡 RECONNEXION EN COURS…</div>
+  <div id="forfeit-bar"></div>
+  <div id="toast"><div id="toast-emoji"></div><div id="toast-title"></div><div id="toast-sub"></div></div>
+</div>
+
+<div id="bot">
+  <button class="modeBtn active" id="btnMove" onclick="setMode('move')">♟ DÉPLACER</button>
+  <span id="statusTxt">En<br>attente</span>
+  <button class="modeBtn" id="btnH" onclick="setMode('wallH')">━ MUR H</button>
+  <button class="modeBtn" id="btnV" onclick="setMode('wallV')">┃ MUR V</button>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+'use strict';
+
+/* ══════════════════════════════════════════
+   URL PARAMS
+══════════════════════════════════════════ */
+var P = new URLSearchParams(window.location.search);
+var ROOM_ID    = P.get('room')     || '';
+var MY_SLOT    = parseInt(P.get('player') || '1', 10);
+var P1_ID      = P.get('p1Id')     || '';
+var P2_ID      = P.get('p2Id')     || '';
+var P1_NAME    = P.get('p1Name')   || 'Joueur 1';
+var P2_NAME    = P.get('p2Name')   || 'Joueur 2';
+var BET_AMOUNT = parseFloat(P.get('bet') || '0');
+var CURRENCY   = P.get('currency') || 'HTG';
+
+if (!ROOM_ID && P1_ID && P2_ID) {
+  var _ids = [P1_ID, P2_ID].sort();
+  ROOM_ID = 'quori-' + _ids[0].slice(-8) + '-' + _ids[1].slice(-8);
+}
+if (!ROOM_ID) { ROOM_ID = P.get('gameId') || P.get('matchId') || ''; }
+
+var MY_SUPABASE_ID = MY_SLOT === 1 ? P1_ID : P2_ID;
+var OP_SUPABASE_ID = MY_SLOT === 1 ? P2_ID : P1_ID;
+var MY_NAME        = MY_SLOT === 1 ? P1_NAME : P2_NAME;
+var OP_NAME        = MY_SLOT === 1 ? P2_NAME : P1_NAME;
+
+/* Slot 1 = white pawn (row 8→0), Slot 2 = red pawn (row 0→8) */
+var IS_P1 = MY_SLOT === 1;
+
+/* ══════════════════════════════════════════
+   TIMER
+══════════════════════════════════════════ */
+var TIMER_DURATION = 30000;
+var CIRC = 2 * Math.PI * 26;
+var timerRAF = null, timerActive = false;
+var graceRAF = null, graceActive = false;
+
+function stopTimer() {
+  timerActive = false;
+  if (timerRAF) { cancelAnimationFrame(timerRAF); timerRAF = null; }
+  document.getElementById('arc-me').style.strokeDashoffset = CIRC;
+  document.getElementById('arc-op').style.strokeDashoffset = CIRC;
+  document.getElementById('profile-me').className = 'profile';
+  document.getElementById('profile-op').className = 'profile';
+}
+function stopGraceTimer() {
+  graceActive = false;
+  if (graceRAF) { cancelAnimationFrame(graceRAF); graceRAF = null; }
+  document.getElementById('forfeit-bar').classList.remove('show');
+}
+
+function startTimer(isMe, serverStartTime) {
+  stopGraceTimer(); stopTimer();
+  if (gameOver) return;
+  timerActive = true;
+  var tStart = serverStartTime || Date.now();
+  var arcId = isMe ? 'arc-me' : 'arc-op';
+  var profId = isMe ? 'profile-me' : 'profile-op';
+  var arc = document.getElementById(arcId);
+  var prof = document.getElementById(profId);
+  var cls = isMe ? 'p1-active' : 'p2-active';
+  prof.classList.add('active', cls);
+  function tick() {
+    if (!timerActive) return;
+    var progress = Math.min((Date.now() - tStart) / TIMER_DURATION, 1);
+    arc.style.strokeDashoffset = CIRC * progress;
+    if (progress >= 0.67) prof.classList.add('timer-urgent');
+    if (progress < 1) { timerRAF = requestAnimationFrame(tick); }
+    else { timerActive = false; }
+  }
+  timerRAF = requestAnimationFrame(tick);
+}
+
+function startGraceTimer(isMe, serverStartTime, duration) {
+  stopTimer(); stopGraceTimer();
+  if (gameOver) return;
+  graceActive = true;
+  var gStart = serverStartTime || Date.now();
+  var gDur = duration || 60000;
+  var bar = document.getElementById('forfeit-bar');
+  var arcId = isMe ? 'arc-me' : 'arc-op';
+  var profId = isMe ? 'profile-me' : 'profile-op';
+  var arc = document.getElementById(arcId);
+  var prof = document.getElementById(profId);
+  var cls = isMe ? 'p1-active' : 'p2-active';
+  prof.classList.add('active', cls, 'timer-urgent');
+  function tick() {
+    if (!graceActive) return;
+    var elapsed = Date.now() - gStart;
+    var remaining = Math.max(0, gDur - elapsed);
+    var progress = (gDur - remaining) / gDur;
+    arc.style.strokeDashoffset = CIRC * progress;
+    var secs = Math.ceil(remaining / 1000);
+    if (isMe) { bar.classList.add('show'); bar.textContent = '⚠️ Jouez maintenant — ' + secs + 's avant défaite !'; }
+    else { bar.classList.add('show'); bar.textContent = '⏳ Adversaire doit jouer — ' + secs + 's'; }
+    if (remaining > 0) { graceRAF = requestAnimationFrame(tick); }
+    else { graceActive = false; bar.classList.remove('show'); }
+  }
+  graceRAF = requestAnimationFrame(tick);
+}
+
+/* ══════════════════════════════════════════
+   ÉTAT DU JEU
+══════════════════════════════════════════ */
+var hW, vW;          // 8×8 booleans
+var s1Pos, s2Pos;    // {r,c} slot1=white slot2=red
+var s1Walls, s2Walls;
+var currentSlot;     // 1 or 2 — whose turn
+var mode;            // 'move'|'wallH'|'wallV'
+var vmoves, vhw, vvw;
+var gameOver = false, gameReady = false, resultSent = false;
+var isProcessing = false;
+var pendingTimerData = null;
+var forfeitTimer = null, forfeitCountdown = 0;
+
+/* ══════════════════════════════════════════
+   CANVAS
+══════════════════════════════════════════ */
+var canvas = document.getElementById('c');
+var ctx = canvas.getContext('2d');
+var CS, GAP, PAD;
+
+function calcLayout() {
+  var topH = document.getElementById('top').offsetHeight || 86;
+  var botH = document.getElementById('bot').offsetHeight || 50;
+  var avail = Math.min(
+    window.innerWidth - 8,
+    window.innerHeight - topH - botH - 12,
+    500
+  );
+  if (avail < 180) avail = 180;
+  GAP = Math.max(7, Math.floor(avail / 28));
+  CS  = Math.floor((avail - GAP * 8) / 9);
+  var total = CS * 9 + GAP * 8;
+  PAD = Math.floor((avail - total) / 2);
+  canvas.width  = avail;
+  canvas.height = avail;
+}
+
+function cx(c) { return PAD + c * (CS + GAP); }
+function cy(r) { return PAD + r * (CS + GAP); }
+function hwRect(r, c) { return { x: cx(c), y: cy(r)+CS, w: 2*CS+GAP, h: GAP }; }
+function vwRect(r, c) { return { x: cx(c)+CS, y: cy(r), w: GAP, h: 2*CS+GAP }; }
+
+/* ══════════════════════════════════════════
+   LOGIQUE QUORIDOR
+══════════════════════════════════════════ */
+function blocked(r1, c1, r2, c2) {
+  var dr = r2-r1, dc = c2-c1;
+  if (dr === -1) {
+    if (c1 <= 7 && c1 >= 0 && r1 >= 1 && hW[r1-1][c1])   return true;
+    if (c1 >= 1 && r1 >= 1 && hW[r1-1][c1-1]) return true;
+  } else if (dr === 1) {
+    if (c1 >= 0 && c1 <= 7 && r1 <= 7 && hW[r1][c1])   return true;
+    if (c1 >= 1 && r1 <= 7 && hW[r1][c1-1])   return true;
+  } else if (dc === -1) {
+    if (c1 >= 1 && r1 >= 0 && r1 <= 7 && vW[r1][c1-1])   return true;
+    if (c1 >= 1 && r1 >= 1 && vW[r1-1][c1-1]) return true;
+  } else if (dc === 1) {
+    if (c1 >= 0 && c1 <= 7 && r1 >= 0 && r1 <= 7 && vW[r1][c1])   return true;
+    if (c1 <= 7 && r1 >= 1 && vW[r1-1][c1])   return true;
+  }
+  return false;
+}
+
+var DIRS = [{dr:-1,dc:0},{dr:1,dc:0},{dr:0,dc:-1},{dr:0,dc:1}];
+
+function validMovesFor(pos, opp) {
+  var moves = [], i, j, dr, dc, nr, nc, jr, jc, pr, pc, perps;
+  for (i = 0; i < 4; i++) {
+    dr = DIRS[i].dr; dc = DIRS[i].dc;
+    nr = pos.r + dr; nc = pos.c + dc;
+    if (nr < 0 || nr > 8 || nc < 0 || nc > 8) continue;
+    if (blocked(pos.r, pos.c, nr, nc)) continue;
+    if (nr === opp.r && nc === opp.c) {
+      jr = nr + dr; jc = nc + dc;
+      if (jr >= 0 && jr <= 8 && jc >= 0 && jc <= 8 && !blocked(nr, nc, jr, jc)) {
+        moves.push({r:jr, c:jc});
+      } else {
+        perps = [{dr:dc,dc:dr},{dr:-dc,dc:-dr}];
+        for (j = 0; j < 2; j++) {
+          pr = nr + perps[j].dr; pc = nc + perps[j].dc;
+          if (pr >= 0 && pr <= 8 && pc >= 0 && pc <= 8 && !blocked(nr, nc, pr, pc)) {
+            moves.push({r:pr, c:pc});
+          }
+        }
+      }
+    } else {
+      moves.push({r:nr, c:nc});
+    }
+  }
+  return moves;
+}
+
+function bfsDist(pos, goalRow) {
+  var visited = {}, queue = [{r:pos.r, c:pos.c, d:0}], cur, i, nr, nc, k;
+  visited[pos.r+','+pos.c] = true;
+  while (queue.length > 0) {
+    cur = queue.shift();
+    if (cur.r === goalRow) return cur.d;
+    for (i = 0; i < 4; i++) {
+      nr = cur.r + DIRS[i].dr; nc = cur.c + DIRS[i].dc;
+      if (nr < 0 || nr > 8 || nc < 0 || nc > 8) continue;
+      k = nr+','+nc;
+      if (visited[k]) continue;
+      if (blocked(cur.r, cur.c, nr, nc)) continue;
+      visited[k] = true;
+      queue.push({r:nr, c:nc, d:cur.d+1});
+    }
+  }
+  return 999;
+}
+
+function canHW(r, c) {
+  if (r < 0 || r > 7 || c < 0 || c > 7) return false;
+  if (hW[r][c]) return false;
+  if (c > 0 && hW[r][c-1]) return false;
+  if (c < 7 && hW[r][c+1]) return false;
+  if (vW[r][c]) return false;
+  hW[r][c] = true;
+  var ok = bfsDist(s1Pos, 0) < 999 && bfsDist(s2Pos, 8) < 999;
+  hW[r][c] = false;
+  return ok;
+}
+
+function canVW(r, c) {
+  if (r < 0 || r > 7 || c < 0 || c > 7) return false;
+  if (vW[r][c]) return false;
+  if (r > 0 && vW[r-1][c]) return false;
+  if (r < 7 && vW[r+1][c]) return false;
+  if (hW[r][c]) return false;
+  vW[r][c] = true;
+  var ok = bfsDist(s1Pos, 0) < 999 && bfsDist(s2Pos, 8) < 999;
+  vW[r][c] = false;
+  return ok;
+}
+
+/* ══════════════════════════════════════════
+   INIT
+══════════════════════════════════════════ */
+function initGame() {
+  var i, j;
+  hW = []; vW = [];
+  for (i = 0; i < 8; i++) {
+    hW[i] = []; vW[i] = [];
+    for (j = 0; j < 8; j++) { hW[i][j] = false; vW[i][j] = false; }
+  }
+  s1Pos = {r:8, c:4};
+  s2Pos = {r:0, c:4};
+  s1Walls = 10; s2Walls = 10;
+  gameOver = false;
+  currentSlot = 1;
+  updWallsUI();
+}
+
+function restoreFromState(gs) {
+  s1Pos   = gs.s1Pos;
+  s2Pos   = gs.s2Pos;
+  s1Walls = gs.s1Walls !== undefined ? gs.s1Walls : 10;
+  s2Walls = gs.s2Walls !== undefined ? gs.s2Walls : 10;
+  hW      = gs.hW;
+  vW      = gs.vW;
+  currentSlot = gs.currentSlot || 1;
+  gameOver = false;
+  updWallsUI();
+}
+
+function buildGameState() {
+  return {
+    s1Pos: s1Pos, s2Pos: s2Pos,
+    s1Walls: s1Walls, s2Walls: s2Walls,
+    hW: hW, vW: vW,
+    currentSlot: currentSlot
+  };
+}
+
+/* ══════════════════════════════════════════
+   UI
+══════════════════════════════════════════ */
+function updWallsUI() {
+  var myWalls = IS_P1 ? s1Walls : s2Walls;
+  var opWalls = IS_P1 ? s2Walls : s1Walls;
+  document.getElementById('walls-me').textContent = myWalls;
+  document.getElementById('walls-op').textContent = opWalls;
+}
+
+function setMode(m) {
+  if (!gameReady || gameOver || isProcessing) return;
+  if (currentSlot !== MY_SLOT) return;
+  mode = m;
+  vmoves = []; vhw = []; vvw = [];
+  var myPos = IS_P1 ? s1Pos : s2Pos;
+  var opPos = IS_P1 ? s2Pos : s1Pos;
+  var myWalls = IS_P1 ? s1Walls : s2Walls;
+  var r, c;
+  if (m === 'move') {
+    vmoves = validMovesFor(myPos, opPos);
+  } else if (m === 'wallH' && myWalls > 0) {
+    for (r = 0; r < 8; r++) for (c = 0; c < 8; c++) if (canHW(r,c)) vhw.push({r:r,c:c});
+  } else if (m === 'wallV' && myWalls > 0) {
+    for (r = 0; r < 8; r++) for (c = 0; c < 8; c++) if (canVW(r,c)) vvw.push({r:r,c:c});
+  }
+  var myWallsLeft = IS_P1 ? s1Walls : s2Walls;
+  document.getElementById('btnMove').className = 'modeBtn' + (m === 'move'  ? ' active' : '');
+  document.getElementById('btnH').className    = 'modeBtn' + (m === 'wallH' ? ' active' : '');
+  document.getElementById('btnV').className    = 'modeBtn' + (m === 'wallV' ? ' active' : '');
+  document.getElementById('btnH').disabled = myWallsLeft <= 0;
+  document.getElementById('btnV').disabled = myWallsLeft <= 0;
+  draw();
+}
+
+function lockButtons() {
+  document.getElementById('btnMove').className = 'modeBtn';
+  document.getElementById('btnH').className    = 'modeBtn';
+  document.getElementById('btnV').className    = 'modeBtn';
+}
+
+function applyPendingTimer() {
+  if (!pendingTimerData) return;
+  var d = pendingTimerData; pendingTimerData = null;
+  if (d.type === 'turn_start') {
+    var isMe = d.player === MY_SLOT;
+    startTimer(isMe, d.startTime);
+  } else if (d.type === 'sync') {
+    var offset = Date.now() - d.serverTime;
+    var isMe2 = d.turnPlayer === MY_SLOT;
+    if (d.graceStartTime) startGraceTimer(isMe2, d.graceStartTime + offset, 60000);
+    else if (d.turnStartTime) startTimer(isMe2, d.turnStartTime + offset);
+  }
+}
+
+function updUI() {
+  var isMyTurn = currentSlot === MY_SLOT;
+  document.getElementById('statusTxt').innerHTML = isMyTurn ? 'Votre<br>tour' : 'Tour<br>adverse';
+  if (isMyTurn) {
+    setMode('move');
+  } else {
+    mode = 'wait';
+    vmoves = []; vhw = []; vvw = [];
+    lockButtons();
+    draw();
+  }
+}
+
+function startForfeitCountdown(seconds) {
+  stopForfeitCountdown2();
+  forfeitCountdown = seconds;
+  var bar = document.getElementById('forfeit-bar');
+  bar.classList.add('show');
+  function tick() {
+    bar.textContent = '⏳ Adversaire absent — victoire dans ' + forfeitCountdown + 's';
+    if (forfeitCountdown <= 0) { stopForfeitCountdown2(); return; }
+    forfeitCountdown--;
+    forfeitTimer = setTimeout(tick, 1000);
+  }
+  tick();
+}
+function stopForfeitCountdown2() {
+  if (forfeitTimer) { clearTimeout(forfeitTimer); forfeitTimer = null; }
+  document.getElementById('forfeit-bar').classList.remove('show');
+  forfeitCountdown = 0;
+}
+
+/* ══════════════════════════════════════════
+   DESSIN
+══════════════════════════════════════════ */
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  drawCells();
+  drawGhosts();
+  drawWalls();
+  drawPawns();
+}
+
+function drawCells() {
+  var r, c, x, y, isMove;
+  for (r = 0; r < 9; r++) {
+    for (c = 0; c < 9; c++) {
+      x = cx(c); y = cy(r);
+      isMove = false;
+      for (var i = 0; i < vmoves.length; i++) {
+        if (vmoves[i].r === r && vmoves[i].c === c) { isMove = true; break; }
+      }
+      ctx.beginPath();
+      rrect(x, y, CS, CS, 4);
+      if      (isMove)  ctx.fillStyle = 'rgba(251,191,36,0.28)';
+      else if (r === 0) ctx.fillStyle = 'rgba(226,232,240,0.11)';
+      else if (r === 8) ctx.fillStyle = 'rgba(248,113,113,0.11)';
+      else              ctx.fillStyle = 'rgba(255,255,255,0.05)';
+      ctx.fill();
+      ctx.strokeStyle = isMove ? 'rgba(251,191,36,0.55)' : 'rgba(255,255,255,0.07)';
+      ctx.lineWidth = isMove ? 1.5 : 1;
+      ctx.stroke();
+    }
+  }
+}
+
+function drawGhosts() {
+  var i, rect;
+  if (mode === 'wallH') {
+    for (i = 0; i < vhw.length; i++) {
+      rect = hwRect(vhw[i].r, vhw[i].c);
+      ctx.beginPath(); rrect(rect.x, rect.y, rect.w, rect.h, 2);
+      ctx.fillStyle = 'rgba(251,191,36,0.15)'; ctx.fill();
+      ctx.strokeStyle = 'rgba(251,191,36,0.35)'; ctx.lineWidth = 1; ctx.stroke();
+    }
+  }
+  if (mode === 'wallV') {
+    for (i = 0; i < vvw.length; i++) {
+      rect = vwRect(vvw[i].r, vvw[i].c);
+      ctx.beginPath(); rrect(rect.x, rect.y, rect.w, rect.h, 2);
+      ctx.fillStyle = 'rgba(251,191,36,0.15)'; ctx.fill();
+      ctx.strokeStyle = 'rgba(251,191,36,0.35)'; ctx.lineWidth = 1; ctx.stroke();
+    }
+  }
+}
+
+function drawWalls() {
+  var r, c, rect;
+  for (r = 0; r < 8; r++) {
+    for (c = 0; c < 8; c++) {
+      if (hW[r][c]) {
+        rect = hwRect(r, c);
+        ctx.save();
+        ctx.shadowColor = 'rgba(251,191,36,0.65)'; ctx.shadowBlur = 9;
+        ctx.beginPath(); rrect(rect.x, rect.y, rect.w, rect.h, 2);
+        ctx.fillStyle = '#fbbf24'; ctx.fill();
+        ctx.restore();
+      }
+      if (vW[r][c]) {
+        rect = vwRect(r, c);
+        ctx.save();
+        ctx.shadowColor = 'rgba(251,191,36,0.65)'; ctx.shadowBlur = 9;
+        ctx.beginPath(); rrect(rect.x, rect.y, rect.w, rect.h, 2);
+        ctx.fillStyle = '#fbbf24'; ctx.fill();
+        ctx.restore();
+      }
+    }
+  }
+}
+
+function drawPawns() {
+  drawPawn(s1Pos.r, s1Pos.c, '#e2e8f0', '#94a3b8');
+  drawPawn(s2Pos.r, s2Pos.c, '#f87171', '#b91c1c');
+}
+
+function drawPawn(r, c, fill, rim) {
+  var pcx = cx(c) + CS/2, pcy = cy(r) + CS/2, rad = CS * 0.33;
+  ctx.beginPath(); ctx.arc(pcx+2, pcy+3, rad, 0, 6.2832);
+  ctx.fillStyle = 'rgba(0,0,0,0.4)'; ctx.fill();
+  var grd = ctx.createRadialGradient(pcx-rad*0.3, pcy-rad*0.3, rad*0.05, pcx, pcy, rad);
+  grd.addColorStop(0, lighten(fill, 55)); grd.addColorStop(1, fill);
+  ctx.beginPath(); ctx.arc(pcx, pcy, rad, 0, 6.2832);
+  ctx.fillStyle = grd; ctx.fill();
+  ctx.strokeStyle = rim; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.beginPath(); ctx.arc(pcx-rad*0.25, pcy-rad*0.3, rad*0.22, 0, 6.2832);
+  ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.fill();
+}
+
+function lighten(hex, amt) {
+  var r = Math.min(255, parseInt(hex.slice(1,3),16)+amt);
+  var g = Math.min(255, parseInt(hex.slice(3,5),16)+amt);
+  var b = Math.min(255, parseInt(hex.slice(5,7),16)+amt);
+  return 'rgb('+r+','+g+','+b+')';
+}
+
+function rrect(x, y, w, h, rad) {
+  var r = Math.min(rad, w/2, h/2);
+  ctx.moveTo(x+r, y);
+  ctx.arcTo(x+w, y,   x+w, y+h, r);
+  ctx.arcTo(x+w, y+h, x,   y+h, r);
+  ctx.arcTo(x,   y+h, x,   y,   r);
+  ctx.arcTo(x,   y,   x+w, y,   r);
+  ctx.closePath();
+}
+
+/* ══════════════════════════════════════════
+   INTERACTIONS
+══════════════════════════════════════════ */
+function getCanvasXY(e) {
+  var rect = canvas.getBoundingClientRect();
+  var sx = canvas.width / rect.width, sy = canvas.height / rect.height;
+  var src = e.changedTouches ? e.changedTouches[0] : e;
+  return { x:(src.clientX-rect.left)*sx, y:(src.clientY-rect.top)*sy };
+}
+
+canvas.addEventListener('click',    function(e){ handleTap(getCanvasXY(e)); });
+canvas.addEventListener('touchend', function(e){ e.preventDefault(); handleTap(getCanvasXY(e)); }, {passive:false});
+
+function handleTap(pt) {
+  if (!gameReady || gameOver || isProcessing) return;
+  if (currentSlot !== MY_SLOT) return;
+  var x = pt.x, y = pt.y, i, mv, slot;
+
+  if (mode === 'move') {
+    for (i = 0; i < vmoves.length; i++) {
+      mv = vmoves[i];
+      if (x >= cx(mv.c) && x <= cx(mv.c)+CS && y >= cy(mv.r) && y <= cy(mv.r)+CS) {
+        doMyMove(mv.r, mv.c); return;
+      }
+    }
+  } else if (mode === 'wallH') {
+    slot = nearestHWSlot(x, y);
+    if (slot && canHW(slot.r, slot.c)) {
+      hW[slot.r][slot.c] = true;
+      if (IS_P1) s1Walls--; else s2Walls--;
+      emitMyMove('wallH', slot);
+      updWallsUI();
+      endMyTurn();
+      return;
+    }
+  } else if (mode === 'wallV') {
+    slot = nearestVWSlot(x, y);
+    if (slot && canVW(slot.r, slot.c)) {
+      vW[slot.r][slot.c] = true;
+      if (IS_P1) s1Walls--; else s2Walls--;
+      emitMyMove('wallV', slot);
+      updWallsUI();
+      endMyTurn();
+      return;
+    }
+  }
+}
+
+function nearestHWSlot(x, y) {
+  var best = null, bestD = CS * 1.8, i, s, rect, cx2, cy2, d;
+  for (i = 0; i < vhw.length; i++) {
+    s = vhw[i]; rect = hwRect(s.r, s.c);
+    cx2 = rect.x + rect.w/2; cy2 = rect.y + rect.h/2;
+    d = Math.sqrt((x-cx2)*(x-cx2)+(y-cy2)*(y-cy2));
+    if (d < bestD) { bestD = d; best = s; }
+  }
+  return best;
+}
+
+function nearestVWSlot(x, y) {
+  var best = null, bestD = CS * 1.8, i, s, rect, cx2, cy2, d;
+  for (i = 0; i < vvw.length; i++) {
+    s = vvw[i]; rect = vwRect(s.r, s.c);
+    cx2 = rect.x + rect.w/2; cy2 = rect.y + rect.h/2;
+    d = Math.sqrt((x-cx2)*(x-cx2)+(y-cy2)*(y-cy2));
+    if (d < bestD) { bestD = d; best = s; }
+  }
+  return best;
+}
+
+function doMyMove(r, c) {
+  if (IS_P1) s1Pos = {r:r, c:c}; else s2Pos = {r:r, c:c};
+  var goalRow = IS_P1 ? 0 : 8;
+  emitMyMove('move', {r:r, c:c});
+  if (r === goalRow) { handleGameEnd(MY_SLOT, 'normal'); return; }
+  endMyTurn();
+}
+
+function endMyTurn() {
+  stopTimer();
+  currentSlot = MY_SLOT === 1 ? 2 : 1;
+  mode = 'wait';
+  vmoves = []; vhw = []; vvw = [];
+  lockButtons();
+  document.getElementById('statusTxt').innerHTML = 'Tour<br>adverse';
+  draw();
+}
+
+function emitMyMove(moveType, data) {
+  currentSlot = MY_SLOT === 1 ? 2 : 1;
+  if (socket && socket.connected) {
+    socket.emit('quoridor_move', {
+      room: ROOM_ID,
+      player: MY_SLOT,
+      moveType: moveType,
+      data: data,
+      gameState: JSON.stringify(buildGameState()),
+      nextPlayer: currentSlot - 1  // 0-indexed for server
+    });
+  }
+}
+
+function applyOpponentMove(moveType, data) {
+  if (moveType === 'move') {
+    if (!IS_P1) s1Pos = {r:data.r, c:data.c}; else s2Pos = {r:data.r, c:data.c};
+    updWallsUI(); draw();
+    var opGoal = IS_P1 ? 8 : 0;
+    if (data.r === opGoal) { handleGameEnd(MY_SLOT === 1 ? 2 : 1, 'normal'); return; }
+  } else if (moveType === 'wallH') {
+    hW[data.r][data.c] = true;
+    if (!IS_P1) s1Walls--; else s2Walls--;
+    updWallsUI(); draw();
+  } else if (moveType === 'wallV') {
+    vW[data.r][data.c] = true;
+    if (!IS_P1) s1Walls--; else s2Walls--;
+    updWallsUI(); draw();
+  }
+  currentSlot = MY_SLOT;
+  isProcessing = false;
+  updUI();
+}
+
+/* ══════════════════════════════════════════
+   FIN DE PARTIE
+══════════════════════════════════════════ */
+function handleGameEnd(winnerSlot, reason) {
+  if (gameOver) return;
+  gameOver = true;
+  stopTimer(); stopGraceTimer(); stopForfeitCountdown2();
+  draw();
+  var iWon = winnerSlot === MY_SLOT;
+  var title = iWon ? 'Vous avez gagné !' : 'Vous avez perdu.';
+  var sub = '';
+  if (reason === 'forfeit') sub = iWon ? 'L\'adversaire a abandonné.' : 'Vous avez abandonné la partie.';
+  else if (reason === 'timeout') sub = iWon ? 'Temps écoulé pour l\'adversaire.' : 'Votre temps est écoulé.';
+  else sub = iWon ? 'Vous avez atteint la ligne adverse !' : 'L\'adversaire a atteint votre ligne.';
+  showToast(iWon ? '🏆' : '😤', title, sub, 4000, function() {
+    sendResult(iWon ? 'win' : 'loss', reason || 'normal');
+  });
+}
+
+function sendResult(outcome, reason) {
+  if (resultSent) return;
+  resultSent = true;
+  var winnerId = outcome === 'win' ? MY_SUPABASE_ID : OP_SUPABASE_ID;
+  var loserId  = outcome === 'win' ? OP_SUPABASE_ID : MY_SUPABASE_ID;
+  var msg = {
+    type: 'game_result', game: 'quoridor', room: ROOM_ID,
+    winner: winnerId, loser: loserId,
+    bet: BET_AMOUNT, currency: CURRENCY,
+    reason: reason || 'normal', p1Id: P1_ID, p2Id: P2_ID
+  };
+  try { window.parent.postMessage(msg, '*'); } catch(e) {}
+  if (socket && socket.connected) socket.emit('quoridor_result', msg);
+}
+
+/* ══════════════════════════════════════════
+   TOAST
+══════════════════════════════════════════ */
+function showToast(emoji, title, sub, delay, cb) {
+  var el = document.getElementById('toast');
+  document.getElementById('toast-emoji').textContent = emoji;
+  document.getElementById('toast-title').textContent = title;
+  document.getElementById('toast-sub').textContent   = sub;
+  el.style.cssText = 'display:block;opacity:0;transform:translate(-50%,-50%) scale(0.8);transition:none;';
+  setTimeout(function() {
+    el.style.transition = 'all 0.35s cubic-bezier(0.175,0.885,0.32,1.275)';
+    el.style.opacity = '1'; el.style.transform = 'translate(-50%,-50%) scale(1)';
+  }, 20);
+  setTimeout(function() {
+    el.style.opacity = '0'; el.style.transform = 'translate(-50%,-50%) scale(0.85)';
+    setTimeout(function() { el.style.display = 'none'; if (cb) cb(); }, 300);
+  }, delay);
+}
+
+/* ══════════════════════════════════════════
+   SOCKET.IO
+══════════════════════════════════════════ */
+var socket = null;
+
+function initSocket() {
+  socket = io({
+    transports: ['websocket', 'polling'],
+    reconnection: true,
+    reconnectionAttempts: Infinity,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
+    timeout: 20000
+  });
+
+  socket.on('connect', function() {
+    document.getElementById('reconn-bar').classList.remove('show');
+    socket.emit('quoridor_join', {
+      room: ROOM_ID, player: MY_SLOT,
+      supabaseId: MY_SUPABASE_ID, name: MY_NAME,
+      bet: BET_AMOUNT, currency: CURRENCY
+    });
+  });
+
+  socket.on('disconnect', function() {
+    if (!gameOver) document.getElementById('reconn-bar').classList.add('show');
+  });
+
+  socket.on('quoridor_start', function(data) {
+    if (data.reconnected && gameReady) {
+      // Already in game — just resume
+      gameOver = false; isProcessing = false;
+      stopForfeitCountdown2();
+      showToast('📶', 'Connexion rétablie', 'La partie reprend !', 2000, function() { updUI(); });
+
+    } else if (data.reconnected && data.gameState) {
+      // Restore full state
+      gameReady = false;
+      try {
+        var gs = JSON.parse(data.gameState);
+        restoreFromState(gs);
+        gameOver = false; isProcessing = false; resultSent = false;
+        stopForfeitCountdown2();
+        draw();
+        showToast('📶', 'Partie restaurée', 'Reprise là où vous étiez !', 2400, function() {
+          gameReady = true; updUI(); applyPendingTimer();
+        });
+      } catch(e) {
+        startNewGame();
+      }
+
+    } else {
+      startNewGame();
+    }
+
+    // Sync timer on reconnect
+    if (data.reconnected && data.turnPlayer !== null && data.turnPlayer !== undefined) {
+      var now = Date.now();
+      if (data.graceStartTime) {
+        pendingTimerData = { type: 'sync', serverTime: now, turnPlayer: data.turnPlayer, graceStartTime: data.graceStartTime, duration: 60000 };
+      } else if (data.turnStartTime) {
+        pendingTimerData = { type: 'sync', serverTime: now, turnPlayer: data.turnPlayer, turnStartTime: data.turnStartTime, duration: 30000 };
+      }
+    }
+  });
+
+  socket.on('quoridor_turn_start', function(data) {
+    if (gameOver) return;
+    pendingTimerData = { type: 'turn_start', player: data.player, startTime: data.startTime };
+    if (!gameReady) return;
+    stopGraceTimer();
+    var isMe = data.player === MY_SLOT;
+    startTimer(isMe, data.startTime);
+  });
+
+  socket.on('quoridor_turn_warning', function(data) {
+    if (gameOver) return;
+    var isMe = data.player === MY_SLOT;
+    startGraceTimer(isMe, data.startTime, data.duration);
+  });
+
+  socket.on('quoridor_turn_sync', function(data) {
+    if (gameOver) return;
+    pendingTimerData = { type: 'sync', serverTime: data.serverTime, turnPlayer: data.turnPlayer, graceStartTime: data.graceStartTime || null, turnStartTime: data.turnStartTime || null };
+    if (!gameReady) return;
+    var offset = Date.now() - data.serverTime;
+    var isMe = data.turnPlayer === MY_SLOT;
+    if (data.graceStartTime) startGraceTimer(isMe, data.graceStartTime + offset, 60000);
+    else if (data.turnStartTime) startTimer(isMe, data.turnStartTime + offset);
+  });
+
+  socket.on('quoridor_move', function(data) {
+    if (data.player === MY_SLOT) return;
+    // Restore authoritative game state from server relay if present
+    if (data.gameState) {
+      try {
+        var gs = JSON.parse(data.gameState);
+        // Only restore wall data (positions tracked locally too, but use server state)
+        hW = gs.hW; vW = gs.vW;
+        s1Walls = gs.s1Walls !== undefined ? gs.s1Walls : s1Walls;
+        s2Walls = gs.s2Walls !== undefined ? gs.s2Walls : s2Walls;
+      } catch(e) {}
+    }
+    applyOpponentMove(data.moveType, data.data);
+  });
+
+  socket.on('quoridor_player_status', function(data) {
+    if (data.slot === MY_SLOT) return;
+    document.getElementById('profile-op').style.opacity = data.connected ? '1' : '0.45';
+  });
+
+  socket.on('quoridor_opponent_disconnected', function() {
+    if (gameOver) return;
+    startForfeitCountdown(60);
+  });
+
+  socket.on('quoridor_game_resumed', function(data) {
+    stopForfeitCountdown2();
+    document.getElementById('profile-op').style.opacity = '1';
+    showToast('▶️', 'Partie reprise', data.message || 'Les deux joueurs sont de retour !', 2000, function() {
+      if (gameReady && !gameOver) updUI();
+    });
+  });
+
+  socket.on('player:reconnected', function(data) {
+    stopForfeitCountdown2();
+    document.getElementById('profile-op').style.opacity = '1';
+    showToast('✅', 'Adversaire reconnecté', data.message || 'La partie reprend !', 2000, function() {
+      if (gameReady && !gameOver) updUI();
+    });
+  });
+
+  socket.on('game:over', function(d) {
+    if (gameOver) return;
+    stopForfeitCountdown2();
+    if (d.result === 'cancel') {
+      gameOver = true; stopTimer(); stopGraceTimer();
+      var penalty = d.penalty || 0;
+      showToast('⚠️', 'Partie annulée',
+        'Les deux joueurs se sont déconnectés.\nPénalité de ' + penalty + ' HTG appliquée.',
+        4000, function() { sendResult('cancel', 'both_disconnected'); });
+      return;
+    }
+    var iWon = d.winnerSupabaseId === MY_SUPABASE_ID ||
+               (d.winnerSlot && d.winnerSlot === MY_SLOT) ||
+               (d.winner === 'player1' && MY_SLOT === 1) ||
+               (d.winner === 'player2' && MY_SLOT === 2);
+    handleGameEnd(iWon ? MY_SLOT : (MY_SLOT === 1 ? 2 : 1), d.reason || 'forfeit');
+  });
+
+  socket.on('game:result', function(d) {
+    if (d.postMessage && !gameOver) {
+      var iWon = d.postMessage.result === 'win';
+      handleGameEnd(iWon ? MY_SLOT : (MY_SLOT === 1 ? 2 : 1), 'forfeit');
+    }
+  });
+}
+
+function startNewGame() {
+  initGame();
+  vmoves = []; vhw = []; vvw = [];
+
+  // Names & colors
+  document.getElementById('name-me').textContent = MY_NAME;
+  document.getElementById('name-op').textContent = OP_NAME;
+
+  // Goal hints
+  if (IS_P1) {
+    document.getElementById('goal-me').textContent = '▲ OBJ';
+    document.getElementById('goal-op').textContent = '▼ OBJ';
+  } else {
+    document.getElementById('goal-me').textContent = '▼ OBJ';
+    document.getElementById('goal-op').textContent = '▲ OBJ';
+  }
+
+  // Avatar colors
+  document.getElementById('dot-me').className = IS_P1 ? 'av-w' : 'av-r';
+  document.getElementById('dot-op').className = IS_P1 ? 'av-r' : 'av-w';
+  document.getElementById('arc-me').setAttribute('stroke', IS_P1 ? '#e2e8f0' : '#f87171');
+  document.getElementById('arc-op').setAttribute('stroke', IS_P1 ? '#f87171' : '#e2e8f0');
+
+  var whoStarts = MY_SLOT === 1 ? 'Vous commencez (Blanc)' : OP_NAME + ' commence (Blanc)';
+  showToast('🎲', 'Partie commencée', whoStarts, 2400, function() {
+    gameReady = true;
+    updUI();
+    applyPendingTimer();
+  });
+  calcLayout(); draw();
+}
+
+/* ══════════════════════════════════════════
+   INIT
+══════════════════════════════════════════ */
+calcLayout();
+initGame();
+vmoves = []; vhw = []; vvw = [];
+draw();
+initSocket();
+window.addEventListener('resize', function() { calcLayout(); draw(); });
+</script>
+</body>
+</html>
