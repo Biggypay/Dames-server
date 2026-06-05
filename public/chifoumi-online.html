@@ -1,0 +1,1231 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Chifoumi - Pierre Feuille Ciseaux | Nano Banana</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=Inter:wght@300;400;600;700&display=swap');
+
+*{box-sizing:border-box;margin:0;padding:0}
+
+body{
+  font-family:'Inter',sans-serif;
+  background:linear-gradient(135deg,#1e1b4b 0%,#312e81 50%,#1e1b4b 100%);
+  width:100vw;
+  min-height:100vh;
+  overflow-x:hidden;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  color:#fff;
+  -webkit-tap-highlight-color:transparent;
+}
+
+/* ── TOP BAR (Transparente comme Dames) ── */
+#top{
+  flex:0 0 auto;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  width:100%;
+  max-width:500px;
+  padding:15px 14px 8px; /* Ajusté comme les dames */
+  background:transparent; /* Fond transparent */
+  z-index:20;
+  gap:8px;
+}
+
+.profile{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:3px;
+  min-width:72px;
+  opacity:0.5; /* Rendu Dames : inactif grisé */
+  transition:opacity 0.3s;
+}
+
+.profile.active{
+  opacity:1;
+}
+
+.profile-timer-wrap{
+  position:relative;
+  width:58px;
+  height:58px;
+  transition: filter 0.3s;
+}
+
+/* Rendu Dames : filtre de lumière douce au lieu de box-shadow pour mobile */
+.profile.active.human-active .profile-timer-wrap { filter: drop-shadow(0 0 10px rgba(255,255,255,0.6)); }
+.profile.active.ai-active .profile-timer-wrap { filter: drop-shadow(0 0 10px rgba(231,76,60,0.6)); }
+
+.profile-timer-wrap svg{
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  transform:rotate(-90deg);
+}
+
+.timer-track{fill:none;stroke:rgba(255,255,255,0.08);stroke-width:4}
+.timer-arc{
+  fill:none;
+  stroke-width:4;
+  stroke-linecap:round;
+  stroke-dasharray:163.4;
+  stroke-dashoffset:163.4;
+  transition:stroke 0.3s;
+}
+
+.profile-avatar{
+  position:absolute;
+  inset:0;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  border-radius:50%;
+  -webkit-border-radius:50%;
+  background-clip:padding-box;
+  background:rgba(255,255,255,0.05);
+  border:2px solid rgba(255,255,255,0.12);
+  transition:border-color 0.3s, background 0.3s;
+  font-size:24px;
+  z-index:2;
+}
+
+.profile.active .profile-avatar{
+  border-color:rgba(255,255,255,0.5);
+  background:rgba(255,255,255,0.10);
+}
+
+.timer-urgent .timer-arc{animation:urgentPulse 0.5s infinite alternate}
+@keyframes urgentPulse{from{opacity:1}to{opacity:0.4}}
+
+.profile-name{
+  font-family:'Cinzel',serif;
+  font-size:9px;
+  letter-spacing:1.5px;
+  color:rgba(255,255,255,0.45);
+  text-transform:uppercase;
+  transition:color 0.3s;
+  text-align:center;
+  max-width:72px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  margin-top: 4px;
+}
+.profile.active .profile-name{color:rgba(255,255,255,0.9)}
+
+.top-center{
+  flex:1;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:2px;
+}
+
+.score-row{display:flex;gap:8px;align-items:center}
+.snum{font-family:'Cinzel',serif;font-size:20px;font-weight:700}
+.sw{color:#ffffff}.sr{color:#f87171}
+.ssep{color:rgba(255,255,255,0.3);font-size:13px}
+.manche-lbl{font-size:9px;color:rgba(255,255,255,0.35);letter-spacing:1px}
+
+/* Badge de mise détaché */
+.bet-badge{
+  font-size:9px;
+  background:rgba(251,191,36,0.15);
+  border:1px solid rgba(251,191,36,0.4);
+  border-radius:99px;
+  padding:2px 8px;
+  color:#fbbf24;
+  font-weight:600;
+  letter-spacing:0.5px;
+  margin-top:16px; /* Plus d'espace sous la progression */
+}
+
+/* ── MAIN WRAP ── */
+#wrap{
+  flex:1 1 auto;
+  position:relative;
+  width:100%;
+  max-width:500px;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  padding:20px 14px;
+  gap:20px;
+}
+
+/* ── COUNTDOWN TIMER ── */
+.timer-center-wrap{
+  position:relative;
+  width:120px;
+  height:120px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  opacity:0;
+  transform:scale(0.8);
+  transition:all 0.4s ease;
+}
+.timer-center-wrap.visible{opacity:1;transform:scale(1)}
+.timer-center-wrap svg{position:absolute;inset:0;width:100%;height:100%;transform:rotate(-90deg)}
+.timer-center-arc{
+  fill:none;
+  stroke-width:5;
+  stroke-linecap:round;
+  stroke-dasharray:314;
+  stroke-dashoffset:314;
+  transition:stroke-dashoffset 1s linear,stroke 0.3s;
+}
+.timer-center-number{
+  font-family:'Cinzel',serif;
+  font-size:42px;
+  font-weight:700;
+  color:#fbbf24;
+  z-index:2;
+  font-variant-numeric:tabular-nums;
+}
+
+/* ── BATTLE ZONE ── */
+.battle-zone{
+  display:flex;
+  align-items:center;
+  gap:16px;
+  width:100%;
+  justify-content:center;
+}
+
+.choice-card{
+  width:130px;
+  height:170px;
+  border-radius:20px;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:12px;
+  transition:all 0.3s ease;
+  position:relative;
+  background:rgba(255,255,255,0.05);
+  border:2px solid rgba(255,255,255,0.12);
+}
+.choice-card.player-active{background:rgba(34,197,94,0.12);border:2px solid rgba(34,197,94,0.5);box-shadow:0 0 20px rgba(34,197,94,0.2)}
+.choice-card.ai-active{background:rgba(231,76,60,0.12);border:2px solid rgba(231,76,60,0.5);box-shadow:0 0 20px rgba(231,76,60,0.2)}
+.choice-card.waiting{background:rgba(255,255,255,0.03);border:2px solid rgba(255,255,255,0.08)}
+.choice-card.hidden-choice .choice-emoji{filter:blur(8px);opacity:0.3}
+.choice-card.hidden-choice .choice-label{color:rgba(255,255,255,0.3)}
+
+.choice-emoji{font-size:52px;filter:drop-shadow(0 4px 8px rgba(0,0,0,0.3));transition:all 0.3s ease}
+.choice-label{font-family:'Cinzel',serif;font-size:14px;font-weight:600;letter-spacing:1px}
+.choice-card.player-active .choice-label{color:#4ade80}
+.choice-card.ai-active .choice-label{color:#f87171}
+.choice-card.waiting .choice-label{color:rgba(255,255,255,0.4)}
+
+.vs-text{font-family:'Cinzel',serif;font-size:24px;font-weight:700;color:rgba(255,255,255,0.3);letter-spacing:2px}
+
+/* ── STATUS ── */
+.status{
+  font-size:14px;
+  color:rgba(255,255,255,0.6);
+  text-align:center;
+  min-height:20px;
+  font-weight:500;
+  opacity:0;
+  transition:opacity 0.3s;
+}
+.status.visible{opacity:1}
+.status.result{font-size:18px;font-weight:700;font-family:'Cinzel',serif}
+.status.win{color:#4ade80}
+.status.lose{color:#f87171}
+.status.draw{color:#fbbf24}
+
+/* ── CHOICE BUTTONS ── */
+.choices{display:flex;gap:12px;width:100%;justify-content:center}
+.choice-btn{
+  width:90px;
+  height:110px;
+  border-radius:16px;
+  background:rgba(255,255,255,0.05);
+  border:2px solid rgba(255,255,255,0.15);
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  cursor:pointer;
+  transition:all 0.2s ease;
+  color:#fff;
+  -webkit-tap-highlight-color:transparent;
+  touch-action:manipulation;
+}
+.choice-btn:hover:not(.disabled):not(.locked){
+  transform:translateY(-4px);
+  border-color:rgba(255,255,255,0.4);
+  background:rgba(255,255,255,0.10);
+  box-shadow:0 8px 25px rgba(0,0,0,0.3);
+}
+.choice-btn:active:not(.disabled):not(.locked){transform:translateY(0) scale(0.95)}
+.choice-btn.selected{border-color:#3b82f6;background:rgba(59,130,246,0.15);box-shadow:0 0 20px rgba(59,130,246,0.3)}
+.choice-btn.locked{opacity:0.4;pointer-events:none;cursor:not-allowed;border-color:rgba(34,197,94,0.3)}
+.choice-btn.disabled{opacity:0.25;pointer-events:none;cursor:not-allowed}
+.choice-btn .emoji{font-size:36px}
+.choice-btn span{font-size:12px;font-weight:600;letter-spacing:0.5px}
+
+/* ── ROUNDS PROGRESS ── */
+.rounds-progress{display:flex;gap:6px;margin-top:5px}
+.round-dot{width:30px;height:6px;border-radius:3px;background:rgba(255,255,255,0.08);transition:all 0.3s ease}
+.round-dot.played{background:rgba(255,255,255,0.2)}
+.round-dot.win{background:#22c55e}
+.round-dot.lose{background:#ef4444}
+.round-dot.draw{background:#fbbf24}
+
+/* ── RECONN BAR ── */
+#reconn-bar{
+  position:fixed;top:0;left:0;right:0;z-index:150;
+  background:rgba(120,20,20,0.92);
+  color:#fff;font-family:'Cinzel',serif;font-size:11px;
+  letter-spacing:1.5px;text-align:center;padding:8px;display:none;
+}
+#reconn-bar.show{display:block}
+
+/* ── FORFEIT BAR ── */
+#forfeit-bar{
+  position:fixed;bottom:20px;left:50%;transform:translateX(-50%);
+  background:rgba(30,27,75,0.95);
+  border:1px solid rgba(251,191,36,0.5);
+  border-radius:99px;
+  padding:8px 20px;
+  font-family:'Cinzel',serif;font-size:12px;color:#fbbf24;
+  display:none;z-index:25;backdrop-filter:blur(8px);
+}
+#forfeit-bar.show{display:block}
+
+/* ── WAITING OVERLAY ── */
+#waiting-overlay{
+  position:fixed;inset:0;
+  background:rgba(30,27,75,0.95);
+  display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+  z-index:100;gap:20px;
+  backdrop-filter:blur(12px);
+  -webkit-backdrop-filter:blur(12px);
+  display:none;
+}
+#waiting-overlay.show{display:flex}
+.waiting-spin{width:52px;height:52px;border:4px solid rgba(255,255,255,0.08);border-top-color:#fbbf24;border-radius:50%;animation:sp 1s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+.waiting-text{font-family:'Cinzel',serif;font-size:14px;color:rgba(255,255,255,0.7);letter-spacing:2px;text-align:center}
+.waiting-room{font-size:10px;color:rgba(255,255,255,0.3);letter-spacing:1px}
+
+/* ── MODAL ── */
+.modal-overlay{
+  position:fixed;top:0;left:0;width:100%;height:100%;
+  background:rgba(0,0,0,0.85);
+  display:none;align-items:center;justify-content:center;
+  z-index:1000;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+  overflow-y:auto;
+}
+.modal-overlay.show{display:flex;animation:fadeIn 0.3s ease}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+
+.modal{
+  background:linear-gradient(135deg,rgba(30,27,75,0.97),rgba(49,46,129,0.97));
+  border-radius:24px;
+  padding:32px 24px;
+  text-align:center;
+  max-width:380px;
+  width:90%;
+  border:2px solid rgba(255,255,255,0.15);
+  box-shadow:0 20px 60px rgba(0,0,0,0.6);
+  max-height:90vh;
+  overflow-y:auto;
+}
+.modal h2{font-family:'Cinzel',serif;font-size:28px;margin-bottom:15px;font-weight:700}
+.modal .final-score{font-family:'Cinzel',serif;font-size:56px;font-weight:700;margin-bottom:8px}
+.modal .final-message{font-size:14px;color:rgba(255,255,255,0.6);margin-bottom:10px;line-height:1.5}
+.modal .prize-line{font-size:18px;font-weight:700;color:#fbbf24;margin-bottom:20px}
+
+.modal .restart-btn{
+  padding:14px 45px;
+  border-radius:30px;
+  background:linear-gradient(135deg,#3b82f6,#2563eb);
+  color:#fff;border:none;
+  font-size:16px;font-weight:600;
+  cursor:pointer;transition:all 0.2s ease;
+  font-family:'Inter',sans-serif;letter-spacing:0.5px;
+  -webkit-tap-highlight-color:transparent;touch-action:manipulation;
+}
+.modal .restart-btn:hover{transform:scale(1.05);box-shadow:0 0 25px rgba(59,130,246,0.4)}
+.modal .restart-btn:active{transform:scale(0.95)}
+.modal.win-modal{border-color:rgba(34,197,94,0.5)}
+.modal.lose-modal{border-color:rgba(231,76,60,0.5)}
+.modal.draw-modal{border-color:rgba(251,191,36,0.5)}
+.modal.win-modal h2{color:#4ade80}
+.modal.lose-modal h2{color:#f87171}
+.modal.draw-modal h2{color:#fbbf24}
+
+.modal-history{width:100%;margin-top:20px;margin-bottom:20px;max-height:200px;overflow-y:auto}
+.modal-history h4{font-family:'Cinzel',serif;color:rgba(255,255,255,0.5);font-size:11px;margin-bottom:10px;text-transform:uppercase;letter-spacing:2px;text-align:center}
+.modal-history-list{display:flex;flex-direction:column;gap:6px}
+.modal-history-item{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:8px 12px;background:rgba(255,255,255,0.05);
+  border-radius:10px;font-size:12px;
+  border:1px solid rgba(255,255,255,0.06);
+}
+.modal-history-item.win{border-left:3px solid #22c55e}
+.modal-history-item.lose{border-left:3px solid #ef4444}
+.modal-history-item.draw{border-left:3px solid #fbbf24}
+
+/* ── CONFETTI ── */
+#confetti-canvas{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:100}
+
+/* ── TOAST ── */
+#toast{
+  position:fixed;
+  top:50%;left:50%;
+  transform:translate(-50%,-50%);
+  background:linear-gradient(135deg,rgba(30,27,75,0.97),rgba(49,46,129,0.97));
+  border:1.5px solid rgba(251,191,36,0.6);
+  border-radius:20px;padding:28px 32px;
+  text-align:center;pointer-events:none;
+  z-index:50;display:none;
+  box-shadow:0 15px 50px rgba(0,0,0,0.6);
+  min-width:220px;
+}
+#toast-emoji{font-size:48px;margin-bottom:10px}
+#toast-title{font-family:'Cinzel',serif;color:#fbbf24;font-size:20px;font-weight:700;margin-bottom:6px}
+#toast-sub{font-size:12px;color:rgba(255,255,255,0.6);letter-spacing:1px;white-space:pre-line}
+
+/* ── LOADING ── */
+#loading{
+  position:fixed;top:0;left:0;width:100%;height:100%;
+  background:linear-gradient(135deg,#1e1b4b 0%,#312e81 100%);
+  display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+  z-index:200;transition:opacity 0.6s;
+}
+.spin{width:52px;height:52px;border:4px solid rgba(255,255,255,0.08);border-top-color:#fbbf24;border-radius:50%;animation:sp 1s linear infinite}
+#loading p{color:rgba(255,255,255,0.55);margin-top:16px;font-size:11px;letter-spacing:4px;font-family:'Cinzel',serif;text-align:center;padding:0 16px}
+
+.shake{animation:shake 0.5s ease-in-out}
+@keyframes shake{0%,100%{transform:rotate(0deg)}25%{transform:rotate(-8deg)}75%{transform:rotate(8deg)}}
+</style>
+</head>
+<body>
+
+<div id="loading">
+  <div class="spin"></div>
+  <p>CONNEXION EN COURS…</p>
+</div>
+
+<canvas id="confetti-canvas"></canvas>
+
+<div id="toast">
+  <div id="toast-emoji"></div>
+  <div id="toast-title"></div>
+  <div id="toast-sub"></div>
+</div>
+
+<div id="reconn-bar">📡 RECONNEXION EN COURS…</div>
+<div id="forfeit-bar"></div>
+
+<!-- WAITING FOR OPPONENT -->
+<div id="waiting-overlay">
+  <div class="waiting-spin"></div>
+  <div class="waiting-text">EN ATTENTE DE L'ADVERSAIRE…</div>
+  <div class="waiting-room" id="waiting-room-id"></div>
+</div>
+
+<!-- TOP BAR -->
+<div id="top">
+  <div class="profile" id="profile-human">
+    <div class="profile-timer-wrap">
+      <svg viewBox="0 0 58 58">
+        <circle class="timer-track" cx="29" cy="29" r="26"/>
+        <circle class="timer-arc" id="timer-arc-human" cx="29" cy="29" r="26" stroke="#ffffff"/>
+      </svg>
+      <div class="profile-avatar" id="avatar-human">👤</div>
+    </div>
+    <div class="profile-name" id="name-human">MOI</div>
+  </div>
+
+  <div class="top-center">
+    <div class="score-row">
+      <span class="snum sw" id="playerScore">0</span>
+      <span class="ssep">vs</span>
+      <span class="snum sr" id="aiScore">0</span>
+    </div>
+    <span class="manche-lbl" id="roundLabel">Manche 1 / 5</span>
+    <div class="rounds-progress" id="roundsProgress">
+      <div class="round-dot"></div>
+      <div class="round-dot"></div>
+      <div class="round-dot"></div>
+      <div class="round-dot"></div>
+      <div class="round-dot"></div>
+    </div>
+    <div class="bet-badge" id="betBadge" style="display:none;"></div>
+  </div>
+
+  <div class="profile" id="profile-ai">
+    <div class="profile-timer-wrap">
+      <svg viewBox="0 0 58 58">
+        <circle class="timer-track" cx="29" cy="29" r="26"/>
+        <circle class="timer-arc" id="timer-arc-ai" cx="29" cy="29" r="26" stroke="#e74c3c"/>
+      </svg>
+      <div class="profile-avatar" id="avatar-ai">🤖</div>
+    </div>
+    <div class="profile-name" id="name-ai">ADV</div>
+  </div>
+</div>
+
+<!-- MAIN -->
+<div id="wrap">
+  <div class="timer-center-wrap" id="timerCenterWrap">
+    <svg viewBox="0 0 100 100">
+      <circle class="timer-track" cx="50" cy="50" r="48" stroke-width="4"/>
+      <circle class="timer-center-arc" id="timerCenterArc" cx="50" cy="50" r="48" stroke="#fbbf24"/>
+    </svg>
+    <span class="timer-center-number" id="timerCenter">0</span>
+  </div>
+
+  <div class="battle-zone">
+    <div class="choice-card waiting" id="playerCard">
+      <span class="choice-emoji" id="playerEmoji">❓</span>
+      <span class="choice-label" id="playerLabel">En attente</span>
+    </div>
+    <div class="vs-text">VS</div>
+    <div class="choice-card waiting" id="aiCard">
+      <span class="choice-emoji" id="aiEmoji">❓</span>
+      <span class="choice-label" id="aiLabel">En attente</span>
+    </div>
+  </div>
+
+  <div class="status" id="status"></div>
+
+  <div class="choices" id="choices">
+    <button class="choice-btn" data-choice="pierre" ontouchstart="">
+      <span class="emoji">✊</span>
+      <span>Pierre</span>
+    </button>
+    <button class="choice-btn" data-choice="feuille" ontouchstart="">
+      <span class="emoji">✋</span>
+      <span>Feuille</span>
+    </button>
+    <button class="choice-btn" data-choice="ciseaux" ontouchstart="">
+      <span class="emoji">✌️</span>
+      <span>Ciseaux</span>
+    </button>
+  </div>
+</div>
+
+<!-- GAME OVER MODAL -->
+<div class="modal-overlay" id="gameOverModal">
+  <div class="modal" id="modalContent">
+    <h2 id="modalTitle">Partie terminée !</h2>
+    <div class="final-score" id="finalScore">0 - 0</div>
+    <div class="final-message" id="finalMessage"></div>
+    <div class="prize-line" id="prizeLine" style="display:none;"></div>
+    <div class="modal-history" id="modalHistory">
+      <h4>Historique des manches</h4>
+      <div class="modal-history-list" id="modalHistoryList"></div>
+    </div>
+    <button class="restart-btn" id="closeBtn" ontouchstart="">Fermer</button>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+(function(){
+'use strict';
+
+/* ══════════════════════════════════════════
+   URL PARAMS
+══════════════════════════════════════════ */
+var P         = new URLSearchParams(window.location.search);
+var ROOM_ID   = P.get('room')     || '';
+var MY_SLOT   = parseInt(P.get('player') || '1', 10);
+var P1_ID     = P.get('p1Id')     || '';
+var P2_ID     = P.get('p2Id')     || '';
+var P1_NAME   = P.get('p1Name')   || 'Joueur 1';
+var P2_NAME   = P.get('p2Name')   || 'Joueur 2';
+var BET_AMOUNT = parseFloat(P.get('bet') || '0');
+var CURRENCY  = P.get('currency') || 'HTG';
+
+if (!ROOM_ID && P1_ID && P2_ID) {
+  var _ids = [P1_ID, P2_ID].sort();
+  ROOM_ID = 'chifoumi-' + _ids[0].slice(-8) + '-' + _ids[1].slice(-8);
+}
+if (!ROOM_ID) { ROOM_ID = P.get('gameId') || P.get('matchId') || ''; }
+
+var MY_SUPABASE_ID = MY_SLOT === 1 ? P1_ID : P2_ID;
+var OP_SUPABASE_ID = MY_SLOT === 1 ? P2_ID : P1_ID;
+var MY_NAME        = MY_SLOT === 1 ? P1_NAME : P2_NAME;
+var OP_NAME        = MY_SLOT === 1 ? P2_NAME : P1_NAME;
+
+/* ══════════════════════════════════════════
+   CONSTANTES
+══════════════════════════════════════════ */
+var choices    = ['pierre','feuille','ciseaux'];
+var emojis     = {pierre:'✊', feuille:'✋', ciseaux:'✌️'};
+var CIRC_SMALL = 163.4;
+var CIRC       = 2 * Math.PI * 48;
+var CHOICE_TIME = 15000;
+var REVEAL_TIME = 5;
+var MAX_ROUNDS  = 5;
+
+/* ══════════════════════════════════════════
+   STATE
+══════════════════════════════════════════ */
+var playerScore = 0, opScore = 0;
+var currentRound = 1;
+var gameOver = false, gameReady = false, resultSent = false;
+var playerLocked = false, roundInProgress = false;
+var playerChoice = null, opponentChoice = null;
+var roundHistory = [], roundResults = [];
+
+var timerStart = null, timerRAF = null, timerActive = false;
+var graceRAF = null, graceActive = false;
+var pendingTimerData = null;
+
+var forfeitTimer = null, forfeitCountdown = 0;
+var revealInterval = null;
+var socket = null;
+
+/* ══════════════════════════════════════════
+   DOM ELEMENTS
+══════════════════════════════════════════ */
+var choiceBtns        = document.querySelectorAll('.choice-btn');
+var statusEl          = document.getElementById('status');
+var playerCard        = document.getElementById('playerCard');
+var aiCard            = document.getElementById('aiCard');
+var playerEmojiEl     = document.getElementById('playerEmoji');
+var aiEmojiEl         = document.getElementById('aiEmoji');
+var playerLabelEl     = document.getElementById('playerLabel');
+var aiLabelEl         = document.getElementById('aiLabel');
+var timerCenter       = document.getElementById('timerCenter');
+var timerCenterArc    = document.getElementById('timerCenterArc');
+var timerCenterWrap   = document.getElementById('timerCenterWrap');
+var roundLabelEl      = document.getElementById('roundLabel');
+var roundsProgress    = document.getElementById('roundsProgress');
+var gameOverModal     = document.getElementById('gameOverModal');
+var modalContent      = document.getElementById('modalContent');
+var modalTitle        = document.getElementById('modalTitle');
+var finalScore        = document.getElementById('finalScore');
+var finalMessage      = document.getElementById('finalMessage');
+var prizeLine         = document.getElementById('prizeLine');
+
+var profileHuman      = document.getElementById('profile-human');
+var profileAi         = document.getElementById('profile-ai');
+var timerArcHuman     = document.getElementById('timer-arc-human');
+var timerArcAi        = document.getElementById('timer-arc-ai');
+var modalHistoryList  = document.getElementById('modalHistoryList');
+var closeBtn          = document.getElementById('closeBtn');
+var confettiCanvas    = document.getElementById('confetti-canvas');
+var confettiCtx       = confettiCanvas.getContext('2d');
+var waitingOverlay    = document.getElementById('waiting-overlay');
+var reconBar          = document.getElementById('reconn-bar');
+var forfeitBar        = document.getElementById('forfeit-bar');
+
+/* ══════════════════════════════════════════
+   INIT UI
+══════════════════════════════════════════ */
+document.getElementById('name-human').textContent = MY_NAME;
+document.getElementById('name-ai').textContent    = OP_NAME;
+
+if (BET_AMOUNT > 0) {
+  var betBadge = document.getElementById('betBadge');
+  betBadge.textContent = 'Mise : ' + BET_AMOUNT + ' ' + CURRENCY;
+  betBadge.style.display = 'block';
+}
+
+/* ══════════════════════════════════════════
+   CONFETTI
+══════════════════════════════════════════ */
+var confettiParts = [], confettiActive = false;
+function resizeConfetti() { confettiCanvas.width = window.innerWidth; confettiCanvas.height = window.innerHeight; }
+window.addEventListener('resize', resizeConfetti);
+resizeConfetti();
+
+function createConfetti() {
+  var colors = ['#fbbf24','#f59e0b','#ffffff','#e74c3c','#818cf8','#c084fc','#34d399','#22c55e'];
+  var shapes = ['circle','square','triangle'];
+  for (var i = 0; i < 150; i++) {
+    confettiParts.push({
+      x: confettiCanvas.width/2, y: confettiCanvas.height/2,
+      vx: (Math.random()-0.5)*18, vy: (Math.random()-0.5)*18-5,
+      color: colors[Math.floor(Math.random()*colors.length)],
+      shape: shapes[Math.floor(Math.random()*shapes.length)],
+      size: Math.random()*8+4, rotation: Math.random()*360,
+      rotSpeed: (Math.random()-0.5)*10, gravity: 0.28, drag: 0.985, life: 1.0
+    });
+  }
+  confettiActive = true;
+}
+
+function updateConfetti() {
+  if (!confettiActive) return;
+  confettiCtx.clearRect(0, 0, confettiCanvas.width, confettiCanvas.height);
+  var any = false;
+  for (var i = confettiParts.length-1; i >= 0; i--) {
+    var p = confettiParts[i];
+    p.x += p.vx; p.y += p.vy; p.vy += p.gravity; p.vx *= p.drag; p.vy *= p.drag;
+    p.rotation += p.rotSpeed; p.life -= 0.004;
+    if (p.life > 0 && p.y < confettiCanvas.height+60) {
+      any = true;
+      confettiCtx.save();
+      confettiCtx.translate(p.x, p.y);
+      confettiCtx.rotate(p.rotation*Math.PI/180);
+      confettiCtx.globalAlpha = p.life;
+      confettiCtx.fillStyle = p.color;
+      if (p.shape === 'circle') { confettiCtx.beginPath(); confettiCtx.arc(0,0,p.size/2,0,Math.PI*2); confettiCtx.fill(); }
+      else if (p.shape === 'square') { confettiCtx.fillRect(-p.size/2,-p.size/2,p.size,p.size); }
+      else { confettiCtx.beginPath(); confettiCtx.moveTo(0,-p.size/2); confettiCtx.lineTo(p.size/2,p.size/2); confettiCtx.lineTo(-p.size/2,p.size/2); confettiCtx.closePath(); confettiCtx.fill(); }
+      confettiCtx.restore();
+    }
+  }
+  if (!any) { confettiActive = false; confettiParts = []; confettiCtx.clearRect(0,0,confettiCanvas.width,confettiCanvas.height); }
+}
+
+function renderLoop() { requestAnimationFrame(renderLoop); updateConfetti(); }
+renderLoop();
+
+/* ══════════════════════════════════════════
+   TOAST & LOADING
+══════════════════════════════════════════ */
+function showToast(emoji, title, sub, delay, cb) {
+  var el = document.getElementById('toast');
+  document.getElementById('toast-emoji').textContent = emoji;
+  document.getElementById('toast-title').textContent = title;
+  document.getElementById('toast-sub').textContent   = sub;
+  el.style.cssText = 'display:block;opacity:0;transform:translate(-50%,-50%) scale(0.8);transition:none;';
+  setTimeout(function() {
+    el.style.transition = 'all 0.35s cubic-bezier(0.175,0.885,0.32,1.275)';
+    el.style.opacity = '1'; el.style.transform = 'translate(-50%,-50%) scale(1)';
+  }, 20);
+  setTimeout(function() {
+    el.style.opacity = '0'; el.style.transform = 'translate(-50%,-50%) scale(0.85)';
+    setTimeout(function() { el.style.display = 'none'; if (cb) cb(); }, 300);
+  }, delay);
+}
+
+function hideLoading() {
+  var ld = document.getElementById('loading');
+  if (ld) { ld.style.opacity = '0'; setTimeout(function() { ld.style.display = 'none'; }, 600); }
+}
+
+/* ══════════════════════════════════════════
+   SOCKET.IO
+══════════════════════════════════════════ */
+function initSocket() {
+  var lt = document.querySelector('#loading p');
+  if (lt) lt.textContent = 'ROOM: ' + (ROOM_ID || 'MANQUANT') + ' | SLOT: ' + MY_SLOT;
+
+  socket = io({ transports: ['websocket','polling'], reconnection: true });
+
+  socket.on('connect', function() {
+    reconBar.classList.remove('show');
+    socket.emit('chifoumi_join', {
+      room: ROOM_ID, player: MY_SLOT, supabaseId: MY_SUPABASE_ID, name: MY_NAME, bet: BET_AMOUNT, currency: CURRENCY
+    });
+  });
+
+  socket.on('disconnect', function() {
+    if (!gameOver) reconBar.classList.add('show');
+  });
+
+  /* ── Partie démarrée ── */
+  socket.on('chifoumi_start', function(data) {
+    hideLoading();
+    waitingOverlay.classList.remove('show');
+
+    if (data.reconnected && gameReady) {
+      gameOver = false; stopForfeitCountdown();
+      showToast('📶','Connexion rétablie','La partie reprend !', 2000, function() { updUI(); });
+    } else if (data.reconnected && data.gameState) {
+      gameOver = false; resultSent = false;
+      try {
+        var gs = data.gameState;
+        playerScore   = gs.scores[MY_SLOT - 1] || 0;
+        opScore       = gs.scores[MY_SLOT === 1 ? 1 : 0] || 0;
+        currentRound  = gs.currentRound || 1;
+        roundHistory  = gs.history || [];
+        document.getElementById('playerScore').textContent = playerScore;
+        document.getElementById('aiScore').textContent     = opScore;
+        roundLabelEl.textContent = 'Manche ' + currentRound + ' / ' + MAX_ROUNDS;
+        rebuildProgressDots();
+        showToast('📶','Partie restaurée','Reprise là où vous étiez !', 2400, function() {
+          gameReady = true; startRound();
+          applyPendingTimer();
+        });
+      } catch(e) { startNewGame(); }
+    } else {
+      startNewGame();
+    }
+  });
+
+  socket.on('chifoumi_waiting', function() {
+    hideLoading(); waitingOverlay.classList.add('show');
+    document.getElementById('waiting-room-id').textContent = 'Salle : ' + ROOM_ID;
+  });
+
+  /* ── Les Timers Pilotés par le Serveur ── */
+  socket.on('chifoumi_turn_start', function(data) {
+    if (gameOver) return;
+    pendingTimerData = { type: 'turn_start', startTime: data.startTime };
+    if (!gameReady) return;
+    pendingTimerData = null;
+    startTimer(data.startTime);
+  });
+
+  socket.on('chifoumi_turn_warning', function(data) {
+    if (gameOver) return;
+    pendingTimerData = { type: 'turn_warning', startTime: data.startTime, duration: data.duration };
+    if (!gameReady) return;
+    pendingTimerData = null;
+    startGraceTimer(data.startTime, data.duration);
+  });
+
+  socket.on('chifoumi_turn_sync', function(data) {
+    if (gameOver) return;
+    pendingTimerData = { type: 'sync', serverTime: data.serverTime, graceStartTime: data.graceStartTime, turnStartTime: data.turnStartTime, duration: data.duration };
+    if (!gameReady) return;
+    pendingTimerData = null;
+    var offset = Date.now() - data.serverTime;
+    if (data.graceStartTime) startGraceTimer(data.graceStartTime + offset, data.duration);
+    else if (data.turnStartTime) startTimer(data.turnStartTime + offset);
+  });
+
+  /* ── Adversaire a choisi (Mise à jour UI de verrouillage) ── */
+  socket.on('chifoumi_opponent_choice', function(data) {
+    if (gameOver || !gameReady) return;
+    opponentChoice = true;
+    
+    // Interface visuelle pour prouver qu'il a joué !
+    aiEmojiEl.textContent  = '🔒';
+    aiLabelEl.textContent  = 'Choix fait';
+    aiCard.classList.remove('waiting');
+    aiCard.classList.add('hidden-choice', 'ai-active');
+    profileAi.classList.remove('timer-urgent');
+
+    if (playerLocked) {
+      startRevealCountdown();
+    }
+  });
+
+  /* ── Révélation (Serveur débloque) ── */
+  socket.on('chifoumi_reveal', function(data) {
+    if (gameOver || !gameReady) return;
+    if (!playerChoice) playerChoice = data.myChoice;
+    if (!opponentChoice) opponentChoice = data.opChoice;
+    stopRevealCountdown();
+    stopTimersVisuals();
+    revealBoth();
+  });
+
+  /* ── Déconnexions & Game Over ── */
+  socket.on('chifoumi_opponent_disconnected', function() {
+    if (gameOver) return;
+    startForfeitCountdown(60);
+  });
+
+  socket.on('chifoumi_player_status', function(data) {
+    if (data.slot === MY_SLOT) return;
+    profileAi.style.opacity = data.connected ? '1' : '0.45';
+  });
+
+  socket.on('chifoumi_game_resumed', function() {
+    stopForfeitCountdown();
+    profileAi.style.opacity = '1';
+    showToast('▶️','Partie reprise','Les deux joueurs sont de retour !', 2000, function() {
+      if (gameReady && !gameOver) updUI();
+    });
+  });
+
+  socket.on('player:reconnected', function() {
+    stopForfeitCountdown();
+    profileAi.style.opacity = '1';
+  });
+
+  socket.on('game:over', function(d) {
+    if (gameOver) return;
+    hideLoading(); stopForfeitCountdown();
+    if (d.result === 'cancel') {
+      gameOver = true;
+      showToast('⚠️','Partie annulée','Les deux joueurs se sont déconnectés.', 4000, function() { sendResult('cancel', 'both_disconnected'); });
+      return;
+    }
+    var iWon = d.winnerSupabaseId === MY_SUPABASE_ID || (d.winnerSlot && d.winnerSlot === MY_SLOT) || (d.winner === 'player1' && MY_SLOT === 1) || (d.winner === 'player2' && MY_SLOT === 2);
+    handleGameEnd(iWon ? 'win' : 'lose', 'forfeit');
+  });
+
+  socket.on('game:result', function(d) {
+    if (d.postMessage && !gameOver) {
+      hideLoading();
+      handleGameEnd(d.postMessage.result === 'win' ? 'win' : 'lose', 'forfeit');
+    }
+  });
+}
+
+/* ══════════════════════════════════════════
+   GESTION DES TIMERS (15s puis 60s Grâce)
+══════════════════════════════════════════ */
+function applyPendingTimer() {
+  if (!pendingTimerData) return;
+  var d = pendingTimerData; pendingTimerData = null;
+  if (d.type === 'turn_start') {
+      startTimer(d.startTime);
+  } else if (d.type === 'turn_warning') {
+      startGraceTimer(d.startTime, d.duration);
+  } else if (d.type === 'sync') {
+      var offset = Date.now() - d.serverTime;
+      if (d.graceStartTime) startGraceTimer(d.graceStartTime + offset, d.duration);
+      else if (d.turnStartTime) startTimer(d.turnStartTime + offset);
+  }
+}
+
+function startTimer(serverStartTime) {
+  stopGraceTimer(); stopTimersVisuals();
+  if (gameOver || !roundInProgress) return;
+  timerActive = true; timerStart = serverStartTime || Date.now();
+  
+  profileHuman.classList.add('active', 'human-active');
+  profileAi.classList.add('active', 'ai-active');
+
+  function tick() {
+    if (!timerActive) return;
+    var progress = Math.min((Date.now() - timerStart) / CHOICE_TIME, 1);
+    
+    // Figer visuellement si on a joué
+    if (!playerLocked) timerArcHuman.style.strokeDashoffset = CIRC_SMALL * progress;
+    if (!opponentChoice) timerArcAi.style.strokeDashoffset = CIRC_SMALL * progress;
+
+    if (progress >= 0.67) {
+        if (!playerLocked) profileHuman.classList.add('timer-urgent');
+        if (!opponentChoice) profileAi.classList.add('timer-urgent');
+    }
+    
+    if (progress < 1) timerRAF = requestAnimationFrame(tick);
+    else timerActive = false; // Laisse le serveur déclencher la grâce
+  }
+  timerRAF = requestAnimationFrame(tick);
+}
+
+function startGraceTimer(serverStartTime, duration) {
+  stopTimersVisuals(); stopGraceTimer();
+  if (gameOver || !roundInProgress) return;
+  graceActive = true;
+  var graceStart = serverStartTime || Date.now();
+  var graceDuration = duration || 60000;
+
+  if (!playerLocked) profileHuman.classList.add('active', 'human-active', 'timer-urgent');
+  if (!opponentChoice) profileAi.classList.add('active', 'ai-active', 'timer-urgent');
+
+  function tick() {
+    if (!graceActive) return;
+    var elapsed = Date.now() - graceStart;
+    var remaining = Math.max(0, graceDuration - elapsed);
+    var progress = (graceDuration - remaining) / graceDuration;
+
+    if (!playerLocked) timerArcHuman.style.strokeDashoffset = CIRC_SMALL * progress;
+    if (!opponentChoice) timerArcAi.style.strokeDashoffset = CIRC_SMALL * progress;
+
+    var secs = Math.ceil(remaining / 1000);
+    forfeitBar.classList.add('show');
+    
+    if (!playerLocked && !opponentChoice) { forfeitBar.textContent = '⚠️ Jouez maintenant — ' + secs + 's avant annulation !'; }
+    else if (!playerLocked) { forfeitBar.textContent = '⚠️ Jouez maintenant — ' + secs + 's avant défaite !'; }
+    else { forfeitBar.textContent = '⏳ Adversaire doit jouer — ' + secs + 's'; }
+
+    if (remaining > 0) graceRAF = requestAnimationFrame(tick);
+    else { graceActive = false; forfeitBar.classList.remove('show'); }
+  }
+  graceRAF = requestAnimationFrame(tick);
+}
+
+function stopTimersVisuals() {
+  timerActive = false; if(timerRAF) cancelAnimationFrame(timerRAF);
+  timerArcHuman.style.strokeDashoffset = CIRC_SMALL;
+  timerArcAi.style.strokeDashoffset = CIRC_SMALL;
+  profileHuman.classList.remove('timer-urgent');
+  profileAi.classList.remove('timer-urgent');
+}
+
+function stopGraceTimer() {
+  graceActive = false; if(graceRAF) cancelAnimationFrame(graceRAF);
+  forfeitBar.classList.remove('show');
+  profileHuman.classList.remove('timer-urgent');
+  profileAi.classList.remove('timer-urgent');
+}
+
+function startForfeitCountdown(seconds) {
+  stopForfeitCountdown(); forfeitCountdown = seconds;
+  forfeitBar.classList.add('show');
+  function tick() {
+    forfeitBar.textContent = '⏳ Adversaire absent — victoire dans ' + forfeitCountdown + 's';
+    if (forfeitCountdown <= 0) { stopForfeitCountdown(); return; }
+    forfeitCountdown--; forfeitTimer = setTimeout(tick, 1000);
+  }
+  tick();
+}
+function stopForfeitCountdown() {
+  if (forfeitTimer) { clearTimeout(forfeitTimer); forfeitTimer = null; }
+  forfeitBar.classList.remove('show'); forfeitCountdown = 0;
+}
+
+/* ══════════════════════════════════════════
+   JOUER UN COUP
+══════════════════════════════════════════ */
+choiceBtns.forEach(function(btn) {
+  btn.addEventListener('click', function() { playerMakesChoice(btn.dataset.choice); });
+  btn.addEventListener('touchend', function(e) { e.preventDefault(); playerMakesChoice(btn.dataset.choice); });
+});
+
+function playerMakesChoice(choice) {
+  if (!gameReady || gameOver || playerLocked || !roundInProgress) return;
+  playerLocked = true;
+  playerChoice = choice;
+
+  choiceBtns.forEach(function(btn) {
+    btn.classList.add('disabled');
+    if (btn.dataset.choice === choice) { btn.classList.remove('disabled'); btn.classList.add('selected','locked'); }
+  });
+
+  playerEmojiEl.textContent = emojis[choice];
+  playerLabelEl.textContent = choice.charAt(0).toUpperCase() + choice.slice(1);
+  playerCard.classList.remove('waiting','hidden-choice');
+  playerCard.classList.add('player-active');
+
+  profileHuman.classList.remove('timer-urgent');
+
+  if (socket && socket.connected) {
+    socket.emit('chifoumi_choice', { room: ROOM_ID, player: MY_SLOT, choice: choice });
+  }
+
+  if (opponentChoice) {
+    startRevealCountdown();
+  } else {
+    aiEmojiEl.textContent  = '🤔';
+    aiLabelEl.textContent  = 'Réflexion...';
+    aiCard.classList.add('shake');
+    setTimeout(function() { aiCard.classList.remove('shake'); }, 600);
+  }
+}
+
+/* ══════════════════════════════════════════
+   REVEAL COUNTDOWN
+══════════════════════════════════════════ */
+function startRevealCountdown() {
+  stopTimersVisuals(); stopGraceTimer();
+  var seconds = REVEAL_TIME;
+  timerCenterWrap.classList.add('visible');
+  timerCenter.textContent = seconds;
+  timerCenterArc.style.strokeDashoffset = CIRC * (1 - seconds / REVEAL_TIME);
+  timerCenterArc.style.stroke = '#fbbf24';
+
+  aiEmojiEl.textContent  = '🔒';
+  aiLabelEl.textContent  = 'Choix fait';
+  aiCard.classList.remove('waiting');
+  aiCard.classList.add('hidden-choice');
+
+  revealInterval = setInterval(function() {
+    seconds--;
+    timerCenter.textContent = seconds;
+    timerCenterArc.style.strokeDashoffset = CIRC * (1 - seconds / REVEAL_TIME);
+    if (seconds <= 2) timerCenterArc.style.stroke = '#ef4444';
+    if (seconds <= 0) {
+      clearInterval(revealInterval); revealInterval = null;
+      revealBoth();
+    }
+  }, 1000);
+}
+
+function stopRevealCountdown() {
+  if (revealInterval) { clearInterval(revealInterval); revealInterval = null; }
+  timerCenterWrap.classList.remove('visible');
+}
+
+/* ══════════════════════════════════════════
+   RÉVÉLATION DES DEUX CHOIX
+══════════════════════════════════════════ */
+function revealBoth() {
+  stopRevealCountdown();
+  timerCenterWrap.classList.remove('visible');
+
+  if (playerChoice) {
+    playerEmojiEl.textContent = emojis[playerChoice];
+    playerLabelEl.textContent = playerChoice.charAt(0).toUpperCase() + playerChoice.slice(1);
+    playerCard.classList.remove('waiting','hidden-choice');
+    playerCard.classList.add('player-active');
+  }
+  if (opponentChoice) {
+    aiEmojiEl.textContent = emojis[opponentChoice];
+    aiLabelEl.textContent = opponentChoice.charAt(0).toUpperCase() + opponentChoice.slice(1);
+    aiCard.classList.remove('waiting','hidden-choice');
+    aiCard.classList.add('ai-active');
+  }
+
+  profileHuman.classList.remove('active','human-active');
+  profileAi.classList.remove('active','ai-active');
+
+  var result = getWinner(playerChoice, opponentChoice);
+  updateScore(result);
+  showResult(result, playerChoice, opponentChoice);
+  addToHistory(result, playerChoice, opponentChoice);
+  updateProgress(result);
+  roundResults.push(result);
+
+  roundInProgress = false;
+
+  if (currentRound >= MAX_ROUNDS) {
+    setTimeout(function() { showGameOver(); }, 2500);
+  } else {
+    currentRound++;
+    setTimeout(function() { startRound(); }, 3000);
+  }
+}
+
+/* ══════════════════════════════════════════
+   LOGIQUE & UI RESULTATS
+══════════════════════════════════════════ */
+function getWinner(me, op) {
+  if (!me && op) return 'lose';
+  if (me && !op) return 'win';
+  if (me === op) return 'draw';
+  if ((me==='pierre'&&op==='ciseaux') || (me==='feuille'&&op==='pierre') || (me==='ciseaux'&&op==='feuille')) return 'win';
+  return 'lose';
+}
+
+function updateScore(result) {
+  if (result === 'win') playerScore++;
+  if (result === 'lose') opScore++;
+  document.getElementById('playerScore').textContent = playerScore;
+  document.getElementById('aiScore').textContent     = opScore;
+}
+
+function showResult(result, myC, opC) {
+  statusEl.className = 'status result visible ' + result;
+  var msg = '';
+  if (result === 'win')       msg = myC && opC ? '🎉 Victoire ! ' + emojis[myC] + ' bat ' + emojis[opC] : '🎉 Victoire !';
+  else if (result === 'lose') msg = myC && opC ? '💀 Défaite... ' + emojis[opC] + ' bat ' + emojis[myC] : '💀 Défaite...';
+  else                        msg = '🤝 Égalité !';
+  statusEl.textContent = msg;
+
+  if (result === 'win') {
+    createConfetti(); playerCard.style.transform = 'scale(1.08)'; setTimeout(function() { playerCard.style.transform = 'scale(1)'; }, 400);
+  } else if (result === 'lose') {
+    aiCard.style.transform = 'scale(1.08)'; setTimeout(function() { aiCard.style.transform = 'scale(1)'; }, 400);
+  }
+}
+
+function addToHistory(result, myC, opC) { roundHistory.push({ round: currentRound, result: result, playerChoice: myC, opponentChoice: opC }); }
+function updateProgress(result) { var dots = roundsProgress.querySelectorAll('.round-dot'); if (dots[currentRound - 1]) dots[currentRound - 1].classList.add('played', result); }
+function rebuildProgressDots() {
+  var dots = roundsProgress.querySelectorAll('.round-dot'); dots.forEach(function(d){ d.className = 'round-dot'; });
+  roundHistory.forEach(function(h) { if (dots[h.round-1]) dots[h.round-1].classList.add('played', h.result); });
+}
+
+/* ══════════════════════════════════════════
+   ROUND MANAGEMENT
+══════════════════════════════════════════ */
+function startRound() {
+  roundLabelEl.textContent = 'Manche ' + currentRound + ' / ' + MAX_ROUNDS;
+
+  playerLocked   = false;
+  playerChoice   = null;
+  opponentChoice = null;
+  roundInProgress = true;
+
+  choiceBtns.forEach(function(btn){ btn.classList.remove('disabled','selected','locked'); });
+
+  playerEmojiEl.textContent = '❓'; playerLabelEl.textContent = 'En attente';
+  aiEmojiEl.textContent     = '❓'; aiLabelEl.textContent    = 'En attente';
+  playerCard.className  = 'choice-card waiting'; aiCard.className      = 'choice-card waiting';
+  playerCard.style.transform = 'scale(1)'; aiCard.style.transform     = 'scale(1)';
+  
+  timerCenter.textContent    = '0';
+  timerCenterArc.style.strokeDashoffset = CIRC;
+  timerCenterArc.style.stroke = '#fbbf24';
+  timerCenterWrap.classList.remove('visible');
+  statusEl.className   = 'status';
+  statusEl.textContent = '';
+  
+  profileHuman.className = 'profile active human-active';
+  profileAi.className = 'profile active ai-active';
+
+  if (socket && socket.connected) {
+    socket.emit('chifoumi_round_start', { room: ROOM_ID, player: MY_SLOT, round: currentRound });
+  }
+}
+
+function startNewGame() {
+  playerScore = 0; opScore = 0; currentRound = 1; gameOver = false; resultSent = false;
+  roundHistory = []; roundResults = []; roundInProgress = false;
+  document.getElementById('playerScore').textContent = '0'; document.getElementById('aiScore').textContent = '0';
+  var dots = roundsProgress.querySelectorAll('.round-dot'); dots.forEach(function(d){ d.className = 'round-dot'; });
+  updUI();
+  showToast('🎲','Partie commencée', BET_AMOUNT > 0 ? 'Mise : ' + BET_AMOUNT + ' ' + CURRENCY : '5 manches !', 2000, function() {
+    gameReady = true; startRound();
+  });
+}
+
+function showGameOver() {
+  gameOver = true; stopTimersVisuals(); stopRevealCountdown(); stopGraceTimer();
+  var title, message, modalClass, outcome;
+  if (playerScore > opScore) { title = '🏆 VICTOIRE !'; message = OP_NAME + ' a été battu ! Bravo champion !'; modalClass = 'win-modal'; outcome = 'win'; createConfetti(); createConfetti(); } 
+  else if (opScore > playerScore) { title = '💀 DÉFAITE'; message = OP_NAME + ' a gagné. Retente ta chance !'; modalClass = 'lose-modal'; outcome = 'lose'; } 
+  else { title = '🤝 ÉGALITÉ'; message = 'Match nul ! C\'était serré !'; modalClass = 'draw-modal'; outcome = 'draw'; }
+
+  modalTitle.textContent = title; finalScore.textContent = playerScore + ' - ' + opScore; finalMessage.textContent = message; modalContent.className = 'modal ' + modalClass;
+
+  if (BET_AMOUNT > 0 && outcome !== 'draw') {
+    prizeLine.style.display = 'block';
+    prizeLine.textContent = outcome === 'win' ? '🤑 +' + (BET_AMOUNT * 2 * 0.9).toFixed(0) + ' ' + CURRENCY + ' (net)' : '😓 -' + BET_AMOUNT + ' ' + CURRENCY;
+  }
+  modalHistoryList.innerHTML = '';
+  for (var i = roundHistory.length-1; i >= 0; i--) {
+    var h = roundHistory[i]; var item = document.createElement('div'); item.className = 'modal-history-item ' + h.result;
+    var re = h.result === 'win' ? '✅' : h.result === 'lose' ? '❌' : '➖';
+    var pE = emojis[h.playerChoice] || '⏱️'; var aE = emojis[h.opponentChoice] || '⏱️';
+    item.innerHTML = '<span>Manche ' + h.round + '</span><span>' + pE + ' VS ' + aE + '</span><span>' + re + '</span>';
+    modalHistoryList.appendChild(item);
+  }
+
+  gameOverModal.classList.add('show'); sendResult(outcome, 'normal');
+}
+
+function handleGameEnd(outcome, reason) {
+  if (gameOver) return;
+  gameOver = true; stopTimersVisuals(); stopRevealCountdown(); stopForfeitCountdown(); stopGraceTimer();
+  var title, message, modalClass;
+  if (outcome === 'win') { title = '🏆 VICTOIRE !'; message = 'Adversaire abandonné.'; modalClass = 'win-modal'; createConfetti(); } 
+  else { title = '💀 DÉFAITE'; message = 'Vous avez abandonné la partie.'; modalClass = 'lose-modal'; }
+  modalTitle.textContent = title; finalScore.textContent = playerScore + ' - ' + opScore; finalMessage.textContent = message; modalContent.className = 'modal ' + modalClass;
+  gameOverModal.classList.add('show'); sendResult(outcome, reason || 'forfeit');
+}
+
+function sendResult(outcome, reason) {
+  if (resultSent) return; resultSent = true;
+  var winnerId = outcome === 'win' ? MY_SUPABASE_ID : (outcome === 'lose' ? OP_SUPABASE_ID : null);
+  var loserId  = outcome === 'win' ? OP_SUPABASE_ID : (outcome === 'lose' ? MY_SUPABASE_ID : null);
+  var msg = { type: 'game_result', game: 'chifoumi', room: ROOM_ID, winner: winnerId, loser: loserId, bet: BET_AMOUNT, currency: CURRENCY, reason: reason || 'normal', p1Id: P1_ID, p2Id: P2_ID, scores: { [P1_ID]: MY_SLOT === 1 ? playerScore : opScore, [P2_ID]: MY_SLOT === 2 ? playerScore : opScore } };
+  try { window.parent.postMessage(msg, '*'); } catch(e) {}
+  if (socket && socket.connected) socket.emit('chifoumi_result', msg);
+}
+
+closeBtn.addEventListener('click', function() { try { window.parent.postMessage({ type: 'close_game' }, '*'); } catch(e) {} gameOverModal.classList.remove('show'); });
+closeBtn.addEventListener('touchend', function(e) { e.preventDefault(); try { window.parent.postMessage({ type: 'close_game' }, '*'); } catch(e) {} gameOverModal.classList.remove('show'); });
+
+function updUI() { document.getElementById('name-human').textContent = MY_NAME; document.getElementById('name-ai').textContent = OP_NAME; }
+
+if (document.readyState === 'complete' || document.readyState === 'interactive') { initSocket(); } 
+else { document.addEventListener('DOMContentLoaded', initSocket); }
+
+})();
+</script>
+</body>
+</html>
