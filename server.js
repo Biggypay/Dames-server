@@ -653,8 +653,11 @@ app.get(['/dames', '/dames.html', '/dames-online.html', '/dames_multi.html'], se
 app.get(['/dames-ai', '/dames_ai.html', '/dames-solo', '/dames-entrainement', '/dames-practice', '/dames-ia'], serveSmart(['dames_ai.html', 'dames-ai.html']));
 app.get(['/ttt', '/ttt.html', '/ttt-online.html', '/ttt_game.html'], serveSmart(['ttt_game.html', 'ttt.html', 'ttt-online.html']));
 app.get(['/quoridor', '/quoridor.html', '/quoridor-online.html', '/quoridor_multi.html'], serveSmart(['quoridor_multi.html', 'quoridor.html', 'quoridor-online.html']));
+app.get(['/quoridor-ai', '/quoridor_ai.html', '/quoridor-solo', '/quoridor-entrainement', '/quoridor-ia'], serveSmart(['quoridor_ai.html', 'quoridor-ai.html']));
 app.get(['/chifoumi', '/chifoumi.html', '/chifoumi-online.html'], serveSmart(['chifoumi-online.html', 'chifoumi.html']));
+app.get(['/chifoumi-ai', '/chifoumi_ai.html', '/chifoumi-solo', '/chifoumi-entrainement', '/chifoumi-ia'], serveSmart(['chifoumi_ai.html', 'chifoumi-ai.html']));
 app.get(['/penalty', '/penalty.html', '/penalty_shootout.html', '/penalty-online.html', '/penalty_online.html'], serveSmart(['penalty_online.html', 'penalty_shootout.html', 'penalty-online.html', 'penalty.html'], true));
+app.get(['/penalty-ai', '/penalty_ai.html', '/penalty-solo', '/penalty-entrainement', '/penalty-ia'], serveSmart(['penalty_ai.html', 'penalty-ai.html'], true));
 
 // -- REST API MATCHMAKING & AUTH --
 app.post('/auth/register', (req, res) => {
