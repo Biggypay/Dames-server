@@ -834,20 +834,31 @@ function handleDraw(){
 
 function finalizeManche(winner,humanWon){
   updUI();
-  var maxManches=isTiebreaker?6:TOTAL_MANCHES;
-  var manchesLeft=maxManches-manchesDone;
-  var matchDecided=(matchR+manchesLeft<matchW)||(matchW+manchesLeft<matchR)||manchesDone===maxManches;
+  var matchDecided;
+  if(isTiebreaker){
+    // Mort subite : la manche décisive ne tranche QUE si elle a un vainqueur.
+    // Un nul en mort subite => on rejoue une nouvelle manche décisive.
+    matchDecided=!!winner;
+  }else{
+    var manchesLeft=TOTAL_MANCHES-manchesDone;
+    matchDecided=(matchR+manchesLeft<matchW)||(matchW+manchesLeft<matchR)||manchesDone>=TOTAL_MANCHES;
+  }
 
   if(matchDecided){
     var e2=winner&&humanWon?MY_SYMBOL:(winner&&!humanWon?OP_SYMBOL:'🤝');
     var t2=winner&&humanWon?'Manche gagnée !':(winner&&!humanWon?'Manche perdue !':'Nul !');
     showToast(e2,t2,'',1500,function(){showMatchResult();});
   }else{
-    var mancheRem=maxManches-manchesDone;
     var e3=winner&&humanWon?MY_SYMBOL:(winner&&!humanWon?OP_SYMBOL:'🤝');
     var t3=winner&&humanWon?'Vous gagnez !':(winner&&!humanWon?OP_NAME+' gagne !':'Nul !');
-    var s3=mancheRem+' manche'+(mancheRem>1?'s':'')+' restante'+(mancheRem>1?'s':'');
     var nextIsMe=(mancheStarterPlayer===MY_PLAYER);
+    var s3;
+    if(isTiebreaker){
+      s3='Égalité — on rejoue la manche décisive !';
+    }else{
+      var mancheRem=TOTAL_MANCHES-manchesDone;
+      s3=mancheRem+' manche'+(mancheRem>1?'s':'')+' restante'+(mancheRem>1?'s':'');
+    }
     s3+='\n'+(nextIsMe?'Vous commencez':OP_NAME+' commence');
     showToast(e3,t3,s3,2400,function(){resetManche();});
   }
@@ -855,19 +866,19 @@ function finalizeManche(winner,humanWon){
 
 function showMatchResult(){
   stopTimer();stopGraceTimer();pendingTimerData=null;
-  matchOver=true;gameOver=true;
   var iWon=matchW>matchR,isDraw2=matchW===matchR;
   if(iWon){
+    matchOver=true;gameOver=true;
     showToast(MY_SYMBOL,'Victoire !',MY_NAME+' remporte la partie !\n'+matchW+' – '+matchR,3500,function(){createConfetti();sendResult('win','normal');});
   }else if(!isDraw2){
+    matchOver=true;gameOver=true;
     showToast(OP_SYMBOL,'Défaite',OP_NAME+' remporte la partie !\n'+matchW+' – '+matchR,3500,function(){sendResult('loss','normal');});
   }else{
-    if(!isTiebreaker){
-      isTiebreaker=true;
-      showToast('⚡','Égalité !','Manche décisive !',2500,function(){resetManche();});
-    }else{
-      showToast('🤝','Match nul !','Égalité totale après '+manchesDone+' manches.',3500,function(){sendResult('draw','normal');});
-    }
+    // Égalité après les manches réglementaires => MORT SUBITE.
+    // On ne termine PAS le match : on rejoue des manches décisives jusqu'à un vrai gagnant.
+    // (Ne pas mettre matchOver/gameOver ici, sinon la manche décisive resterait bloquée.)
+    isTiebreaker=true;
+    showToast('⚡','Égalité !','Manche décisive (mort subite) !',2500,function(){resetManche();});
   }
 }
 
@@ -887,7 +898,8 @@ function handleMatchEnd(outcome,reason){
 function resetManche(){
   stopTimer();stopGraceTimer();
   pendingTimerData=null;
-  gameReady=false;mancheOver=false;isProcessing=false;
+  // Garde-fou : une nouvelle manche (y compris la manche décisive) doit toujours être jouable.
+  gameReady=false;mancheOver=false;matchOver=false;gameOver=false;isProcessing=false;
   board=[null,null,null,null,null,null,null,null,null];
   while(piecesGroup.children.length)piecesGroup.remove(piecesGroup.children[0]);
   meshes=[null,null,null,null,null,null,null,null,null];
