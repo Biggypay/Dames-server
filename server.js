@@ -650,6 +650,7 @@ const serveSmart = (possibleNames, injectRoom = false) => (req, res) => {
 // ── LIAISONS ROUTES ──
 app.get(['/game', '/game-online.html', '/game.html'], serveSmart(['game.html', 'game-online.html']));
 app.get(['/dames', '/dames.html', '/dames-online.html', '/dames_multi.html'], serveSmart(['dames_multi.html', 'dames.html', 'dames-online.html']));
+app.get(['/dames-ai', '/dames_ai.html', '/dames-solo', '/dames-entrainement', '/dames-practice', '/dames-ia'], serveSmart(['dames_ai.html', 'dames-ai.html']));
 app.get(['/ttt', '/ttt.html', '/ttt-online.html', '/ttt_game.html'], serveSmart(['ttt_game.html', 'ttt.html', 'ttt-online.html']));
 app.get(['/quoridor', '/quoridor.html', '/quoridor-online.html', '/quoridor_multi.html'], serveSmart(['quoridor_multi.html', 'quoridor.html', 'quoridor-online.html']));
 app.get(['/chifoumi', '/chifoumi.html', '/chifoumi-online.html'], serveSmart(['chifoumi-online.html', 'chifoumi.html']));
