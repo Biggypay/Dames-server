@@ -1,0 +1,193 @@
+{
+  "name": "MindSpille — Support IA (in-app)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "minutes", "minutesInterval": 1 }
+          ]
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "name": "Toutes les minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [200, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/rpc/get_pending_support_conversations",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}" },
+            { "name": "Authorization", "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{}",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "name": "Conversations en attente",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 400]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "data",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000003",
+      "name": "Une par conversation",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [680, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{$env.ANTHROPIC_API_KEY}}" },
+            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: 'claude-haiku-4-5-20251001',\n  max_tokens: 500,\n  system: $env.MINDSPILLE_SYSTEM_PROMPT,\n  messages: [ { role: 'user', content: 'CONTEXTE JOUEUR (ne pas divulguer):\\n' + JSON.stringify({ username: $json.username, solde_HTG: $json.balance, division: $json.division, parties: $json.total_games, victoires: $json.wins, defaites: $json.losses }) + '\\n\\nHISTORIQUE RECENT:\\n' + JSON.stringify($json.recent_history) + '\\n\\nDERNIER MESSAGE DU JOUEUR:\\n' + ($json.last_message || '') + '\\n\\nReponds UNIQUEMENT par un objet JSON valide, sans texte autour, au format: {\"action\":\"reply\"|\"escalate\",\"message\":\"<message a envoyer au joueur>\",\"note\":\"<si escalate: resume du probleme pour l equipe, sinon vide>\"}' } ]\n}) }}",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000004",
+      "name": "Cerveau IA (Claude)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [920, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extrait et parse la décision JSON produite par l'IA\nconst src = $input.item.json;\nlet text = '';\ntry { text = src.content[0].text; } catch (e) { text = ''; }\nlet decision;\ntry {\n  const m = text.match(/\\{[\\s\\S]*\\}/);\n  decision = JSON.parse(m ? m[0] : text);\n} catch (e) {\n  decision = { action: 'escalate', message: \"Je transmets ta demande à l'équipe, on revient vers toi rapidement.\", note: 'Réponse IA illisible: ' + text.slice(0, 300) };\n}\n// Récupère l'id du joueur + le message source depuis la conversation d'origine\nconst conv = $('Une par conversation').item.json;\nreturn {\n  json: {\n    action: decision.action === 'escalate' ? 'escalate' : 'reply',\n    message: (decision.message || '').slice(0, 1500),\n    note: (decision.note || '').slice(0, 500),\n    user_id: conv.user_id,\n    source_message_id: conv.last_message_id\n  }\n};"
+      },
+      "id": "a1000000-0000-4000-8000-000000000005",
+      "name": "Parser la décision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1160, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "cond-1",
+              "leftValue": "={{$json.action}}",
+              "rightValue": "reply",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000006",
+      "name": "Répondre ou escalader ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1400, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/rpc/send_support_reply",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}" },
+            { "name": "Authorization", "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_user_id: $json.user_id, p_message: $json.message, p_source_message_id: $json.source_message_id }) }}",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000007",
+      "name": "Envoyer la réponse",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1660, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/rpc/flag_support_escalation",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}" },
+            { "name": "Authorization", "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_user_id: $json.user_id, p_note: ($json.note || 'Escalade support'), p_source_message_id: $json.source_message_id }) }}",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000008",
+      "name": "Escalader + répondre au joueur",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1660, 500]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/rpc/send_support_reply",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}" },
+            { "name": "Authorization", "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_user_id: $json.user_id, p_message: ($json.message || \"Je transmets ta demande à l'équipe, on revient vers toi très vite.\"), p_source_message_id: $json.source_message_id }) }}",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000009",
+      "name": "Message rassurant au joueur",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1900, 500]
+    }
+  ],
+  "connections": {
+    "Toutes les minutes": { "main": [ [ { "node": "Conversations en attente", "type": "main", "index": 0 } ] ] },
+    "Conversations en attente": { "main": [ [ { "node": "Une par conversation", "type": "main", "index": 0 } ] ] },
+    "Une par conversation": { "main": [ [ { "node": "Cerveau IA (Claude)", "type": "main", "index": 0 } ] ] },
+    "Cerveau IA (Claude)": { "main": [ [ { "node": "Parser la décision", "type": "main", "index": 0 } ] ] },
+    "Parser la décision": { "main": [ [ { "node": "Répondre ou escalader ?", "type": "main", "index": 0 } ] ] },
+    "Répondre ou escalader ?": {
+      "main": [
+        [ { "node": "Envoyer la réponse", "type": "main", "index": 0 } ],
+        [ { "node": "Escalader + répondre au joueur", "type": "main", "index": 0 } ]
+      ]
+    },
+    "Escalader + répondre au joueur": { "main": [ [ { "node": "Message rassurant au joueur", "type": "main", "index": 0 } ] ] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}

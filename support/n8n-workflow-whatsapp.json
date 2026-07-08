@@ -1,0 +1,89 @@
+{
+  "name": "MindSpille — Support IA (WhatsApp)",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": ["messages"],
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000001",
+      "name": "Message WhatsApp reçu",
+      "type": "n8n-nodes-base.whatsAppTrigger",
+      "typeVersion": 1,
+      "position": [200, 400],
+      "credentials": {
+        "whatsAppTriggerApi": { "id": "REMPLACER", "name": "MindSpille WhatsApp" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extrait le texte et l'expéditeur, quelle que soit la forme du payload WhatsApp\nconst j = $input.item.json;\nlet msg = null, from = null;\ntry {\n  const value = j.entry?.[0]?.changes?.[0]?.value || j.value || j;\n  const m = (value.messages || j.messages)?.[0];\n  if (m) { from = m.from; msg = m.text?.body || m.button?.text || m.interactive?.list_reply?.title || ''; }\n} catch (e) {}\nif (!from && j.messages) { from = j.messages[0]?.from; msg = j.messages[0]?.text?.body; }\nif (!msg) { return []; } // ignore les accusés de réception / statuts\nreturn { json: { from, text: msg } };"
+      },
+      "id": "b2000000-0000-4000-8000-000000000002",
+      "name": "Extraire le message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{$env.ANTHROPIC_API_KEY}}" },
+            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: 'claude-haiku-4-5-20251001',\n  max_tokens: 500,\n  system: $env.MINDSPILLE_SYSTEM_PROMPT + '\\n\\nCanal: WhatsApp. Le joueur n est peut-etre pas connecte a l app. Pour tout probleme d argent ou de compte precis, invite-le a ouvrir l application MindSpille et le support in-app, ou indique que tu transmets a l equipe.',\n  messages: [ { role: 'user', content: $json.text } ]\n}) }}",
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000003",
+      "name": "Cerveau IA (Claude)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const src = $input.item.json;\nlet text = \"Je transmets ta demande à l'équipe, on revient vers toi très vite.\";\ntry { text = src.content[0].text || text; } catch (e) {}\nreturn { json: { reply: text.slice(0, 3000), to: $('Extraire le message').item.json.from } };"
+      },
+      "id": "b2000000-0000-4000-8000-000000000004",
+      "name": "Préparer la réponse",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, 400]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "phoneNumberId": "={{$env.WHATSAPP_PHONE_NUMBER_ID}}",
+        "recipientPhoneNumber": "={{$json.to}}",
+        "messageType": "text",
+        "textBody": "={{$json.reply}}",
+        "additionalFields": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000005",
+      "name": "Envoyer sur WhatsApp",
+      "type": "n8n-nodes-base.whatsApp",
+      "typeVersion": 1,
+      "position": [1160, 400],
+      "credentials": {
+        "whatsAppApi": { "id": "REMPLACER", "name": "MindSpille WhatsApp" }
+      }
+    }
+  ],
+  "connections": {
+    "Message WhatsApp reçu": { "main": [ [ { "node": "Extraire le message", "type": "main", "index": 0 } ] ] },
+    "Extraire le message": { "main": [ [ { "node": "Cerveau IA (Claude)", "type": "main", "index": 0 } ] ] },
+    "Cerveau IA (Claude)": { "main": [ [ { "node": "Préparer la réponse", "type": "main", "index": 0 } ] ] },
+    "Préparer la réponse": { "main": [ [ { "node": "Envoyer sur WhatsApp", "type": "main", "index": 0 } ] ] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}
