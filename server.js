@@ -17,21 +17,38 @@ const { v4: uuid } = require('uuid');
 const app    = express();
 const server = http.createServer(app);
 const PUBLIC = path.join(__dirname, 'public');
+const crypto     = require('crypto');
 const PORT       = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'checkers_secret_2025';
-const ORIGIN     = process.env.ALLOWED_ORIGIN || '*';
+
+// ── SÉCURITÉ : secret JWT ──────────────────────────────────
+// Ne JAMAIS utiliser un secret par défaut connu (il permettrait de forger des jetons
+// pour n'importe quel joueur). À défaut de JWT_SECRET, on génère un secret aléatoire.
+const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(48).toString('hex');
+if (!process.env.JWT_SECRET) {
+  console.warn('⚠️  JWT_SECRET absent : un secret aléatoire a été généré (les jetons ne survivront pas à un redémarrage). Définissez JWT_SECRET dans Render pour la production.');
+}
+const ORIGIN          = process.env.ALLOWED_ORIGIN || '*';
+// Origines autorisées à embarquer le jeu en iframe (Lovable / domaine live). '*' = permissif.
+const FRAME_ANCESTORS = process.env.FRAME_ANCESTORS || '*';
 
 const io = new Server(server, {
-  cors: { origin: ORIGIN, methods: ['GET', 'POST'] }
+  cors: { origin: ORIGIN, methods: ['GET', 'POST'] },
+  maxHttpBufferSize: 1e5   // 100 KB max par message socket (anti-flood mémoire)
 });
 
-app.use(express.json());
+app.disable('x-powered-by');
+app.use(express.json({ limit: '64kb' }));   // limite la taille des corps de requête
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', ORIGIN);
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  // On garde frame-ancestors permissif pour l'iframe Lovable, mais on ajoute les autres protections.
   res.setHeader('X-Frame-Options', 'ALLOWALL');
-  res.setHeader('Content-Security-Policy', 'frame-ancestors *');
+  res.setHeader('Content-Security-Policy', 'frame-ancestors ' + FRAME_ANCESTORS);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
@@ -46,6 +63,60 @@ const damesRooms    = new Map();
 const quoriRooms    = new Map();
 const penaltyRooms  = new Map();
 const chifoumiRooms = new Map();
+
+// ══════════════════════════════════════════════════════════
+//  SÉCURITÉ — limiteur de débit, validation, anti-fraude
+// ══════════════════════════════════════════════════════════
+const rlStore = new Map(); // clé -> { count, resetAt }
+function rateLimit(key, max, windowMs) {
+  const now = Date.now();
+  let e = rlStore.get(key);
+  if (!e || now > e.resetAt) { e = { count: 0, resetAt: now + windowMs }; rlStore.set(key, e); }
+  e.count++;
+  return e.count <= max;
+}
+const _rlSweep = setInterval(() => {
+  const now = Date.now();
+  for (const [k, e] of rlStore) if (now > e.resetAt) rlStore.delete(k);
+}, 60000);
+if (_rlSweep.unref) _rlSweep.unref();
+
+function clientIp(req) {
+  const xf = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return xf || (req.socket && req.socket.remoteAddress) || 'unknown';
+}
+// Un identifiant de room valide (anti-injection de room / abus)
+function validRoom(r) { return typeof r === 'string' && r.length > 0 && r.length <= 100 && /^[\w:.\-]+$/.test(r); }
+// Raison de fin normalisée (on n'accepte pas une chaîne arbitraire du client)
+function safeReason(r) { return ['normal','forfeit','timeout','draw','resign','checkmate','both_disconnected'].includes(r) ? r : 'normal'; }
+
+// ANTI-SPOOF DE RÉSULTAT : le socket qui émet doit être un joueur RÉEL de la room.
+function socketIsPlayer(room, socketId) {
+  return !!(room && room.players && (
+    (room.players[1] && room.players[1].socketId === socketId) ||
+    (room.players[2] && room.players[2].socketId === socketId)
+  ));
+}
+// Le gagnant déclaré doit correspondre à un joueur RÉEL de la room (selon le serveur),
+// sinon 0 (nul) : impossible de créditer un compte qui ne joue pas dans cette room.
+function resolveWinnerSlot(room, data) {
+  if (!data || data.result === 'draw' || data.winner === 'draw' || !data.winner) return 0;
+  const s1 = room.players[1] && room.players[1].supabaseId;
+  const s2 = room.players[2] && room.players[2].supabaseId;
+  if (s1 && data.winner === s1) return 1;
+  if (s2 && data.winner === s2) return 2;
+  return 0;
+}
+// Limiteur d'événements socket sensibles (anti-flood ciblé)
+function socketAllow(socketId, tag, max, windowMs) { return rateLimit('sock:' + tag + ':' + socketId, max, windowMs); }
+
+// Limiteur HTTP anti brute-force / credential stuffing sur l'authentification
+function authRateLimit(req, res, next) {
+  if (!rateLimit('auth:' + clientIp(req), 12, 5 * 60 * 1000)) {
+    return res.status(429).json({ error: 'Trop de tentatives. Réessayez dans quelques minutes.' });
+  }
+  next();
+}
 
 // ── MOTEUR DAMES 10x10 (API REST legacy) ─────────────────
 const EMPTY = 0, WHITE = 1, BLACK = 2, WKING = 3, BKING = 4;
@@ -660,7 +731,7 @@ app.get(['/penalty', '/penalty.html', '/penalty_shootout.html', '/penalty-online
 app.get(['/penalty-ai', '/penalty_ai.html', '/penalty-solo', '/penalty-entrainement', '/penalty-ia'], serveSmart(['penalty_ai.html', 'penalty-ai.html'], true));
 
 // -- REST API MATCHMAKING & AUTH --
-app.post('/auth/register', (req, res) => {
+app.post('/auth/register', authRateLimit, (req, res) => {
   const { username, password, supabaseId } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Champs requis' });
   for (const u of users.values()) if (u.username === username) return res.status(409).json({ error: 'Nom déjà pris' });
@@ -670,7 +741,7 @@ app.post('/auth/register', (req, res) => {
   res.json({ token, userId: id, username });
 });
 
-app.post('/auth/login', (req, res) => {
+app.post('/auth/login', authRateLimit, (req, res) => {
   const { username, password, supabaseId } = req.body;
   const user = [...users.values()].find(u => u.username === username);
   if (!user || !bcrypt.compareSync(password, user.password)) return res.status(401).json({ error: 'Identifiants incorrects' });
@@ -778,6 +849,14 @@ app.post('/games/:id/resign', requireAuth, (req, res) => {
 // ══════════════════════════════════════════════════════════
 io.on('connection', (socket) => {
 
+  // Anti-flood : un socket qui envoie un volume anormal d'événements est déconnecté.
+  // Seuil très large (500 / 10 s) : les vrais joueurs ne l'atteignent jamais, seuls les bots.
+  socket.onAny(() => {
+    if (!socketAllow(socket.id, 'any', 500, 10000)) {
+      try { socket.disconnect(true); } catch (e) {}
+    }
+  });
+
   socket.on('auth', ({ token }) => {
     try { const { userId } = jwt.verify(token, JWT_SECRET); socketUsers.set(socket.id, userId); socket.userId = userId; socket.emit('auth:ok', { userId }); }
     catch { socket.emit('auth:error', { message: 'Token invalide' }); }
@@ -872,12 +951,13 @@ io.on('connection', (socket) => {
   });
 
   socket.on('dames_result', (data) => {
+    if (!data || !validRoom(data.room)) return;
+    if (!socketAllow(socket.id, 'result', 15, 10000)) return;
     const droom = damesRooms.get(data.room);
     if (!droom) return;
-    let winnerSlot = 0;
-    if (data.result === 'draw' || data.winner === 'draw' || !data.winner) winnerSlot = 0;
-    else winnerSlot = data.winner === data.p1Id ? 1 : 2;
-    notifyDamesRoomOver(droom, data.room, winnerSlot, data.reason || 'normal');
+    if (!socketIsPlayer(droom, socket.id)) return;      // anti-spoof : l'émetteur doit être un joueur de la room
+    const winnerSlot = resolveWinnerSlot(droom, data);  // le gagnant doit être un joueur réel (sinon nul)
+    notifyDamesRoomOver(droom, data.room, winnerSlot, safeReason(data.reason));
   });
 
   // ══════════════════════════════════════════════════════
@@ -971,12 +1051,13 @@ io.on('connection', (socket) => {
   });
 
   socket.on('ttt_result', (data) => {
+    if (!data || !validRoom(data.room)) return;
+    if (!socketAllow(socket.id, 'result', 15, 10000)) return;
     const troom = tttRooms.get(data.room);
     if (!troom) return;
-    let winnerSlot = 0;
-    if (data.result === 'draw' || data.winner === 'draw' || !data.winner) winnerSlot = 0;
-    else winnerSlot = data.winner === data.p1Id ? 1 : 2;
-    notifyTTTRoomOver(troom, data.room, winnerSlot, data.reason || 'normal');
+    if (!socketIsPlayer(troom, socket.id)) return;
+    const winnerSlot = resolveWinnerSlot(troom, data);
+    notifyTTTRoomOver(troom, data.room, winnerSlot, safeReason(data.reason));
   });
 
   // ══════════════════════════════════════════════════════
@@ -1051,12 +1132,13 @@ io.on('connection', (socket) => {
   });
 
   socket.on('quoridor_result', (data) => {
+    if (!data || !validRoom(data.room)) return;
+    if (!socketAllow(socket.id, 'result', 15, 10000)) return;
     const qroom = quoriRooms.get(data.room);
     if (!qroom) return;
-    let winnerSlot = 0;
-    if (data.result === 'draw' || data.winner === 'draw' || !data.winner) winnerSlot = 0;
-    else winnerSlot = data.winner === data.p1Id ? 1 : 2;
-    notifyQuoriRoomOver(qroom, data.room, winnerSlot, data.reason || 'normal');
+    if (!socketIsPlayer(qroom, socket.id)) return;
+    const winnerSlot = resolveWinnerSlot(qroom, data);
+    notifyQuoriRoomOver(qroom, data.room, winnerSlot, safeReason(data.reason));
   });
 
   // ══════════════════════════════════════════════════════
@@ -1146,12 +1228,13 @@ io.on('connection', (socket) => {
   });
 
   socket.on('penalty_result', (data) => {
+    if (!data || !validRoom(data.room)) return;
+    if (!socketAllow(socket.id, 'result', 15, 10000)) return;
     const proom = penaltyRooms.get(data.room);
     if (!proom) return;
-    let winnerSlot = 0;
-    if (data.result === 'draw' || data.winner === 'draw' || !data.winner) winnerSlot = 0;
-    else winnerSlot = data.winner === data.p1Id ? 1 : 2;
-    notifyPenaltyRoomOver(proom, data.room, winnerSlot, data.reason || 'normal');
+    if (!socketIsPlayer(proom, socket.id)) return;
+    const winnerSlot = resolveWinnerSlot(proom, data);
+    notifyPenaltyRoomOver(proom, data.room, winnerSlot, safeReason(data.reason));
   });
 
   // ══════════════════════════════════════════════════════
@@ -1241,11 +1324,12 @@ io.on('connection', (socket) => {
   });
 
   socket.on('chifoumi_result', (data) => {
+    if (!data || !validRoom(data.room)) return;
+    if (!socketAllow(socket.id, 'result', 15, 10000)) return;
     const croom = chifoumiRooms.get(data.room); if (!croom) return;
-    let winnerSlot = 0;
-    if (data.result === 'draw' || data.winner === 'draw' || !data.winner) winnerSlot = 0;
-    else winnerSlot = data.winner === data.p1Id ? 1 : 2;
-    notifyChifoumiRoomOver(croom, data.room, winnerSlot, data.reason || 'normal');
+    if (!socketIsPlayer(croom, socket.id)) return;
+    const winnerSlot = resolveWinnerSlot(croom, data);
+    notifyChifoumiRoomOver(croom, data.room, winnerSlot, safeReason(data.reason));
   });
 
   // ══════════════════════════════════════════════════════
