@@ -52,29 +52,28 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "https://api.anthropic.com/v1/messages",
+        "url": "https://api.openai.com/v1/chat/completions",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "x-api-key", "value": "={{$env.ANTHROPIC_API_KEY}}" },
-            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "Authorization", "value": "=Bearer {{$env.OPENAI_API_KEY}}" },
             { "name": "Content-Type", "value": "application/json" }
           ]
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({\n  model: 'claude-haiku-4-5-20251001',\n  max_tokens: 500,\n  system: $env.MINDSPILLE_SYSTEM_PROMPT,\n  messages: [ { role: 'user', content: 'CONTEXTE JOUEUR (ne pas divulguer):\\n' + JSON.stringify({ username: $json.username, solde_HTG: $json.balance, division: $json.division, parties: $json.total_games, victoires: $json.wins, defaites: $json.losses }) + '\\n\\nHISTORIQUE RECENT:\\n' + JSON.stringify($json.recent_history) + '\\n\\nDERNIER MESSAGE DU JOUEUR:\\n' + ($json.last_message || '') + '\\n\\nReponds UNIQUEMENT par un objet JSON valide, sans texte autour, au format: {\"action\":\"reply\"|\"escalate\",\"message\":\"<message a envoyer au joueur>\",\"note\":\"<si escalate: resume du probleme pour l equipe, sinon vide>\"}' } ]\n}) }}",
+        "jsonBody": "={{ JSON.stringify({\n  model: 'gpt-4o-mini',\n  max_tokens: 500,\n  response_format: { type: 'json_object' },\n  messages: [\n    { role: 'system', content: $env.MINDSPILLE_SYSTEM_PROMPT },\n    { role: 'user', content: 'CONTEXTE JOUEUR (ne pas divulguer):\\n' + JSON.stringify({ username: $json.username, solde_HTG: $json.balance, division: $json.division, parties: $json.total_games, victoires: $json.wins, defaites: $json.losses }) + '\\n\\nHISTORIQUE RECENT:\\n' + JSON.stringify($json.recent_history) + '\\n\\nDERNIER MESSAGE DU JOUEUR:\\n' + ($json.last_message || '') + '\\n\\nReponds UNIQUEMENT par un objet JSON valide, sans texte autour, au format: {\"action\":\"reply\"|\"escalate\",\"message\":\"<message a envoyer au joueur>\",\"note\":\"<si escalate: resume du probleme pour l equipe, sinon vide>\"}' }\n  ]\n}) }}",
         "options": {}
       },
       "id": "a1000000-0000-4000-8000-000000000004",
-      "name": "Cerveau IA (Claude)",
+      "name": "Cerveau IA (OpenAI)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [920, 400]
     },
     {
       "parameters": {
-        "jsCode": "// Extrait et parse la décision JSON produite par l'IA\nconst src = $input.item.json;\nlet text = '';\ntry { text = src.content[0].text; } catch (e) { text = ''; }\nlet decision;\ntry {\n  const m = text.match(/\\{[\\s\\S]*\\}/);\n  decision = JSON.parse(m ? m[0] : text);\n} catch (e) {\n  decision = { action: 'escalate', message: \"Je transmets ta demande à l'équipe, on revient vers toi rapidement.\", note: 'Réponse IA illisible: ' + text.slice(0, 300) };\n}\n// Récupère l'id du joueur + le message source depuis la conversation d'origine\nconst conv = $('Une par conversation').item.json;\nreturn {\n  json: {\n    action: decision.action === 'escalate' ? 'escalate' : 'reply',\n    message: (decision.message || '').slice(0, 1500),\n    note: (decision.note || '').slice(0, 500),\n    user_id: conv.user_id,\n    source_message_id: conv.last_message_id\n  }\n};"
+        "jsCode": "// Extrait et parse la décision JSON produite par l'IA\nconst src = $input.item.json;\nlet text = '';\ntry { text = src.choices[0].message.content; } catch (e) { text = ''; }\nlet decision;\ntry {\n  const m = text.match(/\\{[\\s\\S]*\\}/);\n  decision = JSON.parse(m ? m[0] : text);\n} catch (e) {\n  decision = { action: 'escalate', message: \"Je transmets ta demande à l'équipe, on revient vers toi rapidement.\", note: 'Réponse IA illisible: ' + text.slice(0, 300) };\n}\n// Récupère l'id du joueur + le message source depuis la conversation d'origine\nconst conv = $('Une par conversation').item.json;\nreturn {\n  json: {\n    action: decision.action === 'escalate' ? 'escalate' : 'reply',\n    message: (decision.message || '').slice(0, 1500),\n    note: (decision.note || '').slice(0, 500),\n    user_id: conv.user_id,\n    source_message_id: conv.last_message_id\n  }\n};"
       },
       "id": "a1000000-0000-4000-8000-000000000005",
       "name": "Parser la décision",
@@ -177,8 +176,8 @@
   "connections": {
     "Toutes les minutes": { "main": [ [ { "node": "Conversations en attente", "type": "main", "index": 0 } ] ] },
     "Conversations en attente": { "main": [ [ { "node": "Une par conversation", "type": "main", "index": 0 } ] ] },
-    "Une par conversation": { "main": [ [ { "node": "Cerveau IA (Claude)", "type": "main", "index": 0 } ] ] },
-    "Cerveau IA (Claude)": { "main": [ [ { "node": "Parser la décision", "type": "main", "index": 0 } ] ] },
+    "Une par conversation": { "main": [ [ { "node": "Cerveau IA (OpenAI)", "type": "main", "index": 0 } ] ] },
+    "Cerveau IA (OpenAI)": { "main": [ [ { "node": "Parser la décision", "type": "main", "index": 0 } ] ] },
     "Parser la décision": { "main": [ [ { "node": "Répondre ou escalader ?", "type": "main", "index": 0 } ] ] },
     "Répondre ou escalader ?": {
       "main": [

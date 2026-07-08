@@ -9,7 +9,7 @@ Un seul **cerveau** (IA + base de connaissances), deux **canaux** :
 
 ```
                  ┌──────────────────────────────┐
-   Joueur ─────► │  n8n : le cerveau (Claude)   │ ◄───── system-prompt.md
+   Joueur ─────► │  n8n : le cerveau (OpenAI)   │ ◄───── system-prompt.md
   (app / WA)     │  + knowledge-base.md         │
                  └───────┬───────────────┬──────┘
                          │ reply         │ escalate
@@ -31,8 +31,9 @@ Un seul **cerveau** (IA + base de connaissances), deux **canaux** :
 
 ## Étape 0 — Ce que tu dois fournir
 
-- **Une clé API LLM.** Les workflows sont écrits pour **Claude (Anthropic)** — variable `ANTHROPIC_API_KEY`.
-  (Pour utiliser OpenAI à la place, voir la section « Utiliser OpenAI » plus bas.)
+- **Une clé API LLM.** Les workflows sont écrits pour **OpenAI** — variable `OPENAI_API_KEY`
+  (modèle `gpt-4o-mini`). Récupère la clé sur https://platform.openai.com/api-keys.
+  (Pour utiliser Claude à la place, voir la section « Utiliser Claude » plus bas.)
 - **La clé `service_role` Supabase** du projet MindSpille (Réglages → API → `service_role`).
   ⚠️ Secrète, ne jamais l'exposer côté client — elle ne vit que dans n8n.
 - **(WhatsApp uniquement)** un compte **Meta WhatsApp Business Cloud API** (voir Étape 3).
@@ -48,7 +49,7 @@ Dans n8n : **Settings → Variables** (ou variables d'environnement de ton hébe
 |---|---|
 | `SUPABASE_URL` | `https://drmqjycbadnkbobfsxwp.supabase.co` |
 | `SUPABASE_SERVICE_ROLE_KEY` | ta clé `service_role` |
-| `ANTHROPIC_API_KEY` | ta clé Anthropic |
+| `OPENAI_API_KEY` | ta clé OpenAI |
 | `MINDSPILLE_SYSTEM_PROMPT` | tout le contenu de `system-prompt.md` **+** `knowledge-base.md` collés à la suite |
 
 > Astuce : mets d'abord le system prompt, puis « --- BASE DE CONNAISSANCES --- », puis la base de connaissances,
@@ -98,20 +99,20 @@ Prérequis Meta (https://developers.facebook.com) :
 
 ---
 
-## Utiliser OpenAI au lieu de Claude
+## Utiliser Claude (Anthropic) au lieu d'OpenAI
 
 Dans le nœud « Cerveau IA », remplace :
-- URL → `https://api.openai.com/v1/chat/completions`
-- En-têtes → un seul : `Authorization: Bearer {{$env.OPENAI_API_KEY}}`
-- Corps JSON → `{ model: 'gpt-4o-mini', messages: [ {role:'system', content: $env.MINDSPILLE_SYSTEM_PROMPT}, {role:'user', content: ...} ] }`
-- Dans « Parser la décision », lis `src.choices[0].message.content` au lieu de `src.content[0].text`.
+- URL → `https://api.anthropic.com/v1/messages`
+- En-têtes → `x-api-key: {{$env.ANTHROPIC_API_KEY}}` + `anthropic-version: 2023-06-01`
+- Corps JSON → `{ model: 'claude-haiku-4-5-20251001', max_tokens: 500, system: $env.MINDSPILLE_SYSTEM_PROMPT, messages: [ {role:'user', content: ...} ] }`
+- Dans « Parser la décision », lis `src.content[0].text` au lieu de `src.choices[0].message.content`.
 
 ---
 
 ## Checklist de mise en production
 
 - [ ] `knowledge-base.md` complété (plus aucun `⚠️ À PERSONNALISER`).
-- [ ] Variables n8n définies (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `ANTHROPIC_API_KEY`, `MINDSPILLE_SYSTEM_PROMPT`).
+- [ ] Variables n8n définies (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY`, `MINDSPILLE_SYSTEM_PROMPT`).
 - [ ] Workflow in-app testé sur un compte de test, puis activé.
 - [ ] Tu reçois bien les notifications d'escalade.
 - [ ] (WhatsApp) credential Meta OK, webhook vérifié, testé, activé.

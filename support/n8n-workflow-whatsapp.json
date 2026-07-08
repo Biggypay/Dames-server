@@ -28,29 +28,28 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "https://api.anthropic.com/v1/messages",
+        "url": "https://api.openai.com/v1/chat/completions",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "x-api-key", "value": "={{$env.ANTHROPIC_API_KEY}}" },
-            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "Authorization", "value": "=Bearer {{$env.OPENAI_API_KEY}}" },
             { "name": "Content-Type", "value": "application/json" }
           ]
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({\n  model: 'claude-haiku-4-5-20251001',\n  max_tokens: 500,\n  system: $env.MINDSPILLE_SYSTEM_PROMPT + '\\n\\nCanal: WhatsApp. Le joueur n est peut-etre pas connecte a l app. Pour tout probleme d argent ou de compte precis, invite-le a ouvrir l application MindSpille et le support in-app, ou indique que tu transmets a l equipe.',\n  messages: [ { role: 'user', content: $json.text } ]\n}) }}",
+        "jsonBody": "={{ JSON.stringify({\n  model: 'gpt-4o-mini',\n  max_tokens: 500,\n  messages: [\n    { role: 'system', content: $env.MINDSPILLE_SYSTEM_PROMPT + '\\n\\nCanal: WhatsApp. Le joueur n est peut-etre pas connecte a l app. Pour tout probleme d argent ou de compte precis, invite-le a ouvrir l application MindSpille et le support in-app, ou indique que tu transmets a l equipe.' },\n    { role: 'user', content: $json.text }\n  ]\n}) }}",
         "options": {}
       },
       "id": "b2000000-0000-4000-8000-000000000003",
-      "name": "Cerveau IA (Claude)",
+      "name": "Cerveau IA (OpenAI)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [680, 400]
     },
     {
       "parameters": {
-        "jsCode": "const src = $input.item.json;\nlet text = \"Je transmets ta demande à l'équipe, on revient vers toi très vite.\";\ntry { text = src.content[0].text || text; } catch (e) {}\nreturn { json: { reply: text.slice(0, 3000), to: $('Extraire le message').item.json.from } };"
+        "jsCode": "const src = $input.item.json;\nlet text = \"Je transmets ta demande à l'équipe, on revient vers toi très vite.\";\ntry { text = src.choices[0].message.content || text; } catch (e) {}\nreturn { json: { reply: text.slice(0, 3000), to: $('Extraire le message').item.json.from } };"
       },
       "id": "b2000000-0000-4000-8000-000000000004",
       "name": "Préparer la réponse",
@@ -80,8 +79,8 @@
   ],
   "connections": {
     "Message WhatsApp reçu": { "main": [ [ { "node": "Extraire le message", "type": "main", "index": 0 } ] ] },
-    "Extraire le message": { "main": [ [ { "node": "Cerveau IA (Claude)", "type": "main", "index": 0 } ] ] },
-    "Cerveau IA (Claude)": { "main": [ [ { "node": "Préparer la réponse", "type": "main", "index": 0 } ] ] },
+    "Extraire le message": { "main": [ [ { "node": "Cerveau IA (OpenAI)", "type": "main", "index": 0 } ] ] },
+    "Cerveau IA (OpenAI)": { "main": [ [ { "node": "Préparer la réponse", "type": "main", "index": 0 } ] ] },
     "Préparer la réponse": { "main": [ [ { "node": "Envoyer sur WhatsApp", "type": "main", "index": 0 } ] ] }
   },
   "settings": { "executionOrder": "v1" },
