@@ -160,9 +160,9 @@ window.onerror=function(msg,url,line,col,err){
 var P = new URLSearchParams(window.location.search);
 // ── MODE ENTRAÎNEMENT vs IA (aucun argent, aucun réseau) ──
 // L'humain est TOUJOURS Blanc (joue en premier), l'IA est Rouge.
-var DIFFICULTY = (P.get('difficulty') || P.get('level') || 'hard').toLowerCase();
+var DIFFICULTY = (P.get('difficulty') || P.get('level') || 'expert').toLowerCase();
 if(DIFFICULTY === 'max' || DIFFICULTY === 'extreme') DIFFICULTY = 'expert';
-if(['easy','medium','hard','expert'].indexOf(DIFFICULTY) < 0) DIFFICULTY = 'hard';
+if(['easy','medium','hard','expert'].indexOf(DIFFICULTY) < 0) DIFFICULTY = 'expert';
 var AI_DEBUG = !!P.get('debug');
 
 var ROOM_ID = 'solo-ia';
@@ -1286,6 +1286,7 @@ function DamesEngineFactory(){
     var mat=(wp-rp)*100+(wk-rk)*330;
     var s=mat+Math.round(mat*(40-total)*0.006); // simplifier quand on mène
     var backBonus= total>24?12:(total>16?7:0);
+    var wL=0,wR=0,rL=0,rR=0; // équilibre des ailes (pions)
     for(i=0;i<50;i++){
       p=b[i]; if(p===0) continue;
       r=ROW[i]; c=COL[i];
@@ -1294,16 +1295,22 @@ function DamesEngineFactory(){
         if(r===9) s+=backBonus;
         if(c===0||c===9) s-=3; else if(r>=3&&r<=6&&c>=2&&c<=7) s+=4;
         if(r<=2) s+=(3-r)*4;
+        if(c<5) wL++; else wR++;
       } else if(p===3){
         s-=r*2;
         if(r===0) s-=backBonus;
         if(c===0||c===9) s+=3; else if(r>=3&&r<=6&&c>=2&&c<=7) s-=4;
         if(r>=7) s-=(r-6)*4;
+        if(c<5) rL++; else rR++;
       } else if(p===2){
         s+=9-(((r+r-9<0?9-r-r:r+r-9)+(c+c-9<0?9-c-c:c+c-9))>>1);
       } else {
         s-=9-(((r+r-9<0?9-r-r:r+r-9)+(c+c-9<0?9-c-c:c+c-9))>>1);
       }
+    }
+    if(total>=14){ // aile dégarnie = faiblesse (pertinent tant qu'il reste des pions)
+      var wb=wL-wR; if(wb<0)wb=-wb; if(wb>=3) s-=(wb-2)*5;
+      var rb=rL-rR; if(rb<0)rb=-rb; if(rb>=3) s+=(rb-2)*5;
     }
     if(total<=12){
       var wm=wp*100+wk*330, rm=rp*100+rk*330;
@@ -1313,10 +1320,18 @@ function DamesEngineFactory(){
     return s;
   }
 
-  var TT=new Map(), HIST=new Int32Array(2500);
+  var TT=new Map(), HIST=new Int32Array(2500), KILL=new Int32Array(128);
   var nodeCount=0, abortAt=0, aborted=false;
 
   function histCmp(a,b){ return HIST[b.f*50+b.t]-HIST[a.f*50+a.t]; }
+  function toFront(moves,mv){
+    for(var x=0;x<moves.length;x++){
+      if(moves[x].f*50+moves[x].t===mv){
+        if(x>0){ var tmp=moves[x]; for(var y=x;y>0;y--) moves[y]=moves[y-1]; moves[0]=tmp; }
+        return;
+      }
+    }
+  }
 
   function search(b,side,depth,alpha,beta){
     nodeCount++;
@@ -1336,25 +1351,35 @@ function DamesEngineFactory(){
         if(alpha>=beta) return te.s;
       }
     }
+    var kd=depth>63?63:(depth<1?1:depth);
     if(moves.length>1){
-      if(!capt&&depth>=3) moves.sort(histCmp);
-      if(te&&te.mv>=0){
-        for(var x=0;x<moves.length;x++){
-          if(moves[x].f*50+moves[x].t===te.mv){
-            if(x>0){ var tmp=moves[x]; for(var y=x;y>0;y--) moves[y]=moves[y-1]; moves[0]=tmp; }
-            break;
-          }
-        }
+      if(!capt&&depth>=3){
+        moves.sort(histCmp);
+        if(KILL[kd*2+1]) toFront(moves,KILL[kd*2+1]);   // coups tueurs en tête
+        if(KILL[kd*2])   toFront(moves,KILL[kd*2]);
       }
+      if(te&&te.mv>=0) toFront(moves,te.mv);            // meilleur coup connu d'abord
     }
     var best=-Infinity, bestMv=-1, a0=alpha, i, sc;
     for(i=0;i<moves.length;i++){
-      sc=-search(applyMove(b,moves[i]),1-side,depth-1,-beta,-alpha);
+      var child=applyMove(b,moves[i]);
+      // LMR : les coups calmes tardifs sont d'abord cherchés réduits (fenêtre nulle) ;
+      // on refait la recherche complète seulement s'ils dépassent alpha.
+      if(!capt&&depth>=3&&i>=3&&isFinite(alpha)){
+        sc=-search(child,1-side,depth-2,-alpha-1,-alpha);
+        if(!aborted&&sc>alpha) sc=-search(child,1-side,depth-1,-beta,-alpha);
+      } else {
+        sc=-search(child,1-side,depth-1,-beta,-alpha);
+      }
       if(aborted) return 0;
       if(sc>best){ best=sc; bestMv=moves[i].f*50+moves[i].t; }
       if(best>alpha) alpha=best;
       if(alpha>=beta){
-        if(!capt) HIST[moves[i].f*50+moves[i].t]+=depth*depth;
+        if(!capt){
+          var mvc=moves[i].f*50+moves[i].t;
+          HIST[mvc]+=depth*depth;
+          if(KILL[kd*2]!==mvc){ KILL[kd*2+1]=KILL[kd*2]; KILL[kd*2]=mvc; }
+        }
         break;
       }
     }
@@ -1368,7 +1393,7 @@ function DamesEngineFactory(){
      Approfondissement itératif jusqu'à épuisement du budget temps. */
   function rankRoot(children,budget,maxDepth){
     abortAt=Date.now()+budget; aborted=false; nodeCount=0;
-    HIST=new Int32Array(2500);
+    HIST=new Int32Array(2500); KILL=new Int32Array(128);
     if(TT.size>1200000) TT.clear();
     var n=children.length, order=new Array(n), i;
     for(i=0;i<n;i++) order[i]=i;
@@ -1407,8 +1432,8 @@ function DamesEngineFactory(){
 var AI_LEVELS={
   easy:  { budget:120,  maxDepth:6,  margin:60, openMargin:60, rnd:0.25, syncBudget:100 },
   medium:{ budget:450,  maxDepth:16, margin:12, openMargin:20, rnd:0,    syncBudget:300 },
-  hard:  { budget:1500, maxDepth:26, margin:0,  openMargin:10, rnd:0,    syncBudget:650 },
-  expert:{ budget:2800, maxDepth:34, margin:0,  openMargin:6,  rnd:0,    syncBudget:900 }
+  hard:  { budget:1500, maxDepth:30, margin:0,  openMargin:10, rnd:0,    syncBudget:650 },
+  expert:{ budget:4000, maxDepth:40, margin:0,  openMargin:4,  rnd:0,    syncBudget:1200 }
 };
 
 var aiReqId=0, aiPending=null, aiMoveCount=0;
