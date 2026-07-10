@@ -160,8 +160,10 @@ window.onerror=function(msg,url,line,col,err){
 var P = new URLSearchParams(window.location.search);
 // ── MODE ENTRAÎNEMENT vs IA (aucun argent, aucun réseau) ──
 // L'humain est TOUJOURS Blanc (joue en premier), l'IA est Rouge.
-var DIFFICULTY = (P.get('difficulty') || P.get('level') || 'medium').toLowerCase();
-if(['easy','medium','hard'].indexOf(DIFFICULTY) < 0) DIFFICULTY = 'medium';
+var DIFFICULTY = (P.get('difficulty') || P.get('level') || 'hard').toLowerCase();
+if(DIFFICULTY === 'max' || DIFFICULTY === 'extreme') DIFFICULTY = 'expert';
+if(['easy','medium','hard','expert'].indexOf(DIFFICULTY) < 0) DIFFICULTY = 'hard';
+var AI_DEBUG = !!P.get('debug');
 
 var ROOM_ID = 'solo-ia';
 var MY_SLOT = 1;
@@ -814,9 +816,15 @@ function executeRemoteSequence(steps, isComplete) {
   if(!steps || steps.length === 0) return;
   isProcessing = true; clearHighlights();
   var stepIdx = 0;
-  
+  var startPiece = board[steps[0].from.row][steps[0].from.col];
+  var seqWasPawnMove = startPiece ? !startPiece.king : false;
+  var seqCaptured = 0;
+  for(var si=0; si<steps.length; si++) if(steps[si].to.captures) seqCaptured += steps[si].to.captures.length;
+
   function nextStep() {
     if(stepIdx >= steps.length) {
+      if(seqCaptured > 0 || seqWasPawnMove) idleMoves = 0; else idleMoves++;
+      if(idleMoves >= 50){ handleGameEnd(-1, 'draw'); return; }
       var winner = checkGameOver();
       if(winner >= 0){ handleGameEnd(winner, 'normal'); return; }
       if(isComplete) currentPlayer = MY_PLAYER;
@@ -848,7 +856,9 @@ function executeRemoteSequence(steps, isComplete) {
           else { cc++; expNext(); }
         } else {
           updateCapturedDisplay();
-          if(!piece.king) {
+          // Promotion uniquement si la pièce TERMINE son coup sur la dernière rangée
+          // (un pion qui traverse la rangée de promotion pendant une rafle reste un pion).
+          if(!piece.king && stepIdx === steps.length - 1) {
             if((piece.player === 0 && step.to.row === 0) || (piece.player === 1 && step.to.row === BS-1)) {
               piece.king = true; if(mesh) promotePiece(mesh);
             }
@@ -903,12 +913,13 @@ function updUI(){
 function startMultiGame(){
   gameReady=false; gameOver=false; isProcessing=false; resultSent=false;
   selectedPiece=null; validMoves=[]; currentPlayer=0; moveSequence=[]; isSequenceActive=false; pendingTimerData=null;
+  idleMoves=0; currentTurnCaptures=[]; aiReqId++; aiPending=null; aiMoveCount=0;
   camTheta=MY_PLAYER===0?0:Math.PI; camPhi=0.72; camD=22; setCam();
   capturedBy=[0,0];
   initBoard(); syncPieces(); clearHighlights(); clearLastMove(); stopTimer(); stopGraceTimer();
   updateCapturedDisplay(); stopForfeitCountdown();
   
-  var diffLbl = DIFFICULTY==='easy' ? 'Facile' : DIFFICULTY==='hard' ? 'Difficile' : 'Moyen';
+  var diffLbl = DIFFICULTY==='easy' ? 'Facile' : DIFFICULTY==='medium' ? 'Moyen' : DIFFICULTY==='expert' ? 'Expert' : 'Difficile';
   showToast('🎲','Entraînement', 'Vous commencez (Blancs)\nIA : niveau '+diffLbl, 2400, function(){
     gameReady = true; updUI(); startTimer(true, Date.now());
   });
@@ -1073,10 +1084,16 @@ function renderLoop(){
 renderLoop();
 
 /* ══════════════════════════════════════════
-   INTELLIGENCE ARTIFICIELLE (negamax + alpha-bêta)
-   Utilise le MÊME moteur de règles que le jeu 3D
-   (getJumpsFrom / getMaxJumpDepth / getAllValidMoves),
-   donc l'IA joue exactement selon les règles de ce jeu.
+   INTELLIGENCE ARTIFICIELLE
+   ─ Les coups JOUABLES sont toujours générés par le MÊME moteur
+     de règles que le jeu 3D (getJumpsFrom / getAllValidMoves via
+     ai_genMoves) : l'IA ne peut jamais jouer un coup illégal.
+   ─ Le CHOIX du coup est fait par un moteur rapide (plateau
+     compact 50 cases) : approfondissement itératif + negamax
+     alpha-bêta + table de transposition + extension des rafles
+     (quiescence) + évaluation positionnelle. Il tourne dans un
+     Web Worker pour ne pas bloquer le rendu 3D (repli synchrone
+     si les Workers sont indisponibles).
 ══════════════════════════════════════════ */
 function ai_clone(b){ var nb=[]; for(var r=0;r<BS;r++){nb[r]=[];for(var c=0;c<BS;c++){var x=b[r][c]; nb[r][c]=x?{player:x.player,king:x.king,dying:false}:null;}} return nb; }
 function ai_with(tmp,fn){ var s=board; board=tmp; try{return fn();}finally{board=s;} }
@@ -1088,8 +1105,10 @@ function ai_expand(bClone,player,origin,curPos,king,capturedSoFar,steps,out){
     var f=[]; for(var i=0;i<conts.length;i++) if(depths[i]===maxD) f.push(conts[i]); conts=f;
   }
   if(conts.length===0){
+    // ai_clone remet dying à false : il faut lire les drapeaux sur bClone
+    // (sinon les pièces capturées restent sur le plateau final !)
     var fb=ai_clone(bClone);
-    for(var r=0;r<BS;r++)for(var c=0;c<BS;c++) if(fb[r][c]&&fb[r][c].dying) fb[r][c]=null;
+    for(var r=0;r<BS;r++)for(var c=0;c<BS;c++) if(bClone[r][c]&&bClone[r][c].dying) fb[r][c]=null;
     var pc=fb[curPos.row][curPos.col];
     if(pc&&!pc.king&&((player===0&&curPos.row===0)||(player===1&&curPos.row===BS-1))) pc.king=true;
     out.push({steps:steps.slice(),finalBoard:fb}); return;
@@ -1117,38 +1136,382 @@ function ai_genMoves(b0,player){
   var starts=ai_with(b0,function(){ return getAllValidMoves(player); });
   var out=[]; for(var i=0;i<starts.moves.length;i++) ai_startMove(b0,player,starts.moves[i].from,starts.moves[i].to,out); return out;
 }
-function ai_capCount(m){ var s=m.steps[m.steps.length-1]; return s.to.captures?s.to.captures.length:0; }
-function ai_eval(b){
-  var s=0;
-  for(var r=0;r<BS;r++)for(var c=0;c<BS;c++){ var p=b[r][c]; if(!p)continue; var center=(c>=3&&c<=6&&r>=3&&r<=6)?1:0;
-    if(p.player===0){ s+=p.king?300:(100+(9-r)*1.4); s+=center; } else { s-=p.king?300:(100+r*1.4); s-=center; } }
-  return s;
+/*__DAMES_ENGINE_START__*/
+function DamesEngineFactory(){
+  'use strict';
+  /* Plateau compact : Uint8Array(50) — uniquement les cases jouables ((r+c) impair).
+     idx = r*5 + (c>>1). Codes : 0 vide, 1 pion blanc, 2 dame blanche, 3 pion rouge, 4 dame rouge.
+     Blanc (joueur 0) monte vers r=0, Rouge (joueur 1) descend vers r=9.
+     Règles identiques au moteur du jeu : prise majoritaire, dames volantes,
+     pièces capturées bloquantes jusqu'à la fin de la rafle, case d'origine
+     considérée vide, promotion seulement si le coup SE TERMINE sur la dernière rangée. */
+  var ROW=new Int8Array(50), COL=new Int8Array(50);
+  var NB=[]; // NB[dir][idx] -> case voisine ou -1 ; dirs : 0=(-1,-1) 1=(-1,1) 2=(1,-1) 3=(1,1)
+  (function(){
+    var r,c,d,i;
+    for(r=0;r<10;r++)for(c=0;c<10;c++)if(((r+c)&1)===1){ i=r*5+(c>>1); ROW[i]=r; COL[i]=c; }
+    var DIRS=[[-1,-1],[-1,1],[1,-1],[1,1]];
+    for(d=0;d<4;d++){
+      NB[d]=new Int8Array(50);
+      for(i=0;i<50;i++){
+        r=ROW[i]+DIRS[d][0]; c=COL[i]+DIRS[d][1];
+        NB[d][i]=(r>=0&&r<10&&c>=0&&c<10)?(r*5+(c>>1)):-1;
+      }
+    }
+  })();
+
+  var _capFlags=new Uint8Array(50), _capList=new Int32Array(24), _capLen=0;
+
+  function _dfsCap(b,cur,side,king,res){
+    var found=false,d,m,mp,l,s,sp;
+    for(d=0;d<4;d++){
+      if(!king){
+        m=NB[d][cur]; if(m<0) continue;
+        mp=b[m]; if(mp===0||_capFlags[m]) continue;
+        if(side===0?(mp===1||mp===2):(mp===3||mp===4)) continue;
+        l=NB[d][m]; if(l<0||b[l]!==0) continue;
+        _capFlags[m]=1; _capList[_capLen++]=m; found=true;
+        _dfsCap(b,l,side,king,res);
+        _capLen--; _capFlags[m]=0;
+      } else {
+        s=NB[d][cur];
+        while(s>=0&&b[s]===0) s=NB[d][s];
+        if(s<0||_capFlags[s]) continue;
+        sp=b[s];
+        if(side===0?(sp===1||sp===2):(sp===3||sp===4)) continue;
+        l=NB[d][s]; if(l<0||b[l]!==0) continue;
+        _capFlags[s]=1; _capList[_capLen++]=s; found=true;
+        while(l>=0&&b[l]===0){ _dfsCap(b,l,side,king,res); l=NB[d][l]; }
+        _capLen--; _capFlags[s]=0;
+      }
+    }
+    if(!found&&_capLen>0){
+      var caps=new Array(_capLen);
+      for(var k=0;k<_capLen;k++) caps[k]=_capList[k];
+      res.push({f:-1,t:cur,c:caps,n:_capLen});
+    }
+    return found;
+  }
+
+  // Tous les coups légaux du camp `side` (prise majoritaire obligatoire).
+  function genMoves(b,side){
+    var own1=side===0?1:3, own2=side===0?2:4;
+    var caps=[],i,k,p;
+    for(i=0;i<50;i++){
+      p=b[i]; if(p!==own1&&p!==own2) continue;
+      var before=caps.length;
+      b[i]=0;
+      _dfsCap(b,i,side,p===own2,caps);
+      b[i]=p;
+      for(k=before;k<caps.length;k++) caps[k].f=i;
+    }
+    if(caps.length){
+      var maxN=0;
+      for(k=0;k<caps.length;k++) if(caps[k].n>maxN) maxN=caps[k].n;
+      var out=[];
+      for(k=0;k<caps.length;k++) if(caps[k].n===maxN) out.push(caps[k]);
+      if(out.length>1&&maxN>=2){ // déduplication des ordres de rafle aboutissant au même résultat
+        var seen={},ded=[],sig,mm;
+        for(k=0;k<out.length;k++){
+          mm=out[k];
+          sig=mm.f+'|'+mm.t+'|'+mm.c.slice().sort(function(a,b2){return a-b2;}).join(',');
+          if(!seen[sig]){ seen[sig]=1; ded.push(mm); }
+        }
+        return ded;
+      }
+      return out;
+    }
+    var quiet=[],d,t;
+    for(i=0;i<50;i++){
+      p=b[i]; if(p!==own1&&p!==own2) continue;
+      if(p===own2){
+        for(d=0;d<4;d++){ t=NB[d][i]; while(t>=0&&b[t]===0){ quiet.push({f:i,t:t,c:null,n:0}); t=NB[d][t]; } }
+      } else {
+        var d0=side===0?0:2;
+        for(d=d0;d<d0+2;d++){ t=NB[d][i]; if(t>=0&&b[t]===0) quiet.push({f:i,t:t,c:null,n:0}); }
+      }
+    }
+    return quiet;
+  }
+
+  function applyMove(b,m){
+    var nb=b.slice(), p=nb[m.f];
+    nb[m.f]=0;
+    if(m.c) for(var k=0;k<m.c.length;k++) nb[m.c[k]]=0;
+    if(p===1){ if(ROW[m.t]===0) p=2; } else if(p===3){ if(ROW[m.t]===9) p=4; }
+    nb[m.t]=p;
+    return nb;
+  }
+
+  // Bonus de conversion en finale : le camp qui gagne rapproche ses dames
+  // des pièces adverses et pousse l'adversaire vers les bords.
+  function chase(b,side){
+    var bonus=0,i,j,bd,d1,d2;
+    for(i=0;i<50;i++){
+      var p=b[i]; if(side===0?p!==2:p!==4) continue;
+      bd=99;
+      for(j=0;j<50;j++){
+        var q=b[j]; if(q===0) continue;
+        if(side===0?(q===3||q===4):(q===1||q===2)){
+          d1=ROW[i]-ROW[j]; if(d1<0)d1=-d1;
+          d2=COL[i]-COL[j]; if(d2<0)d2=-d2;
+          if(d2>d1)d1=d2;
+          if(d1<bd)bd=d1;
+        }
+      }
+      if(bd<99) bonus+=(9-bd)*3;
+    }
+    for(j=0;j<50;j++){
+      var q2=b[j]; if(q2===0) continue;
+      if(side===0?(q2===3||q2===4):(q2===1||q2===2)){
+        var er=ROW[j],ec=COL[j];
+        var e1=er<9-er?er:9-er, e2=ec<9-ec?ec:9-ec, ee=e1<e2?e1:e2;
+        bonus+=(4-(ee<4?ee:4))*2;
+      }
+    }
+    return bonus;
+  }
+
+  // Évaluation (positive = avantage Blanc). Matériel, avancement des pions,
+  // rangée arrière défensive, centre, centralisation des dames, échange
+  // favorable quand on mène, conversion des finales.
+  function evaluate(b){
+    var i,p,r,c;
+    var wp=0,wk=0,rp=0,rk=0;
+    for(i=0;i<50;i++){ p=b[i]; if(p===1)wp++; else if(p===2)wk++; else if(p===3)rp++; else if(p===4)rk++; }
+    var wN=wp+wk, rN=rp+rk;
+    if(rN===0) return 60000;
+    if(wN===0) return -60000;
+    var total=wN+rN;
+    var mat=(wp-rp)*100+(wk-rk)*330;
+    var s=mat+Math.round(mat*(40-total)*0.006); // simplifier quand on mène
+    var backBonus= total>24?12:(total>16?7:0);
+    for(i=0;i<50;i++){
+      p=b[i]; if(p===0) continue;
+      r=ROW[i]; c=COL[i];
+      if(p===1){
+        s+=(9-r)*2;
+        if(r===9) s+=backBonus;
+        if(c===0||c===9) s-=3; else if(r>=3&&r<=6&&c>=2&&c<=7) s+=4;
+        if(r<=2) s+=(3-r)*4;
+      } else if(p===3){
+        s-=r*2;
+        if(r===0) s-=backBonus;
+        if(c===0||c===9) s+=3; else if(r>=3&&r<=6&&c>=2&&c<=7) s-=4;
+        if(r>=7) s-=(r-6)*4;
+      } else if(p===2){
+        s+=9-(((r+r-9<0?9-r-r:r+r-9)+(c+c-9<0?9-c-c:c+c-9))>>1);
+      } else {
+        s-=9-(((r+r-9<0?9-r-r:r+r-9)+(c+c-9<0?9-c-c:c+c-9))>>1);
+      }
+    }
+    if(total<=12){
+      var wm=wp*100+wk*330, rm=rp*100+rk*330;
+      if(wm-rm>=120&&wk>0) s+=chase(b,0);
+      else if(rm-wm>=120&&rk>0) s-=chase(b,1);
+    }
+    return s;
+  }
+
+  var TT=new Map(), HIST=new Int32Array(2500);
+  var nodeCount=0, abortAt=0, aborted=false;
+
+  function histCmp(a,b){ return HIST[b.f*50+b.t]-HIST[a.f*50+a.t]; }
+
+  function search(b,side,depth,alpha,beta){
+    nodeCount++;
+    if((nodeCount&511)===0&&Date.now()>=abortAt){ aborted=true; return 0; }
+    var moves=genMoves(b,side);
+    if(moves.length===0) return -100000-depth;      // bloqué ou plus de pièces = défaite
+    var capt=moves[0].n>0;
+    if(depth<=0&&!capt){ var e=evaluate(b); return side===0?e:-e; }
+    var useTT=depth>=1, tk=null, te=null;
+    if(useTT){
+      tk=(side===0?'w':'r')+String.fromCharCode.apply(null,b);
+      te=TT.get(tk);
+      if(te&&te.d>=depth){
+        if(te.f===0) return te.s;
+        if(te.f===1){ if(te.s>=beta) return te.s; if(te.s>alpha) alpha=te.s; }
+        else { if(te.s<=alpha) return te.s; if(te.s<beta) beta=te.s; }
+        if(alpha>=beta) return te.s;
+      }
+    }
+    if(moves.length>1){
+      if(!capt&&depth>=3) moves.sort(histCmp);
+      if(te&&te.mv>=0){
+        for(var x=0;x<moves.length;x++){
+          if(moves[x].f*50+moves[x].t===te.mv){
+            if(x>0){ var tmp=moves[x]; for(var y=x;y>0;y--) moves[y]=moves[y-1]; moves[0]=tmp; }
+            break;
+          }
+        }
+      }
+    }
+    var best=-Infinity, bestMv=-1, a0=alpha, i, sc;
+    for(i=0;i<moves.length;i++){
+      sc=-search(applyMove(b,moves[i]),1-side,depth-1,-beta,-alpha);
+      if(aborted) return 0;
+      if(sc>best){ best=sc; bestMv=moves[i].f*50+moves[i].t; }
+      if(best>alpha) alpha=best;
+      if(alpha>=beta){
+        if(!capt) HIST[moves[i].f*50+moves[i].t]+=depth*depth;
+        break;
+      }
+    }
+    if(useTT&&!aborted&&TT.size<1500000){
+      TT.set(tk,{d:depth,s:best,f:(best<=a0?2:(best>=beta?1:0)),mv:bestMv});
+    }
+    return best;
+  }
+
+  /* Classe les coups-racine (plateaux APRÈS le coup de l'IA, trait aux Blancs).
+     Approfondissement itératif jusqu'à épuisement du budget temps. */
+  function rankRoot(children,budget,maxDepth){
+    abortAt=Date.now()+budget; aborted=false; nodeCount=0;
+    HIST=new Int32Array(2500);
+    if(TT.size>1200000) TT.clear();
+    var n=children.length, order=new Array(n), i;
+    for(i=0;i<n;i++) order[i]=i;
+    var bestIdx=0, completedDepth=0, lastScores=null, prevBest=-Infinity;
+    for(var d=1;d<=maxDepth;d++){
+      var alpha=-Infinity, lb=-Infinity, lbi=-1, iterScores=new Array(n);
+      for(var oi=0;oi<n;oi++){
+        var ci=order[oi];
+        var sc=-search(children[ci],0,d-1,-Infinity,-alpha);
+        if(aborted) break;
+        iterScores[ci]=sc;
+        if(sc>lb){ lb=sc; lbi=ci; }
+        if(sc>alpha) alpha=sc;
+      }
+      if(!aborted){
+        completedDepth=d; bestIdx=lbi; prevBest=lb; lastScores=iterScores;
+        order.sort(function(x,y){ return iterScores[y]-iterScores[x]; });
+        if(lb>=99000) break;                    // gain forcé trouvé
+      } else {
+        if(lbi>=0&&lb>prevBest) bestIdx=lbi;    // amélioration déjà complète avant l'arrêt
+        break;
+      }
+      if(Date.now()>=abortAt) break;
+    }
+    var outScores=new Array(n);
+    for(i=0;i<n;i++) outScores[i]=(lastScores&&typeof lastScores[i]==='number')?lastScores[i]:-Infinity;
+    return { idx:bestIdx, depth:completedDepth, nodes:nodeCount, scores:outScores };
+  }
+
+  return { rankRoot:rankRoot, genMoves:genMoves, applyMove:applyMove, evaluate:evaluate, ROW:ROW, COL:COL };
 }
-function ai_negamax(b,player,depth,alpha,beta){
-  var moves=ai_genMoves(b,player);
-  if(moves.length===0) return -100000-depth;
-  if(depth===0){ var e=ai_eval(b); return player===0?e:-e; }
-  moves.sort(function(a,c){return ai_capCount(c)-ai_capCount(a);});
-  var best=-Infinity;
-  for(var i=0;i<moves.length;i++){ var sc=-ai_negamax(moves[i].finalBoard,1-player,depth-1,-beta,-alpha); if(sc>best)best=sc; if(best>alpha)alpha=best; if(alpha>=beta)break; }
-  return best;
+/*__DAMES_ENGINE_END__*/
+
+/* Niveaux : budget de réflexion (ms), profondeur max, marge de variété (points),
+   proportion de coups volontairement aléatoires, budget du repli synchrone. */
+var AI_LEVELS={
+  easy:  { budget:120,  maxDepth:6,  margin:60, openMargin:60, rnd:0.25, syncBudget:100 },
+  medium:{ budget:450,  maxDepth:16, margin:12, openMargin:20, rnd:0,    syncBudget:300 },
+  hard:  { budget:1500, maxDepth:26, margin:0,  openMargin:10, rnd:0,    syncBudget:650 },
+  expert:{ budget:2800, maxDepth:34, margin:0,  openMargin:6,  rnd:0,    syncBudget:900 }
+};
+
+var aiReqId=0, aiPending=null, aiMoveCount=0;
+var _syncEngine=null;
+function getSyncEngine(){ if(!_syncEngine) _syncEngine=DamesEngineFactory(); return _syncEngine; }
+
+// Plateau 10x10 du jeu -> plateau compact 50 cases du moteur.
+function packBoardForAI(fb){
+  var a=new Uint8Array(50);
+  for(var r=0;r<BS;r++)for(var c=0;c<BS;c++){
+    if(((r+c)&1)===1){
+      var x=fb[r][c];
+      if(x) a[r*5+(c>>1)]=x.player===0?(x.king?2:1):(x.king?4:3);
+    }
+  }
+  return a;
 }
-function ai_choose(){
-  var b0=ai_clone(board), moves=ai_genMoves(b0,1);
-  if(!moves.length) return null;
-  if(moves.length===1) return moves[0];
-  if(DIFFICULTY==='easy'&&Math.random()<0.4) return moves[(Math.random()*moves.length)|0];
-  var depth=DIFFICULTY==='easy'?1:(DIFFICULTY==='medium'?3:4);
-  moves.sort(function(a,c){return ai_capCount(c)-ai_capCount(a);});
-  var best=null,bestScore=-Infinity,alpha=-Infinity;
-  for(var i=0;i<moves.length;i++){ var sc=-ai_negamax(moves[i].finalBoard,0,depth-1,-Infinity,-alpha); if(sc>bestScore||(sc===bestScore&&Math.random()<0.35)){bestScore=sc;best=moves[i];} if(bestScore>alpha)alpha=bestScore; }
-  return best;
+
+function buildAIWorker(){
+  try{
+    var src='var __ENGINE=('+DamesEngineFactory.toString()+')();\n'+
+      'onmessage=function(ev){var d=ev.data;try{var r=__ENGINE.rankRoot(d.children,d.budget,d.maxDepth);'+
+      'postMessage({id:d.id,idx:r.idx,depth:r.depth,nodes:r.nodes,scores:r.scores});}'+
+      'catch(err){postMessage({id:d.id,error:String(err)});}};';
+    return new Worker(URL.createObjectURL(new Blob([src],{type:'application/javascript'})));
+  }catch(e){ return null; }
 }
+function wireAIWorker(w){
+  if(!w) return;
+  w.onmessage=function(ev){
+    var d=ev.data||{};
+    if(aiPending&&d.id===aiPending.id){ var cb=aiPending.cb; aiPending=null; cb(d.error?null:d); }
+  };
+  w.onerror=function(){
+    try{ w.terminate(); }catch(e){}
+    if(AI_WORKER===w) AI_WORKER=null;
+    if(aiPending){ var cb=aiPending.cb; aiPending=null; cb(null); }
+  };
+}
+var AI_WORKER=buildAIWorker(); wireAIWorker(AI_WORKER);
+
+// Variété contrôlée : parmi les coups à `margin` points du meilleur.
+// (jamais quand un gain forcé est trouvé ; marge nulle = choix déterministe)
+function chooseIdxFromScores(res,lvl){
+  var idx=(typeof res.idx==='number')?res.idx:0;
+  var margin=(aiMoveCount<3)?Math.max(lvl.margin,lvl.openMargin||0):lvl.margin;
+  var sc=res.scores;
+  if(!sc||!sc.length||margin<=0) return idx;
+  var best=-Infinity,i;
+  for(i=0;i<sc.length;i++) if(typeof sc[i]==='number'&&sc[i]>best) best=sc[i];
+  if(best===-Infinity||best>=99000) return idx;
+  var pool=[];
+  for(i=0;i<sc.length;i++) if(typeof sc[i]==='number'&&best-sc[i]<=margin) pool.push(i);
+  if(pool.indexOf(idx)<0) pool.push(idx);
+  return pool[(Math.random()*pool.length)|0];
+}
+
 function aiTurn(){
   if(gameOver) return;
-  var mv = ai_choose();
-  if(!mv){ handleGameEnd(MY_PLAYER, 'normal'); return; }  // IA bloquée → l'humain gagne
-  executeRemoteSequence(mv.steps, true);
+  var rootMoves=ai_genMoves(ai_clone(board),1);
+  if(!rootMoves.length){ handleGameEnd(MY_PLAYER,'normal'); return; }   // IA bloquée → l'humain gagne
+  var lvl=AI_LEVELS[DIFFICULTY]||AI_LEVELS.hard;
+  if(rootMoves.length===1){ aiMoveCount++; executeRemoteSequence(rootMoves[0].steps,true); return; }
+  if(lvl.rnd>0&&Math.random()<lvl.rnd){ aiMoveCount++; executeRemoteSequence(rootMoves[(Math.random()*rootMoves.length)|0].steps,true); return; }
+
+  // Plateaux fils (dédupliqués) après chaque coup légal de l'IA.
+  var children=[], map=[], seen={};
+  for(var i=0;i<rootMoves.length;i++){
+    var pb=packBoardForAI(rootMoves[i].finalBoard);
+    var ks=String.fromCharCode.apply(null,pb);
+    if(seen[ks]===undefined){ seen[ks]=1; map.push(i); children.push(pb); }
+  }
+
+  var req=++aiReqId, settled=false, watchdog=null;
+  function playChild(ci){
+    if(settled) return; settled=true;
+    if(watchdog){ clearTimeout(watchdog); watchdog=null; }
+    if(gameOver||req!==aiReqId) return;
+    var mi=(typeof ci==='number'&&ci>=0&&ci<map.length)?map[ci]:map[0];
+    aiMoveCount++;
+    executeRemoteSequence(rootMoves[mi].steps,true);
+  }
+  function finish(res){
+    if(!res){ try{ res=getSyncEngine().rankRoot(children,lvl.syncBudget,lvl.maxDepth); }catch(e){ res=null; } }
+    if(!res){ playChild(0); return; }
+    if(AI_DEBUG) try{ console.log('[IA dames] niveau='+DIFFICULTY+' profondeur='+res.depth+' nœuds='+res.nodes); }catch(e){}
+    playChild(chooseIdxFromScores(res,lvl));
+  }
+
+  if(!AI_WORKER){ AI_WORKER=buildAIWorker(); wireAIWorker(AI_WORKER); }
+  if(AI_WORKER){
+    watchdog=setTimeout(function(){
+      aiPending=null;
+      try{ AI_WORKER.terminate(); }catch(e){}
+      AI_WORKER=null;
+      finish(null);
+    },lvl.budget+6000);
+    aiPending={ id:req, cb:function(res){ if(watchdog){ clearTimeout(watchdog); watchdog=null; } finish(res); } };
+    try{ AI_WORKER.postMessage({ id:req, children:children, budget:lvl.budget, maxDepth:lvl.maxDepth }); }
+    catch(e){ aiPending=null; if(watchdog){ clearTimeout(watchdog); watchdog=null; } finish(null); }
+  } else {
+    setTimeout(function(){ finish(null); },20);
+  }
 }
 
 /* Bouton Rejouer (affiché seulement en fin de partie) */
