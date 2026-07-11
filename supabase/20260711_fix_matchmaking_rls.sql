@@ -58,3 +58,20 @@ CREATE POLICY "Authenticated users can insert queue entries"
   FOR INSERT
   TO authenticated
   WITH CHECK (auth.uid() IS NOT NULL);
+
+-- 3) notifications : le refus d'un match trouvé insère une notification
+--    type 'match_declined' pour l'adversaire (matchmaking.tsx → declineMatch).
+--    Ce type manquait à la liste blanche INSERT ; sans lui l'adversaire ne
+--    voit pas le toast « Match annulé » (migration Supabase :
+--    « allow_match_declined_notification »).
+DROP POLICY IF EXISTS "Users can insert notifications" ON public.notifications;
+CREATE POLICY "Users can insert notifications"
+  ON public.notifications
+  FOR INSERT
+  WITH CHECK (
+    ((type = 'game_invite'::text) AND (auth.uid() IS NOT NULL) AND (((data ->> 'senderId'::text))::uuid = auth.uid()))
+    OR ((type = ANY (ARRAY['game_invite_accepted'::text, 'game_invite_declined'::text, 'match_declined'::text])) AND (auth.uid() IS NOT NULL) AND (user_id IS NOT NULL))
+    OR ((type = 'friend_request'::text) AND (auth.uid() IS NOT NULL) AND (((data ->> 'senderId'::text))::uuid = auth.uid()))
+    OR ((type = ANY (ARRAY['friend_request_accepted'::text, 'friend_request_declined'::text])) AND (auth.uid() IS NOT NULL) AND (user_id IS NOT NULL))
+    OR ((type = ANY (ARRAY['rematch_invite'::text, 'rematch_accepted'::text, 'rematch_declined'::text])) AND (auth.uid() IS NOT NULL))
+  );
