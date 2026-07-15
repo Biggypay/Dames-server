@@ -89,3 +89,23 @@ Définir `JWT_SECRET` fort dans Render ; s'assurer qu'aucun secret n'est commit�
 
 > Ce serveur a été durci de façon **additive et testée**, sans casser le jeu ni le crédit des gains
 > légitimes. Le reste nécessite un travail côté Supabase / Lovable / infra / mobile, listé ci-dessus.
+
+---
+
+## Correctif 2026-07-15 — paris spectateurs (Supabase)
+
+Le durcissement anti-fraude côté Supabase avait cassé l'acceptation des paris spectateurs
+(live matchs **et** événements) : les triggers `prevent_client_spectator_bet_tampering` et
+`prevent_client_event_spectator_bet_tampering` gelaient `acceptor_bet_on` sans condition,
+alors que le flux légitime (RPC `accept_spectator_bet` / `accept_match_spectator_bet`,
+SECURITY DEFINER mais `auth.uid()` toujours défini) doit précisément écrire ce champ
+(NULL → côté choisi). Erreur visible : « Not allowed: event spectator bet financial/outcome
+fields are immutable from client ».
+
+**Fix appliqué** (migration `fix_spectator_bet_accept_blocked_by_client_tampering_guard`) :
+`acceptor_bet_on` n'est gelé **qu'une fois défini**. Les autres champs financiers
+(`amount`, `creator_id`, `event_id`/`game_id`, `creator_bet_on`, `winner_id`) restent
+immuables côté client — vérifié : un UPDATE direct du montant par un utilisateur
+authentifié est toujours rejeté, et l'acceptation via la RPC fonctionne à nouveau.
+Les gardes redondantes (`*_client_guard`, `prevent_*_tampering`, RLS) continuent de
+valider la transition d'acceptation elle-même.
