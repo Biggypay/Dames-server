@@ -223,9 +223,11 @@ function initSocket(){
   });
 
   socket.on('dames_start', function(data){
-    hideLoading();
+    // L'écran de chargement (réveil du serveur) reste affiché tant que le plateau
+    // n'est pas rendu à 100% : on appelle hideLoading() seulement après le rendu.
     if(data.reconnected && gameReady){
       gameOver = false; isProcessing = false; stopForfeitCountdown();
+      hideLoading();
       showToast('📶','Connexion rétablie','La partie reprend !', 2000, updUI);
     } else if(data.reconnected && data.boardState){
       gameOver = false; isProcessing = false; resultSent = false;
@@ -246,6 +248,7 @@ function initSocket(){
         syncPieces(); clearHighlights(); clearLastMove(); stopTimer(); stopGraceTimer();
         updateCapturedDisplay();
         if(data.lastMove && data.lastMove.from) showLastMoveOrigin(data.lastMove.from.row, data.lastMove.from.col);
+        hideLoading();   // plateau restauré et rendu → on retire l'écran de chargement
         showToast('📶','Partie restaurée','Reprise là où vous étiez !', 2400, function(){
           gameReady = true; updUI(); applyPendingTimer();
         });
@@ -1013,7 +1016,8 @@ function startMultiGame(){
   capturedBy=[0,0];
   initBoard(); syncPieces(); clearHighlights(); clearLastMove(); stopTimer(); stopGraceTimer();
   updateCapturedDisplay(); stopForfeitCountdown();
-  
+  hideLoading();   // plateau initialisé et rendu à 100% → on retire l'écran de chargement
+
   var whoStarts = MY_PLAYER === 0 ? 'Vous commencez (Blancs)' : OP_NAME + ' commence (Blancs)';
   showToast('🎲','Partie commencée', whoStarts, 2400, function(){
     gameReady = true; updUI(); applyPendingTimer();

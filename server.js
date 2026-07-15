@@ -475,7 +475,7 @@ function startChifoumiTurnTimer(croom, roomId) {
     croom.graceTimer = setTimeout(() => {
       croom.graceTimer = null;
       if (croom.status === 'finished') return;
-      
+
       const hp1Grace = croom.choices[1] !== undefined;
       const hp2Grace = croom.choices[2] !== undefined;
 
@@ -487,12 +487,69 @@ function startChifoumiTurnTimer(croom, roomId) {
         if (croom.players[1]?.socketId) { io.to(croom.players[1].socketId).emit('game:over', { ...cp, myResult: -penalty }); io.to(croom.players[1].socketId).emit('game:result', { postMessage: { ...cp, myResult: -penalty } }); }
         if (croom.players[2]?.socketId) { io.to(croom.players[2].socketId).emit('game:over', { ...cp, myResult: -penalty }); io.to(croom.players[2].socketId).emit('game:result', { postMessage: { ...cp, myResult: -penalty } }); }
         io.to(roomId).emit('game:result', { postMessage: cp });
+      } else if (hp1Grace && hp2Grace) {
+        // Les deux ont finalement joué pendant la grâce → on résout la manche normalement.
+        scoreChifoumiRound(croom, roomId);
       } else {
         const winnerSlot = hp1Grace ? 1 : 2;
         notifyChifoumiRoomOver(croom, roomId, winnerSlot, 'timeout');
       }
     }, CHIFOUMI_GRACE_DURATION);
   }, CHIFOUMI_TURN_DURATION);
+}
+
+// ── CHIFOUMI : moteur de manche AUTORITAIRE côté serveur ───
+// Le serveur reçoit les deux choix (chifoumi_choice) : il calcule donc lui-même
+// le vainqueur de la manche, tient le score réel, l'historique et décide de la
+// fin de partie (victoire / match nul). Cela suit la logique du jeu de Dames :
+// c'est le SERVEUR qui fait autorité sur l'argent, jamais le client (anti-triche
+// + robustesse aux reconnexions / désynchronisations).
+const CHIFOUMI_BEATS = { pierre: 'ciseaux', feuille: 'pierre', ciseaux: 'feuille' };
+function chifoumiRoundWinner(c1, c2) {
+  // Retourne 0 (nul), 1 (joueur 1) ou 2 (joueur 2). Un choix absent/invalide perd.
+  const v1 = Object.prototype.hasOwnProperty.call(CHIFOUMI_BEATS, c1);
+  const v2 = Object.prototype.hasOwnProperty.call(CHIFOUMI_BEATS, c2);
+  if (!v1 && !v2) return 0;
+  if (!v1) return 2;
+  if (!v2) return 1;
+  if (c1 === c2) return 0;
+  return CHIFOUMI_BEATS[c1] === c2 ? 1 : 2;
+}
+function scoreChifoumiRound(croom, roomId) {
+  if (!croom || croom.status !== 'playing') return;
+  const round = croom.currentRound;
+  if (croom.lastScoredRound === round) return;      // anti double-comptage
+  if (croom.choices[1] === undefined || croom.choices[2] === undefined) return;
+  croom.lastScoredRound = round;
+  clearChifoumiTurnTimers(croom);
+  const c1 = croom.choices[1], c2 = croom.choices[2];
+  const w = chifoumiRoundWinner(c1, c2);
+  if (w === 1) croom.scores[0]++;
+  else if (w === 2) croom.scores[1]++;
+  croom.history.push({ round, p1Choice: c1 || null, p2Choice: c2 || null, winnerSlot: w });
+  croom.choices = {};                               // évite tout rejeu du même choix
+  // Fin de partie : le serveur tranche à partir de SON score (autorité).
+  if (round >= (croom.maxRounds || 5)) {
+    // On laisse le client jouer son animation de révélation avant de finaliser ;
+    // le résultat client (chifoumi_result) arrivera d'abord et sera de toute façon
+    // recalculé sur le score serveur. Ce minuteur est un filet de sécurité.
+    if (croom.finalizeTimer) clearTimeout(croom.finalizeTimer);
+    croom.finalizeTimer = setTimeout(() => {
+      croom.finalizeTimer = null;
+      if (croom.status !== 'playing') return;
+      const s1 = croom.scores[0], s2 = croom.scores[1];
+      const winnerSlot = s1 === s2 ? 0 : (s1 > s2 ? 1 : 2);
+      notifyChifoumiRoomOver(croom, roomId, winnerSlot, winnerSlot === 0 ? 'draw' : 'normal');
+    }, 12000);
+  }
+}
+// Décide le vainqueur d'une partie de chifoumi à partir du score serveur autoritaire.
+function chifoumiAuthoritativeWinnerSlot(croom, data) {
+  if (croom.history && croom.history.length > 0) {
+    const s1 = croom.scores[0], s2 = croom.scores[1];
+    return s1 === s2 ? 0 : (s1 > s2 ? 1 : 2);   // égalité de score ⇒ match nul (remboursement)
+  }
+  return resolveWinnerSlot(croom, data);         // filet : aucune manche suivie côté serveur
 }
 
 // ══════════════════════════════════════════════════════════
@@ -640,6 +697,7 @@ function notifyChifoumiRoomOver(room, roomId, winnerSlot, reason = 'normal') {
   if (room.status === 'finished') return;
   room.status = 'finished'; clearChifoumiTurnTimers(room);
   if (room.disconnectTimer) { clearTimeout(room.disconnectTimer); room.disconnectTimer = null; }
+  if (room.finalizeTimer)   { clearTimeout(room.finalizeTimer);   room.finalizeTimer   = null; }
   const { bet, totalPot, commission, netGain } = calcFinancial(room.betAmount);
   const p1 = room.players[1], p2 = room.players[2];
 
@@ -1233,8 +1291,16 @@ io.on('connection', (socket) => {
     const proom = penaltyRooms.get(data.room);
     if (!proom) return;
     if (!socketIsPlayer(proom, socket.id)) return;
-    const winnerSlot = resolveWinnerSlot(proom, data);
-    notifyPenaltyRoomOver(proom, data.room, winnerSlot, safeReason(data.reason));
+    // Autorité serveur : le score des tirs est calculé côté serveur (resolvePenaltyRound).
+    // On tranche donc à partir de CE score : égalité ⇒ match nul (remboursement, 0% de commission).
+    let winnerSlot;
+    const s1 = proom.scores?.p1, s2 = proom.scores?.p2;
+    if (typeof s1 === 'number' && typeof s2 === 'number' && (s1 > 0 || s2 > 0)) {
+      winnerSlot = s1 === s2 ? 0 : (s1 > s2 ? 1 : 2);
+    } else {
+      winnerSlot = resolveWinnerSlot(proom, data);
+    }
+    notifyPenaltyRoomOver(proom, data.room, winnerSlot, winnerSlot === 0 ? 'draw' : safeReason(data.reason));
   });
 
   // ══════════════════════════════════════════════════════
@@ -1244,7 +1310,7 @@ io.on('connection', (socket) => {
     if (!room) return; socket.join(room);
     let croom = chifoumiRooms.get(room);
     if (!croom) {
-      croom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, currentRound: 1, scores: [0, 0], choices: {}, history: [], turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null };
+      croom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, currentRound: 1, maxRounds: 5, scores: [0, 0], choices: {}, history: [], lastScoredRound: 0, finalizeTimer: null, turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null };
       chifoumiRooms.set(room, croom);
     }
     croom.players[player] = { socketId: socket.id, supabaseId, name, slot: player, connected: true };
@@ -1277,7 +1343,17 @@ io.on('connection', (socket) => {
       socket.to(room).emit('chifoumi_player_status', { slot: player, connected: true, name });
       socket.to(room).emit('player:reconnected', { message: `${name} est de retour !` });
       const opponentName = player === 1 ? (croom.players[2]?.name || 'Adversaire') : (croom.players[1]?.name || 'Adversaire');
-      socket.emit('chifoumi_start', { room, yourSlot: player, opponentName, bet: croom.betAmount, currency: croom.currency, reconnected: true, gameState: { scores: croom.scores, currentRound: croom.currentRound, history: croom.history } });
+      // État EXACT restauré depuis l'autorité serveur : score réel, manche de reprise
+      // et historique adapté à la perspective du joueur qui revient (barre de progression).
+      const playedRounds = croom.history.length;
+      const resumeRound  = Math.min(playedRounds + 1, croom.maxRounds || 5);
+      const perspHistory = croom.history.map(h => ({
+        round: h.round,
+        result: h.winnerSlot === 0 ? 'draw' : (h.winnerSlot === player ? 'win' : 'lose'),
+        playerChoice:   player === 1 ? h.p1Choice : h.p2Choice,
+        opponentChoice: player === 1 ? h.p2Choice : h.p1Choice
+      }));
+      socket.emit('chifoumi_start', { room, yourSlot: player, opponentName, bet: croom.betAmount, currency: croom.currency, reconnected: true, gameState: { scores: croom.scores, currentRound: resumeRound, history: perspHistory } });
       
       if (croom.status === 'playing') {
         const now = Date.now();
@@ -1298,12 +1374,14 @@ io.on('connection', (socket) => {
   socket.on('chifoumi_choice', ({ room, player, choice }) => {
     if (!room) return; const croom = chifoumiRooms.get(room);
     if (!croom || croom.status !== 'playing') return;
+    if (player !== 1 && player !== 2) return;
     croom.choices[player] = choice;
     socket.to(room).emit('chifoumi_opponent_choice', { choice });
-    
-    // Si les deux ont joué, on n'attend plus la période de grâce
+
+    // Les deux ont joué → le SERVEUR calcule et enregistre le résultat de la manche
+    // (score réel + historique), ce qui rend l'argent et la reconnexion fiables.
     if (croom.choices[1] !== undefined && croom.choices[2] !== undefined) {
-        clearChifoumiTurnTimers(croom);
+      scoreChifoumiRound(croom, room);
     }
   });
 
@@ -1314,22 +1392,19 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('chifoumi_round_result', ({ room, player, round, result, playerChoice, opponentChoice }) => {
-    const croom = chifoumiRooms.get(room);
-    if (croom && croom.status === 'playing' && player === 1) {
-       if (result === 'win') croom.scores[0]++;
-       else if (result === 'lose') croom.scores[1]++;
-       croom.history.push({ round, result, playerChoice, opponentChoice });
-    }
-  });
+  // Ancien flux client (le client n'émet plus ceci ; le score est fait côté serveur
+  // dans chifoumi_choice). Conservé en no-op pour compatibilité ascendante.
+  socket.on('chifoumi_round_result', () => { /* ignoré : autorité serveur */ });
 
   socket.on('chifoumi_result', (data) => {
     if (!data || !validRoom(data.room)) return;
     if (!socketAllow(socket.id, 'result', 15, 10000)) return;
     const croom = chifoumiRooms.get(data.room); if (!croom) return;
     if (!socketIsPlayer(croom, socket.id)) return;
-    const winnerSlot = resolveWinnerSlot(croom, data);
-    notifyChifoumiRoomOver(croom, data.room, winnerSlot, safeReason(data.reason));
+    // Autorité serveur : le vainqueur (ou le match nul) est déduit du score suivi
+    // par le serveur, pas de la valeur envoyée par le client (anti-désynchronisation).
+    const winnerSlot = chifoumiAuthoritativeWinnerSlot(croom, data);
+    notifyChifoumiRoomOver(croom, data.room, winnerSlot, winnerSlot === 0 ? 'draw' : safeReason(data.reason));
   });
 
   // ══════════════════════════════════════════════════════

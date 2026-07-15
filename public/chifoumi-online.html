@@ -736,11 +736,14 @@ function initSocket() {
 
   /* ── Partie démarrée ── */
   socket.on('chifoumi_start', function(data) {
-    hideLoading();
+    // NOTE : on NE cache PAS l'écran de chargement ici. Il ne doit disparaître
+    // qu'une fois le jeu réellement affiché à 100% (voir hideLoading() ci-dessous),
+    // sinon on voit un plateau vide/à moitié rendu pendant le réveil du serveur.
     waitingOverlay.classList.remove('show');
 
     if (data.reconnected && gameReady) {
       gameOver = false; stopForfeitCountdown();
+      hideLoading();
       showToast('📶','Connexion rétablie','La partie reprend !', 2000, function() { updUI(); });
     } else if (data.reconnected && data.gameState) {
       gameOver = false; resultSent = false;
@@ -754,6 +757,7 @@ function initSocket() {
         document.getElementById('aiScore').textContent     = opScore;
         roundLabelEl.textContent = 'Manche ' + currentRound + ' / ' + MAX_ROUNDS;
         rebuildProgressDots();
+        hideLoading();   // état restauré et affiché → on peut retirer l'écran de chargement
         showToast('📶','Partie restaurée','Reprise là où vous étiez !', 2400, function() {
           gameReady = true; startRound();
           applyPendingTimer();
@@ -1167,6 +1171,7 @@ function startNewGame() {
   document.getElementById('playerScore').textContent = '0'; document.getElementById('aiScore').textContent = '0';
   var dots = roundsProgress.querySelectorAll('.round-dot'); dots.forEach(function(d){ d.className = 'round-dot'; });
   updUI();
+  hideLoading();   // plateau prêt à 100% → on retire l'écran de chargement maintenant
   showToast('🎲','Partie commencée', BET_AMOUNT > 0 ? 'Mise : ' + BET_AMOUNT + ' ' + CURRENCY : '5 manches !', 2000, function() {
     gameReady = true; startRound();
   });

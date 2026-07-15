@@ -368,7 +368,7 @@ function initSocket() {
 
   /* ── Partie démarrée ── */
   socket.on('penalty_start', function(data) {
-    hideLoading();
+    // L'écran de chargement reste visible tant que le terrain n'est pas rendu à 100%.
     stopForfeitCountdown();
     document.getElementById('waiting-overlay').classList.remove('show');
 
@@ -382,9 +382,10 @@ function initSocket() {
       currentRound = data.gameState.round || 1;
       scores.me  = MY_SLOT === 1 ? (data.gameState.scores.p1 || 0) : (data.gameState.scores.p2 || 0);
       scores.op  = MY_SLOT === 1 ? (data.gameState.scores.p2 || 0) : (data.gameState.scores.p1 || 0);
-      roundHistory = []; 
+      roundHistory = [];
       fullHistory = [];
       updateScores();
+      hideLoading();   // état restauré et affiché → on retire l'écran de chargement
       showToast('📶', 'Reconnecté !', 'Reprise de la manche ' + currentRound + ' / ' + TOTAL_ROUNDS, 2200, function(){
         gameReady = true;
         startRound();
@@ -396,6 +397,7 @@ function initSocket() {
       roundHistory = [];
       fullHistory = [];
       updateScores();
+      hideLoading();   // terrain prêt à 100% → on retire l'écran de chargement
       var iamShooter = isMyShooter(1);
       showToast('⚽', 'Penalty Shootout !',
         MY_NAME + ' vs ' + OP_NAME + '\n' + TOTAL_ROUNDS + ' manches\n' +
