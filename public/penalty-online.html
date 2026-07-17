@@ -269,6 +269,8 @@ if (!ROOM_ID && P1_ID && P2_ID) {
   ROOM_ID = 'penalty-' + ids[0].slice(-8) + '-' + ids[1].slice(-8);
 }
 if (!ROOM_ID) ROOM_ID = P.get('gameId') || P.get('matchId') || ('penalty-' + Date.now());
+var GAME_ID = P.get('gameId') || P.get('matchId') || '';
+window.addEventListener('message', function(e) { if (e.data && e.data.type === 'client:mutual_quit' && socket && socket.connected) socket.emit('game_mutual_quit', { room: ROOM_ID, game: 'penalty', player: MY_SLOT }); });
 
 var MY_SUPABASE_ID = MY_SLOT === 1 ? P1_ID : P2_ID;
 var OP_SUPABASE_ID = MY_SLOT === 1 ? P2_ID : P1_ID;
@@ -345,6 +347,7 @@ function initSocket() {
 
   socket = io({
     transports: ['websocket', 'polling'],
+    auth: { token: P.get('token') || '' },
     reconnection: true,
     reconnectionAttempts: Infinity,
     reconnectionDelay: 1000,
@@ -480,6 +483,11 @@ function initSocket() {
   });
 
   /* ── Adversaire déconnecté ── */
+  socket.on('game:reconnect_deadline', function(data) {
+    if (gameOver || !data || !data.reconnectDeadline || !data.serverTime) return;
+    startForfeitCountdown(Math.max(0, Math.ceil((data.reconnectDeadline - data.serverTime) / 1000)));
+  });
+
   socket.on('penalty_opponent_disconnected', function(data) {
     if (gameOver) return;
     startForfeitCountdown(60);
@@ -543,7 +551,7 @@ function initSocket() {
 
 function emitJoin() {
   socket.emit('penalty_join', {
-    room: ROOM_ID,
+    room: ROOM_ID, gameId: GAME_ID,
     player: MY_SLOT,
     supabaseId: MY_SUPABASE_ID,
     name: MY_NAME,
@@ -569,7 +577,7 @@ function sendResult(outcome, reason) {
     p1Id: P1_ID, p2Id: P2_ID,
     scores: { [P1_ID]: MY_SLOT===1?scores.me:scores.op, [P2_ID]: MY_SLOT===2?scores.me:scores.op }
   };
-  try { window.parent.postMessage(msg, '*'); } catch(e) {}
+  // Wallet settlement is emitted by the authoritative server, never by this iframe.
   if (socket && socket.connected) socket.emit('penalty_result', msg);
 }
 

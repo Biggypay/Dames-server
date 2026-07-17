@@ -176,6 +176,8 @@ if (!ROOM_ID && P1_ID && P2_ID) {
   ROOM_ID = 'quori-' + _ids[0].slice(-8) + '-' + _ids[1].slice(-8);
 }
 if (!ROOM_ID) { ROOM_ID = P.get('gameId') || P.get('matchId') || ''; }
+var GAME_ID = P.get('gameId') || P.get('matchId') || '';
+window.addEventListener('message', function(e) { if (e.data && e.data.type === 'client:mutual_quit' && socket && socket.connected) socket.emit('game_mutual_quit', { room: ROOM_ID, game: 'quoridor', player: MY_SLOT }); });
 
 var MY_SUPABASE_ID = MY_SLOT === 1 ? P1_ID : P2_ID;
 var OP_SUPABASE_ID = MY_SLOT === 1 ? P2_ID : P1_ID;
@@ -840,7 +842,7 @@ function sendResult(outcome, reason) {
     bet: BET_AMOUNT, currency: CURRENCY,
     reason: reason || 'normal', p1Id: P1_ID, p2Id: P2_ID
   };
-  try { window.parent.postMessage(msg, '*'); } catch(e) {}
+  // Wallet settlement is emitted by the authoritative server, never by this iframe.
   if (socket && socket.connected) socket.emit('quoridor_result', msg);
 }
 
@@ -904,6 +906,7 @@ function initSocket() {
 
   socket = io({
     transports: ['websocket', 'polling'],
+    auth: { token: P.get('token') || '' },
     reconnection: true,
     reconnectionAttempts: Infinity,
     reconnectionDelay: 1000,
@@ -914,7 +917,7 @@ function initSocket() {
   socket.on('connect', function() {
     document.getElementById('reconn-bar').classList.remove('show');
     socket.emit('quoridor_join', {
-      room: ROOM_ID, player: MY_SLOT,
+      room: ROOM_ID, gameId: GAME_ID, player: MY_SLOT,
       supabaseId: MY_SUPABASE_ID, name: MY_NAME,
       bet: BET_AMOUNT, currency: CURRENCY
     });
@@ -931,7 +934,7 @@ function initSocket() {
     overlay.style.transition = 'opacity 0.4s';
     setTimeout(function() { overlay.style.display = 'none'; }, 400);
 
-    if (data.reconnected && gameReady) {
+    if (data.reconnected && gameReady && !data.paused) {
       gameOver = false; isProcessing = false;
       stopForfeitCountdown();
       showToast('📶', 'Connexion rétablie', 'La partie reprend !', 2000, function() {
@@ -1014,6 +1017,11 @@ function initSocket() {
   socket.on('quoridor_player_status', function(data) {
     if (data.slot === MY_SLOT) return;
     document.getElementById('profile-op').style.opacity = data.connected ? '1' : '0.45';
+  });
+
+  socket.on('game:reconnect_deadline', function(data) {
+    if (gameOver || !data || !data.reconnectDeadline || !data.serverTime) return;
+    startForfeitCountdown(Math.max(0, Math.ceil((data.reconnectDeadline - data.serverTime) / 1000)));
   });
 
   socket.on('quoridor_opponent_disconnected', function() {
