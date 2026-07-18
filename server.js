@@ -29,6 +29,18 @@ if (!process.env.JWT_SECRET) {
 }
 const ORIGIN          = process.env.ALLOWED_ORIGIN || '*';
 const ALLOWED_ORIGINS = ORIGIN === '*' ? '*' : ORIGIN.split(',').map(origin => origin.trim()).filter(Boolean);
+
+// Autorise les origines configurées + tout sous-domaine *.lovable.app
+// (site publié, aperçu id-preview--..., remix, PWA installée) : l'appli
+// MindSpille tourne sur lovable.app et doit pouvoir interroger /health,
+// ouvrir les sockets et intégrer les jeux en iframe.
+const LOVABLE_ORIGIN_RE = /^https:\/\/[a-z0-9-]+\.lovable\.app$/i;
+function isAllowedOrigin(origin) {
+  if (!origin) return false;
+  if (ALLOWED_ORIGINS === '*') return true;
+  if (Array.isArray(ALLOWED_ORIGINS) && ALLOWED_ORIGINS.includes(origin)) return true;
+  return LOVABLE_ORIGIN_RE.test(origin);
+}
 const SUPABASE_URL = String(process.env.SUPABASE_URL || '').replace(/\/$/, '');
 const SUPABASE_PUBLISHABLE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || '';
 // Never expose this key to a browser. It is used only to settle a game that
@@ -42,7 +54,7 @@ if (process.env.NODE_ENV === 'production' && (!process.env.JWT_SECRET || !SUPABA
 const FRAME_ANCESTORS = process.env.FRAME_ANCESTORS || '*';
 
 const io = new Server(server, {
-  cors: { origin: ALLOWED_ORIGINS, methods: ['GET', 'POST'] },
+  cors: { origin: (origin, cb) => cb(null, ALLOWED_ORIGINS === '*' || !origin || isAllowedOrigin(origin)), methods: ['GET', 'POST'] },
   maxHttpBufferSize: 1e5   // 100 KB max par message socket (anti-flood mémoire)
 });
 
@@ -50,15 +62,17 @@ app.disable('x-powered-by');
 app.use(express.json({ limit: '64kb' }));   // limite la taille des corps de requête
 app.use((req, res, next) => {
   const requestOrigin = req.headers.origin;
-  if (ALLOWED_ORIGINS === '*' || (requestOrigin && ALLOWED_ORIGINS.includes(requestOrigin))) {
-    res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGINS === '*' ? '*' : requestOrigin);
-    if (ALLOWED_ORIGINS !== '*') res.setHeader('Vary', 'Origin');
+  if (ALLOWED_ORIGINS === '*') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  } else if (requestOrigin && isAllowedOrigin(requestOrigin)) {
+    res.setHeader('Access-Control-Allow-Origin', requestOrigin);
+    res.setHeader('Vary', 'Origin');
   }
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   // On garde frame-ancestors permissif pour l'iframe Lovable, mais on ajoute les autres protections.
   res.setHeader('X-Frame-Options', 'ALLOWALL');
-  res.setHeader('Content-Security-Policy', 'frame-ancestors ' + FRAME_ANCESTORS);
+  res.setHeader('Content-Security-Policy', 'frame-ancestors ' + FRAME_ANCESTORS + ' https://*.lovable.app');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
@@ -991,13 +1005,19 @@ function notifyChifoumiRoomOver(room, roomId, winnerSlot, reason = 'normal') {
 // ══════════════════════════════════════════════════════════
 //  ROUTES HTTP (Auto-Correction & Debug 404)
 // ══════════════════════════════════════════════════════════
-app.get('/health', (req, res) => res.json({
-  status: 'ok', time: new Date().toISOString(),
-  games: games.size, damesRooms: damesRooms.size,
-  tttRooms: tttRooms.size, quoriRooms: quoriRooms.size,
-  penaltyRooms: penaltyRooms.size, chifoumiRooms: chifoumiRooms.size,
-  queue: [...queue.entries()].map(([amt, p]) => ({ betAmount: amt, waiting: p.length }))
-}));
+app.get('/health', (req, res) => {
+  // Le contrôle de disponibilité de l'appli doit réussir depuis n'importe
+  // quelle origine (PWA, aperçu, app installée). /health ne renvoie que
+  // l'état du serveur, aucune donnée sensible.
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.json({
+    status: 'ok', time: new Date().toISOString(),
+    games: games.size, damesRooms: damesRooms.size,
+    tttRooms: tttRooms.size, quoriRooms: quoriRooms.size,
+    penaltyRooms: penaltyRooms.size, chifoumiRooms: chifoumiRooms.size,
+    queue: [...queue.entries()].map(([amt, p]) => ({ betAmount: amt, waiting: p.length }))
+  });
+});
 
 // Routeur intelligent qui liste les vrais fichiers si ça plante
 const serveSmart = (possibleNames, injectRoom = false) => (req, res) => {
