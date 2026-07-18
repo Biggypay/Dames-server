@@ -23,6 +23,7 @@ Légende du statut :
 | Anti brute-force | Rate limit IP sur `/auth/login` et `/auth/register` (12 / 5 min → 429). |
 | Anti-flood socket | Déconnexion > 500 événements / 10 s ; `maxHttpBufferSize` 100 KB ; limite sur les émissions de résultat. |
 | Validation d'entrée | Identifiants de room validés ; raisons de fin normalisées ; corps HTTP limité à 64 KB. |
+| Anti-gel dames (serveur autoritatif + re-synchro) | Chaque coup validé incrémente une **version d'état** ; le serveur rediffuse l'état exact toutes les 5 s et sur demande (`dames_request_state`), **accuse réception** de chaque coup, renvoie l'état correctif quand un coup est rejeté, et restaure le plateau complet à la reconnexion. Un événement perdu (réseau mobile) se **corrige tout seul** au lieu de geler la partie. Testé : `npm test`. |
 | En-têtes de sécurité | `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`, `HSTS` ; `x-powered-by` retiré. |
 
 ---
@@ -33,9 +34,11 @@ Légende du statut :
 Le serveur **fait confiance** au client pour l'état du jeu (`boardState`, coups, scores). Un client modifié
 peut jouer des coups illégaux ou déclarer un score faux. L'anti-spoof actuel empêche de créditer un
 **tiers**, mais **pas** un joueur de mentir sur SA partie.
-**Fix (gros chantier) :** rendre le serveur **autoritatif** — il rejoue/valide chaque coup (le moteur de
-dames REST le fait déjà via `applyMove`, à étendre aux sockets et aux 4 autres jeux) et **calcule
-lui-même le gagnant**, sans jamais croire le client.
+**Fix (gros chantier) :** rendre le serveur **autoritatif** — il rejoue/valide chaque coup et **calcule
+lui-même le gagnant**, sans jamais croire le client. **Fait pour les dames** (sockets : `applyMove`
++ version d'état + re-synchro automatique anti-gel) ; les coups Tic-Tac-Toe et Quoridor sont aussi
+validés côté serveur. Reste : étendre la **re-synchro automatique** aux autres jeux et durcir
+l'arbitrage de Penalty/Chifoumi.
 
 ### 2. 🟦 Portefeuille & anti double-dépense (Supabase)
 Double dépôt/retrait, soldes négatifs, crédits en double : à sécuriser dans Supabase avec
@@ -83,7 +86,7 @@ Définir `JWT_SECRET` fort dans Render ; s'assurer qu'aucun secret n'est commit�
 
 1. **Définir `JWT_SECRET` fort dans Render** (5 min, énorme gain).
 2. **Supabase : RLS + portefeuille atomique + webhooks signés** (le cœur de l'argent).
-3. **Serveur autoritatif** pour les résultats de jeu (étendre la validation des coups à tous les jeux).
+3. **Serveur autoritatif** pour les résultats de jeu — fait pour les dames (validation + re-synchro anti-gel) ; étendre la re-synchro à TTT/Quoridor puis à Penalty/Chifoumi.
 4. **Concevoir le mode tournoi de façon sécurisée** s'il doit exister (anti multi-comptes, récompenses idempotentes).
 5. **Monitoring financier** : alerte sur variations de solde anormales.
 
