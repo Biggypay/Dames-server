@@ -187,6 +187,13 @@ var forfeitTimer = null;
 var forfeitCountdown = 0;
 var pendingTimerData = null;
 
+/* Re-synchro autoritative : le serveur numérote chaque coup validé (version).
+   Si un événement se perd en route, la version révèle le trou et le client
+   récupère l'état exact au lieu de rester figé. */
+var stateVersion = 0;      // dernière version du plateau confirmée par le serveur
+var ackTimer = null;       // coup émis, en attente d'accusé de réception serveur
+var syncRequestedAt = 0;   // anti-spam des demandes d'état
+
 var gameOver = false, isProcessing = false, gameReady = false;
 var currentPlayer = 0;
 var board = [], selectedPiece = null, validMoves = [];
@@ -226,15 +233,25 @@ function initSocket(){
 
   socket.on('dames_start', function(data){
     hideLoading();
-    if(data.reconnected && gameReady && !data.paused){
-      gameOver = false; isProcessing = false; stopForfeitCountdown();
-      showToast('📶','Connexion rétablie','La partie reprend !', 2000, updUI);
-    } else if(data.reconnected && data.boardState){
+    if(data.reconnected && data.boardState){
+      /* Avant, une reconnexion rapide en pleine partie ne restaurait PAS le
+         plateau : un coup raté pendant la coupure restait perdu et le jeu
+         gelait. Désormais on ne saute la restauration que si le serveur
+         confirme (même version d'état) qu'aucun coup n'a été manqué. */
+      var nothingMissed = gameReady && !data.paused &&
+        typeof data.stateVersion === 'number' && data.stateVersion === stateVersion;
+      if(nothingMissed){
+        gameOver = false; isProcessing = false; stopForfeitCountdown();
+        showToast('📶','Connexion rétablie','La partie reprend !', 2000, updUI);
+        return;
+      }
       gameOver = false; isProcessing = false; resultSent = false;
       moveSequence = []; isSequenceActive = false; stopForfeitCountdown();
+      if(ackTimer){ clearTimeout(ackTimer); ackTimer = null; }
       try {
         board = JSON.parse(data.boardState);
         currentPlayer = data.currentPlayer !== undefined ? data.currentPlayer : 0;
+        stateVersion = typeof data.stateVersion === 'number' ? data.stateVersion : 0;
         
         // CORRECTION CAMÉRA: 0 pour Blanc (regarde depuis le bas), Math.PI pour Rouge
         camTheta = MY_PLAYER === 0 ? 0 : Math.PI; 
@@ -252,6 +269,9 @@ function initSocket(){
           gameReady = true; updUI(); applyPendingTimer();
         });
       } catch(e) { startMultiGame(); }
+    } else if(data.reconnected && gameReady && !data.paused){
+      gameOver = false; isProcessing = false; stopForfeitCountdown();
+      showToast('📶','Connexion rétablie','La partie reprend !', 2000, updUI);
     } else {
       startMultiGame();
     }
@@ -284,9 +304,46 @@ function initSocket(){
 
   socket.on('dames_move', function(data){
     if(data.player === MY_SLOT) return;
+    if(typeof data.version === 'number'){
+      if(data.version <= stateVersion) return;                            // doublon / déjà appliqué
+      if(data.version > stateVersion + 1){ requestStateSync(); return; }  // coup manqué : resynchro
+      stateVersion = data.version;
+    }
     if(data.steps && data.steps.length > 0){
       executeRemoteSequence(data.steps, data.isComplete);
     }
+  });
+
+  socket.on('dames_move_ack', function(data){
+    if(!data || data.room !== ROOM_ID) return;
+    if(ackTimer){ clearTimeout(ackTimer); ackTimer = null; }
+    if(typeof data.version === 'number' && data.version > stateVersion) stateVersion = data.version;
+  });
+
+  /* Filet de sécurité : le serveur renvoie l'état exact toutes les quelques
+     secondes (et sur demande). Si le plateau local a divergé — coup perdu en
+     route, événement raté — on se recale dessus au lieu de rester figé. */
+  socket.on('dames_state_sync', function(data){
+    if(gameOver || !gameReady || !data || data.room !== ROOM_ID) return;
+    if(isProcessing || isSequenceActive || ackTimer) return; // animation ou coup en vol : on laisse finir
+    var serverBoard;
+    try { serverBoard = JSON.parse(data.boardState); } catch(e){ return; }
+    if(!serverBoard || serverBoard.length !== BS) return;
+    var sameVersion = typeof data.version !== 'number' || data.version === stateVersion;
+    if(sameVersion && !boardsDiffer(serverBoard) && currentPlayer === data.currentPlayer){
+      // Tout est en phase : on ne recale que le chrono s'il s'est éteint.
+      if(!timerActive && !graceActive && data.turnPlayer && data.status === 'playing') applySyncTimers(data);
+      return;
+    }
+    adoptServerState(serverBoard, data);
+  });
+
+  socket.on('game:error', function(data){
+    if(gameOver) return;
+    // Coup refusé (ou autre erreur) : l'accusé n'arrivera jamais. On récupère
+    // l'état autoritatif immédiatement pour annuler la divergence locale.
+    if(ackTimer){ clearTimeout(ackTimer); ackTimer = null; }
+    requestStateSync();
   });
 
   socket.on('game:reconnect_deadline', function(data){
@@ -334,6 +391,56 @@ function applyPendingTimer(){
     if(d.graceStartTime) startGraceTimer(isMyTurn, d.graceStartTime+offset, 60000);
     else if(d.turnStartTime) startTimer(isMyTurn, d.turnStartTime+offset);
   }
+}
+
+/* ══════════════════════════════════════════
+   RE-SYNCHRO AUTORITATIVE (anti-gel)
+══════════════════════════════════════════ */
+function boardsDiffer(serverBoard){
+  for(var r=0; r<BS; r++) for(var c=0; c<BS; c++){
+    var s = serverBoard[r] ? serverBoard[r][c] : null;
+    var l = board[r] ? board[r][c] : null;
+    if(!s !== !l) return true;
+    if(s && l && (s.player !== l.player || !!s.king !== !!l.king)) return true;
+  }
+  return false;
+}
+
+function applySyncTimers(data){
+  var offset = Date.now() - (data.serverTime || Date.now());
+  var isMyTurn = (data.turnPlayer === MY_SLOT);
+  if(data.graceStartTime) startGraceTimer(isMyTurn, data.graceStartTime + offset, data.graceDuration || 60000);
+  else if(data.turnStartTime) startTimer(isMyTurn, data.turnStartTime + offset);
+}
+
+/* Adopte l'état exact du serveur : plateau, tour, scores, chrono. C'est ce qui
+   « décoince » une partie dont un coup s'est perdu en route. */
+function adoptServerState(serverBoard, data){
+  board = serverBoard;
+  if(typeof data.version === 'number') stateVersion = data.version;
+  if(data.currentPlayer !== undefined && data.currentPlayer !== null) currentPlayer = data.currentPlayer;
+  selectedPiece = null; validMoves = []; moveSequence = [];
+  isSequenceActive = false; currentTurnCaptures = []; isProcessing = false;
+  pendingTimerData = null;
+  var wc = 0, rc = 0;
+  for(var r=0; r<BS; r++) for(var c=0; c<BS; c++) if(board[r][c]){ if(board[r][c].player === 0) wc++; else rc++; }
+  capturedBy = [Math.max(0, 20-rc), Math.max(0, 20-wc)];
+  document.getElementById('score-w').textContent = wc;
+  document.getElementById('score-r').textContent = rc;
+  syncPieces(); clearHighlights(); clearLastMove(); updateCapturedDisplay();
+  if(data.lastMove && data.lastMove.from) showLastMoveOrigin(data.lastMove.from.row, data.lastMove.from.col);
+  stopTimer(); stopGraceTimer();
+  if(data.turnPlayer && data.status === 'playing') applySyncTimers(data);
+  updUI();
+  showToast('🔄','Resynchronisé','Le plateau a été recalé sur le serveur.', 1600, null);
+}
+
+function requestStateSync(){
+  if(gameOver || !socket) return;
+  var now = Date.now();
+  if(now - syncRequestedAt < 1500) return;
+  syncRequestedAt = now;
+  socket.emit('dames_request_state', { room: ROOM_ID });
 }
 
 function startForfeitCountdown(seconds){
@@ -901,11 +1008,17 @@ function afterPlayerStep(to, mesh, originRow, originCol){
       isSequenceActive = false;
       var nextPlayer = 1 - currentPlayer;
 
-      if(socket && socket.connected){
+      if(socket){
+        // Émis même hors connexion : Socket.io met le coup en file et
+        // l'enverra à la reconnexion, au lieu de le perdre en silence.
         socket.emit('dames_move', {
           room: ROOM_ID, player: MY_SLOT, steps: moveSequence, isComplete: true,
           boardState: JSON.stringify(board), nextPlayer: nextPlayer, from: moveSequence[0].from, to: moveSequence[moveSequence.length-1].to
         });
+        // Sans accusé de réception sous 5 s, le coup s'est peut-être perdu :
+        // on redemande l'état réel au serveur (qui tranche dans un sens ou l'autre).
+        if(ackTimer) clearTimeout(ackTimer);
+        ackTimer = setTimeout(function(){ ackTimer = null; requestStateSync(); }, 5000);
       }
 
       moveSequence = [];

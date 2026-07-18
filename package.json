@@ -2,7 +2,10 @@
   "name": "checkers-server",
   "version": "1.0.0",
   "main": "server.js",
-  "scripts": { "start": "node server.js" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node tests/test_resync.js"
+  },
   "engines": { "node": "20.x" },
   "dependencies": {
     "socket.io": "^4.7.4",
@@ -11,5 +14,8 @@
     "jsonwebtoken": "^9.0.2",
     "uuid": "^9.0.0",
     "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.7.4"
   }
 }

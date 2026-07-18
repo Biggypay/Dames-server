@@ -578,6 +578,40 @@ function startDamesTurnTimer(droom, roomId, playerSlot) {
   }, TURN_DURATION);
 }
 
+// ── RE-SYNCHRO AUTORITATIVE DAMES ──────────────────────────
+// Le serveur est la seule source de vérité du plateau. Un événement socket
+// peut se perdre (réseau mobile, socket à moitié morte) : sans rattrapage, le
+// plateau du joueur reste figé et la partie meurt en timeout/abandon. Ce bloc
+// renvoie donc l'état exact à intervalle régulier et sur demande, pour qu'un
+// coup perdu se corrige tout seul au lieu de geler la partie.
+const DAMES_SYNC_INTERVAL = 5000;
+
+function damesSnapshot(droom) {
+  const snap = {
+    room: droom.id,
+    version: droom.stateVersion || 0,
+    boardState: droom.boardState,
+    currentPlayer: droom.currentPlayer,
+    lastMove: droom.lastMove || null,
+    status: droom.status,
+    serverTime: Date.now()
+  };
+  if (droom.turnPlayer !== null && droom.status === 'playing') {
+    snap.turnPlayer = droom.turnPlayer;
+    if (droom.graceStartTime) { snap.graceStartTime = droom.graceStartTime; snap.graceDuration = GRACE_DURATION; }
+    else if (droom.turnStartTime) { snap.turnStartTime = droom.turnStartTime; snap.turnDuration = TURN_DURATION; }
+  }
+  return snap;
+}
+
+const _damesSyncLoop = setInterval(() => {
+  for (const [roomId, droom] of damesRooms) {
+    if (droom.status !== 'playing') continue;
+    io.to(roomId).emit('dames_state_sync', damesSnapshot(droom));
+  }
+}, DAMES_SYNC_INTERVAL);
+if (_damesSyncLoop.unref) _damesSyncLoop.unref();
+
 function clearTTTTurnTimers(troom) {
   if (troom.turnTimer)  { clearTimeout(troom.turnTimer);  troom.turnTimer  = null; }
   if (troom.graceTimer) { clearTimeout(troom.graceTimer); troom.graceTimer = null; }
@@ -1288,7 +1322,7 @@ io.on('connection', (socket) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return rejectSocket(socket, 'Room ou joueur invalide.');
     let droom = damesRooms.get(room);
     if (!droom) {
-      droom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, engineBoard: initialBoard(), boardState: JSON.stringify(checkersClientBoard(initialBoard())), currentPlayer: 0, lastMove: null, turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null, turnPlayer: null };
+      droom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, engineBoard: initialBoard(), boardState: JSON.stringify(checkersClientBoard(initialBoard())), currentPlayer: 0, lastMove: null, stateVersion: 0, turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null, turnPlayer: null };
       damesRooms.set(room, droom);
     }
     if (!bindDatabaseGame(droom, gameId)) return rejectSocket(socket, 'Cette room est déjà liée à une autre partie.');
@@ -1302,6 +1336,7 @@ io.on('connection', (socket) => {
         clearTimeout(droom.disconnectTimer); droom.disconnectTimer = null; droom.reconnectDeadline = null; droom.status = 'playing';
         startDamesTurnTimer(droom, room, droom.pausedTurnPlayer || 1);
         io.to(room).emit('dames_game_resumed', { message: 'Les deux joueurs sont de retour. La partie reprend !' });
+        io.to(room).emit('dames_state_sync', damesSnapshot(droom));
       } else if (droom.disconnectTimer) {
         setTimeout(() => socket.emit('game:reconnect_deadline', { game: 'dames', serverTime: Date.now(), reconnectDeadline: droom.reconnectDeadline }), 0);
       }
@@ -1327,7 +1362,7 @@ io.on('connection', (socket) => {
       socket.to(room).emit('dames_player_status', { slot: player, connected: true, name });
       socket.to(room).emit('player:reconnected', { message: `${name} est de retour !` });
       const opponentName = player === 1 ? (droom.players[2]?.name || 'Adversaire') : (droom.players[1]?.name || 'Adversaire');
-      socket.emit('dames_start', { room, yourSlot: player, opponentName, bet: droom.betAmount, currency: droom.currency, reconnected: true, paused: droom.status === 'paused', boardState: droom.boardState || null, currentPlayer: droom.currentPlayer !== undefined ? droom.currentPlayer : 0, lastMove: droom.lastMove || null });
+      socket.emit('dames_start', { room, yourSlot: player, opponentName, bet: droom.betAmount, currency: droom.currency, reconnected: true, paused: droom.status === 'paused', boardState: droom.boardState || null, currentPlayer: droom.currentPlayer !== undefined ? droom.currentPlayer : 0, lastMove: droom.lastMove || null, stateVersion: droom.stateVersion || 0 });
       if (droom.turnPlayer !== null && droom.status === 'playing') {
         const now = Date.now();
         if (droom.graceStartTime) socket.emit('dames_turn_sync', { serverTime: now, turnPlayer: droom.turnPlayer, graceStartTime: droom.graceStartTime, duration: GRACE_DURATION });
@@ -1350,19 +1385,36 @@ io.on('connection', (socket) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return;
     const droom = damesRooms.get(room);
     if (!droom || droom.status !== 'playing' || droom.players[player]?.socketId !== socket.id) return;
-    if (droom.currentPlayer !== player - 1) return rejectSocket(socket, 'Ce n’est pas votre tour.');
+    // Sur rejet, on renvoie l'état autoritatif après l'erreur : un client dont
+    // le plateau a divergé (coup local appliqué mais refusé ici) se recale au
+    // lieu de rester figé sur une position que le serveur ne connaît pas.
+    if (droom.currentPlayer !== player - 1) { rejectSocket(socket, 'Ce n’est pas votre tour.'); return void socket.emit('dames_state_sync', damesSnapshot(droom)); }
     const sequence = Array.isArray(steps) && steps.length ? steps : [{ from, to }];
     const first = sequence[0]?.from, last = sequence[sequence.length - 1]?.to;
     if (!first || !last || !Number.isInteger(first.row) || !Number.isInteger(first.col) || !Number.isInteger(last.row) || !Number.isInteger(last.col)) return rejectSocket(socket, 'Coup de dames invalide.');
     const result = applyMove(droom.engineBoard, player === 1 ? 'white' : 'black', first.row, first.col, last.row, last.col);
-    if (!result.ok) return rejectSocket(socket, result.reason);
+    if (!result.ok) { rejectSocket(socket, result.reason); return void socket.emit('dames_state_sync', damesSnapshot(droom)); }
     droom.engineBoard = result.board;
     droom.boardState = JSON.stringify(checkersClientBoard(result.board));
     droom.currentPlayer = result.next === 'white' ? 0 : 1;
+    droom.stateVersion = (droom.stateVersion || 0) + 1;
     droom.lastMove = { from: first, to: last, player };
-    socket.to(room).emit('dames_move', { room, player, steps: sequence, boardState: droom.boardState, nextPlayer: droom.currentPlayer, isComplete: true });
+    socket.to(room).emit('dames_move', { room, player, steps: sequence, boardState: droom.boardState, nextPlayer: droom.currentPlayer, isComplete: true, version: droom.stateVersion });
+    // Accusé de réception : le joueur sait que son coup est enregistré. Sans
+    // ack sous quelques secondes, son client redemande l'état complet.
+    socket.emit('dames_move_ack', { room, version: droom.stateVersion, currentPlayer: droom.currentPlayer });
     if (result.winner) return notifyDamesRoomOver(droom, room, result.winner === 'white' ? 1 : 2, 'checkmate');
     startDamesTurnTimer(droom, room, droom.currentPlayer + 1);
+  });
+
+  // Un joueur de la room peut redemander l'état exact à tout moment (plateau
+  // figé, événement raté, doute après reconnexion). Lecture seule, limitée.
+  socket.on('dames_request_state', ({ room } = {}) => {
+    if (!validRoom(room)) return;
+    if (!socketAllow(socket.id, 'dsync', 20, 10000)) return;
+    const droom = damesRooms.get(room);
+    if (!droom || !socketIsPlayer(droom, socket.id)) return;
+    socket.emit('dames_state_sync', damesSnapshot(droom));
   });
 
   socket.on('dames_result', (data) => {
