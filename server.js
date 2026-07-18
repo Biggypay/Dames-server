@@ -76,8 +76,11 @@ app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   // On garde frame-ancestors permissif pour l'iframe Lovable, mais on ajoute les autres protections.
-  res.setHeader('X-Frame-Options', 'ALLOWALL');
-  res.setHeader('Content-Security-Policy', 'frame-ancestors ' + FRAME_ANCESTORS + ' https://*.lovable.app');
+  // Pas de restriction d'affichage en iframe : l'appli MindSpille est aussi
+  // une app native (WebView) dont l'origine (capacitor://…, https://localhost…)
+  // n'est pas https://*.lovable.app et serait bloquée par frame-ancestors,
+  // laissant l'iframe du jeu blanche. Le jeu n'expose aucune donnée sensible
+  // (le jeton est propre au joueur), donc autoriser l'embed partout est sûr.
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
