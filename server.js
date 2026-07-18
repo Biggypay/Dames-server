@@ -54,7 +54,7 @@ if (process.env.NODE_ENV === 'production' && (!process.env.JWT_SECRET || !SUPABA
 const FRAME_ANCESTORS = process.env.FRAME_ANCESTORS || '*';
 
 const io = new Server(server, {
-  cors: { origin: (origin, cb) => cb(null, ALLOWED_ORIGINS === '*' || !origin || isAllowedOrigin(origin)), methods: ['GET', 'POST'] },
+  cors: { origin: true, methods: ['GET', 'POST'] },
   maxHttpBufferSize: 1e5   // 100 KB max par message socket (anti-flood mémoire)
 });
 
@@ -62,11 +62,16 @@ app.disable('x-powered-by');
 app.use(express.json({ limit: '64kb' }));   // limite la taille des corps de requête
 app.use((req, res, next) => {
   const requestOrigin = req.headers.origin;
-  if (ALLOWED_ORIGINS === '*') {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-  } else if (requestOrigin && isAllowedOrigin(requestOrigin)) {
+  if (requestOrigin) {
+    // On reflète l'origine appelante : l'appli MindSpille peut tourner sur
+    // lovable.app, un aperçu ou une app installée (origine variable). La
+    // sécurité réelle vient de la validation du jeton Supabase et des Bearer
+    // JWT côté serveur — aucun cookie n'est utilisé, donc refléter l'origine
+    // est sans danger (impossible de détourner une session cross-origine).
     res.setHeader('Access-Control-Allow-Origin', requestOrigin);
     res.setHeader('Vary', 'Origin');
+  } else if (ALLOWED_ORIGINS === '*') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
   }
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
