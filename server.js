@@ -218,6 +218,9 @@ async function settleRoomInSupabase(room, game, winnerSlot, reason) {
     const expectedType = DB_GAME_TYPES[game];
     const sameBet = dbGame && Math.abs(Number(dbGame.bet_amount || 0) - Number(room.betAmount || 0)) < 0.0001;
     if (!samePlayers || dbGame.game_type !== expectedType || !sameBet) throw new Error('Database game does not match authenticated room');
+    // A game can only be settled after the server has started it. This blocks
+    // stale lobby/reconnect events from finalising a game that never began.
+    if (dbGame.status !== 'in_progress') throw new Error('Database game is not in progress; settlement refused');
     const startedAt = Number(room.startedAt || Date.now());
     const payload = {
       p_game_id: room.databaseGameId,
@@ -920,8 +923,8 @@ function notifyGameOver(game, winner, reason = 'checkmate') {
   emitToUser(winnerId, 'game:result', { postMessage: { ...base, result: 'win',  myResult: +netGain } });
   emitToUser(loserId,  'game:over',   { ...base, result: 'loss', myResult: -bet });
   emitToUser(loserId,  'game:result', { postMessage: { ...base, result: 'loss', myResult: -bet } });
-  io.to(game.id).emit('game:over',   { ...base, result: 'win', myResult: +netGain });
-  io.to(game.id).emit('game:result', { postMessage: { ...base, result: 'win', myResult: +netGain } });
+  // Player-specific results must not be broadcast to the whole room: both
+  // sockets belong to it, so a shared win packet made the loser look like a winner.
 }
 
 function notifyDamesRoomOver(room, roomId, winnerSlot, reason = 'normal') {
@@ -944,7 +947,6 @@ function notifyDamesRoomOver(room, roomId, winnerSlot, reason = 'normal') {
   const base = { type: 'game_over', game: 'dames', room: roomId, winner: winnerSlot === 1 ? 'player1' : 'player2', winnerSlot, winnerSupabaseId: winP?.supabaseId, loserSupabaseId: losP?.supabaseId, p1Id: p1?.supabaseId, p2Id: p2?.supabaseId, betAmount: bet, totalPot, commission, netGain, currency: room.currency || 'HTG', reason };
   if (winP?.socketId) { io.to(winP.socketId).emit('game:over', { ...base, result: 'win',  myResult: +netGain }); io.to(winP.socketId).emit('game:result', { postMessage: { ...base, result: 'win',  myResult: +netGain } }); }
   if (losP?.socketId) { io.to(losP.socketId).emit('game:over', { ...base, result: 'loss', myResult: -bet });     io.to(losP.socketId).emit('game:result', { postMessage: { ...base, result: 'loss', myResult: -bet } }); }
-  io.to(roomId).emit('game:over', { ...base, result: 'win', myResult: +netGain });
   io.to(roomId).emit('game:result', { postMessage: base });
 }
 
@@ -968,7 +970,6 @@ function notifyTTTRoomOver(troom, roomId, winnerSlot, reason = 'normal') {
   const base = { type: 'game_over', game: 'tictactoe', room: roomId, winner: winnerSlot === 1 ? 'player1' : 'player2', winnerSlot, winnerSupabaseId: winP?.supabaseId, loserSupabaseId: losP?.supabaseId, p1Id: p1?.supabaseId, p2Id: p2?.supabaseId, betAmount: bet, totalPot, commission, netGain, currency: troom.currency || 'HTG', reason };
   if (winP?.socketId) { io.to(winP.socketId).emit('game:over', { ...base, result: 'win',  myResult: +netGain }); io.to(winP.socketId).emit('game:result', { postMessage: { ...base, result: 'win',  myResult: +netGain } }); }
   if (losP?.socketId) { io.to(losP.socketId).emit('game:over', { ...base, result: 'loss', myResult: -bet });     io.to(losP.socketId).emit('game:result', { postMessage: { ...base, result: 'loss', myResult: -bet } }); }
-  io.to(roomId).emit('game:over', { ...base, result: 'win', myResult: +netGain });
   io.to(roomId).emit('game:result', { postMessage: base });
 }
 
@@ -992,7 +993,6 @@ function notifyQuoriRoomOver(qroom, roomId, winnerSlot, reason = 'normal') {
   const base = { type: 'game_over', game: 'quoridor', room: roomId, winner: winnerSlot === 1 ? 'player1' : 'player2', winnerSlot, winnerSupabaseId: winP?.supabaseId, loserSupabaseId: losP?.supabaseId, p1Id: p1?.supabaseId, p2Id: p2?.supabaseId, betAmount: bet, totalPot, commission, netGain, currency: qroom.currency || 'HTG', reason };
   if (winP?.socketId) { io.to(winP.socketId).emit('game:over', { ...base, result: 'win',  myResult: +netGain }); io.to(winP.socketId).emit('game:result', { postMessage: { ...base, result: 'win',  myResult: +netGain } }); }
   if (losP?.socketId) { io.to(losP.socketId).emit('game:over', { ...base, result: 'loss', myResult: -bet });     io.to(losP.socketId).emit('game:result', { postMessage: { ...base, result: 'loss', myResult: -bet } }); }
-  io.to(roomId).emit('game:over', { ...base, result: 'win', myResult: +netGain });
   io.to(roomId).emit('game:result', { postMessage: base });
 }
 
@@ -1016,7 +1016,6 @@ function notifyPenaltyRoomOver(proom, roomId, winnerSlot, reason = 'normal') {
   const base = { type: 'game_over', game: 'penalty', room: roomId, winner: winnerSlot === 1 ? 'player1' : 'player2', winnerSlot, winnerSupabaseId: winP?.supabaseId, loserSupabaseId:  losP?.supabaseId, p1Id: p1?.supabaseId, p2Id: p2?.supabaseId, betAmount: bet, totalPot, commission, netGain, currency: proom.currency || 'HTG', reason, scores: proom.scores };
   if (winP?.socketId) { io.to(winP.socketId).emit('game:over', { ...base, result: 'win',  myResult: +netGain }); io.to(winP.socketId).emit('game:result', { postMessage: { ...base, result: 'win',  myResult: +netGain } }); }
   if (losP?.socketId) { io.to(losP.socketId).emit('game:over', { ...base, result: 'loss', myResult: -bet }); io.to(losP.socketId).emit('game:result', { postMessage: { ...base, result: 'loss', myResult: -bet } }); }
-  io.to(roomId).emit('game:over', { ...base, result: 'win', myResult: +netGain });
   io.to(roomId).emit('game:result', { postMessage: base });
 }
 
@@ -1040,7 +1039,6 @@ function notifyChifoumiRoomOver(room, roomId, winnerSlot, reason = 'normal') {
   const base = { type: 'game_over', game: 'chifoumi', room: roomId, winner: winnerSlot === 1 ? 'player1' : 'player2', winnerSlot, winnerSupabaseId: winP?.supabaseId, loserSupabaseId: losP?.supabaseId, p1Id: p1?.supabaseId, p2Id: p2?.supabaseId, betAmount: bet, totalPot, commission, netGain, currency: room.currency || 'HTG', reason, scores: room.scores };
   if (winP?.socketId) { io.to(winP.socketId).emit('game:over', { ...base, result: 'win', myResult: +netGain }); io.to(winP.socketId).emit('game:result', { postMessage: { ...base, result: 'win', myResult: +netGain } }); }
   if (losP?.socketId) { io.to(losP.socketId).emit('game:over', { ...base, result: 'loss', myResult: -bet }); io.to(losP.socketId).emit('game:result', { postMessage: { ...base, result: 'loss', myResult: -bet } }); }
-  io.to(roomId).emit('game:over', { ...base, result: 'win', myResult: +netGain });
   io.to(roomId).emit('game:result', { postMessage: base });
 }
 
