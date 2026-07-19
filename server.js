@@ -507,6 +507,49 @@ function joinRoomAsAuthenticatedPlayer(socket, roomState, roomId, player, claime
   return roomState.players[player];
 }
 
+// The HTTP compatibility gate and the Socket.io join happen immediately one
+// after the other and used to perform the same PostgREST query twice per
+// player. Share the in-flight request and keep its immutable join fields for a
+// very short period. Socket room ownership is still checked independently.
+const databaseGameJoinCache = new Map();
+const databaseGameJoinInFlight = new Map();
+const DATABASE_GAME_JOIN_CACHE_TTL_MS = 2500;
+
+async function loadDatabaseGameForJoin(gameId) {
+  const cached = databaseGameJoinCache.get(gameId);
+  if (cached && cached.expiresAt > Date.now()) return cached.game;
+  if (cached) databaseGameJoinCache.delete(gameId);
+  if (databaseGameJoinInFlight.has(gameId)) return databaseGameJoinInFlight.get(gameId);
+
+  const lookup = (async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    try {
+      const response = await fetch(
+        SUPABASE_URL + '/rest/v1/games?id=eq.' + encodeURIComponent(gameId) + '&select=id,game_type,player1_id,player2_id,bet_amount,status',
+        { headers: serverSupabaseHeaders(), signal: controller.signal }
+      );
+      if (!response.ok) throw new Error('database_game_lookup_' + response.status);
+      const rows = await response.json();
+      const game = Array.isArray(rows) ? rows[0] || null : null;
+      databaseGameJoinCache.set(gameId, {
+        game,
+        expiresAt: Date.now() + DATABASE_GAME_JOIN_CACHE_TTL_MS
+      });
+      return game;
+    } finally {
+      clearTimeout(timeout);
+    }
+  })();
+
+  databaseGameJoinInFlight.set(gameId, lookup);
+  try {
+    return await lookup;
+  } finally {
+    databaseGameJoinInFlight.delete(gameId);
+  }
+}
+
 async function verifyDatabaseGameForJoin(socket, gameId, gameName, player, bet) {
   const user = authenticatedSocketUser(socket);
   if (!user?.supabaseId) return { ok: false, message: 'Authentification requise.' };
@@ -515,16 +558,8 @@ async function verifyDatabaseGameForJoin(socket, gameId, gameName, player, bet) 
     return { ok: false, message: 'Identifiant de partie manquant ou invalide.' };
   }
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return { ok: false, message: 'Validation serveur temporairement indisponible.' };
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5000);
   try {
-    const response = await fetch(
-      SUPABASE_URL + '/rest/v1/games?id=eq.' + encodeURIComponent(gameId) + '&select=id,game_type,player1_id,player2_id,bet_amount,status',
-      { headers: serverSupabaseHeaders(), signal: controller.signal }
-    );
-    if (!response.ok) return { ok: false, message: 'Impossible de valider la partie.' };
-    const rows = await response.json();
-    const game = Array.isArray(rows) ? rows[0] : null;
+    const game = await loadDatabaseGameForJoin(gameId);
     const expectedPlayer = player === 1 ? game?.player1_id : game?.player2_id;
     const sameBet = game && Math.abs(Number(game.bet_amount || 0) - Number(bet || 0)) < 0.0001;
     if (!game || game.game_type !== DB_GAME_TYPES[gameName] || expectedPlayer !== user.supabaseId || !sameBet) {
@@ -534,8 +569,6 @@ async function verifyDatabaseGameForJoin(socket, gameId, gameName, player, bet) 
     return { ok: true };
   } catch {
     return { ok: false, message: 'Validation serveur temporairement indisponible.' };
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
@@ -765,24 +798,67 @@ function findUserBySupabaseId(supabaseId) {
   return null;
 }
 
+// A game page used to verify the same Supabase token again on every mount.
+// Cache only successful verifications, keyed by a SHA-256 digest (never by the
+// raw token), for at most one minute and never beyond the JWT expiry.
+const verifiedSupabaseTokens = new Map();
+const supabaseVerificationInFlight = new Map();
+const SUPABASE_AUTH_CACHE_TTL_MS = 60 * 1000;
+const SUPABASE_AUTH_CACHE_MAX = 2000;
+
+function supabaseTokenDigest(accessToken) {
+  return crypto.createHash('sha256').update(accessToken).digest('hex');
+}
+
+function cacheVerifiedSupabaseProfile(key, accessToken, profile) {
+  let expiresAt = Date.now() + SUPABASE_AUTH_CACHE_TTL_MS;
+  try {
+    const decoded = jwt.decode(accessToken);
+    if (decoded && Number.isFinite(Number(decoded.exp))) {
+      expiresAt = Math.min(expiresAt, Number(decoded.exp) * 1000 - 5000);
+    }
+  } catch {}
+  if (expiresAt <= Date.now()) return;
+  if (verifiedSupabaseTokens.size >= SUPABASE_AUTH_CACHE_MAX) {
+    verifiedSupabaseTokens.delete(verifiedSupabaseTokens.keys().next().value);
+  }
+  verifiedSupabaseTokens.set(key, { profile, expiresAt });
+}
+
 // The browser must prove its Supabase identity. A raw UUID received from a
 // client is never an authentication credential.
 async function verifySupabaseAccessToken(accessToken) {
   if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY || typeof accessToken !== 'string' || accessToken.length < 20 || accessToken.length > 4096) return null;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5000);
+  const key = supabaseTokenDigest(accessToken);
+  const cached = verifiedSupabaseTokens.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.profile;
+  if (cached) verifiedSupabaseTokens.delete(key);
+  if (supabaseVerificationInFlight.has(key)) return supabaseVerificationInFlight.get(key);
+
+  const verification = (async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    try {
+      const response = await fetch(SUPABASE_URL + '/auth/v1/user', {
+        headers: { apikey: SUPABASE_PUBLISHABLE_KEY, Authorization: 'Bearer ' + accessToken },
+        signal: controller.signal
+      });
+      if (!response.ok) return null;
+      const profile = await response.json();
+      if (!profile || typeof profile.id !== 'string') return null;
+      cacheVerifiedSupabaseProfile(key, accessToken, profile);
+      return profile;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  })();
+  supabaseVerificationInFlight.set(key, verification);
   try {
-    const response = await fetch(SUPABASE_URL + '/auth/v1/user', {
-      headers: { apikey: SUPABASE_PUBLISHABLE_KEY, Authorization: 'Bearer ' + accessToken },
-      signal: controller.signal
-    });
-    if (!response.ok) return null;
-    const profile = await response.json();
-    return profile && typeof profile.id === 'string' ? profile : null;
-  } catch {
-    return null;
+    return await verification;
   } finally {
-    clearTimeout(timeout);
+    supabaseVerificationInFlight.delete(key);
   }
 }
 
@@ -1352,6 +1428,60 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Serve the 3D runtime from the same origin as the game. Some mobile networks
+// take several seconds (or fail entirely) when the iframe has to open a second
+// TLS connection to a public CDN before it can draw the board. Render fetches
+// the pinned runtime once, keeps it in memory, and browsers cache the versioned
+// URL. The two fixed upstreams are fallbacks only; no user-controlled URL is
+// ever fetched.
+let threeRuntimeSource = null;
+let threeRuntimeInFlight = null;
+async function loadThreeRuntime() {
+  if (threeRuntimeSource) return threeRuntimeSource;
+  if (threeRuntimeInFlight) return threeRuntimeInFlight;
+  threeRuntimeInFlight = (async () => {
+    const sources = [
+      'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js',
+      'https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js'
+    ];
+    let lastError = null;
+    for (const source of sources) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      try {
+        const response = await fetch(source, { signal: controller.signal });
+        if (!response.ok) throw new Error('three_runtime_' + response.status);
+        const body = await response.text();
+        if (body.length < 100000 || !body.includes('THREE')) throw new Error('three_runtime_invalid');
+        threeRuntimeSource = body;
+        return body;
+      } catch (error) {
+        lastError = error;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+    throw lastError || new Error('three_runtime_unavailable');
+  })();
+  try {
+    return await threeRuntimeInFlight;
+  } finally {
+    threeRuntimeInFlight = null;
+  }
+}
+
+app.get('/vendor/three-r128.min.js', async (req, res) => {
+  try {
+    const source = await loadThreeRuntime();
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+    res.send(source);
+  } catch (error) {
+    console.error('[assets] Three.js runtime unavailable', error?.message || error);
+    res.status(503).type('text/plain').send('3D runtime temporarily unavailable');
+  }
+});
+
 // Routeur intelligent qui liste les vrais fichiers si ça plante
 const serveSmart = (possibleNames, injectRoom = false) => (req, res) => {
   let foundPath = null;
@@ -1514,20 +1644,8 @@ app.post('/game/join', requireAuth, async (req, res) => {
     return res.status(400).json({ error: 'Montant de mise invalide.' });
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5000);
   try {
-    const response = await fetch(
-      SUPABASE_URL + '/rest/v1/games?id=eq.' + encodeURIComponent(gameId) + '&select=id,game_type,player1_id,player2_id,bet_amount,status',
-      { headers: serverSupabaseHeaders(), signal: controller.signal }
-    );
-    if (!response.ok) {
-      console.error('[game/join] database lookup failed', response.status);
-      return res.status(503).json({ error: 'Impossible de valider la partie pour le moment.' });
-    }
-
-    const rows = await response.json();
-    const game = Array.isArray(rows) ? rows[0] : null;
+    const game = await loadDatabaseGameForJoin(gameId);
     const playerSlot = game?.player1_id === user.supabaseId ? 1 : game?.player2_id === user.supabaseId ? 2 : 0;
     const knownGameType = game && Object.values(DB_GAME_TYPES).includes(game.game_type);
     const sameBet = betAmount === undefined || Math.abs(Number(game?.bet_amount || 0) - Number(betAmount)) < 0.0001;
@@ -1551,8 +1669,6 @@ app.post('/game/join', requireAuth, async (req, res) => {
   } catch (error) {
     console.error('[game/join] validation failed', error?.message || error);
     return res.status(503).json({ error: 'Validation serveur temporairement indisponible.' });
-  } finally {
-    clearTimeout(timeout);
   }
 });
 
