@@ -28,6 +28,11 @@ function once(socket, event, timeoutMs = 4000) {
   });
 }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+async function emitAndWait(sender, receiver, emitEvent, payload, receiveEvent) {
+  const received = once(receiver, receiveEvent);
+  sender.emit(emitEvent, payload);
+  return received;
+}
 function waitHealth(retries = 40) {
   return new Promise((resolve, reject) => {
     const tryOnce = (n) => {
@@ -36,6 +41,19 @@ function waitHealth(retries = 40) {
     };
     const retry = (n) => n <= 0 ? reject(new Error('serveur injoignable')) : setTimeout(() => tryOnce(n - 1), 250);
     tryOnce(retries);
+  });
+}
+
+function httpRequest(pathname, { method = 'GET', headers = {} } = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(URL + pathname, { method, headers }, res => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => { body += chunk; });
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
+    });
+    req.on('error', reject);
+    req.end();
   });
 }
 
@@ -50,7 +68,13 @@ async function connectPlayer(supabaseId, name) {
 async function main() {
   const server = spawn('node', ['server.js'], {
     cwd: REPO_ROOT,
-    env: { ...process.env, PORT: String(PORT), NODE_ENV: 'test' },
+    env: {
+      ...process.env,
+      PORT: String(PORT),
+      NODE_ENV: 'test',
+      ALLOWED_ORIGIN: 'https://mindspille.lovable.app',
+      FRAME_ANCESTORS: 'https://mindspille.lovable.app'
+    },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   server.stdout.on('data', () => {});
@@ -58,6 +82,16 @@ async function main() {
   try {
     await waitHealth();
     console.log('Serveur démarré.');
+
+    const health = await httpRequest('/health');
+    const healthBody = JSON.parse(health.body);
+    check('/health does not expose queued bet amounts', health.status === 200 && !('queues' in healthBody) && Number.isInteger(healthBody.queuedPlayers));
+    const deniedCors = await httpRequest('/dames', { method: 'OPTIONS', headers: { Origin: 'https://evil.example' } });
+    check('Disallowed origins do not receive CORS', deniedCors.headers['access-control-allow-origin'] === undefined);
+    const allowedCors = await httpRequest('/dames', { method: 'OPTIONS', headers: { Origin: 'https://mindspille.lovable.app' } });
+    check('Configured origin receives CORS', allowedCors.headers['access-control-allow-origin'] === 'https://mindspille.lovable.app');
+    const invalidInjection = await httpRequest('/penalty?p1Id=%3Cscript%3Ealert(1)%3C%2Fscript%3E&p2Id=550e8400-e29b-41d4-a716-446655440000');
+    check('Injectable player identifiers are rejected', invalidInjection.status === 400 && !invalidInjection.body.includes('<script>'));
 
     const p1 = await connectPlayer('test-user-aaa', 'Alice');
     const p2 = await connectPlayer('test-user-bbb', 'Bob');
@@ -146,6 +180,44 @@ async function main() {
     check('dames_start porte stateVersion 2', rs.stateVersion === 2, rs.stateVersion);
     check('dames_start porte le plateau', typeof rs.boardState === 'string' && rs.boardState.length > 10);
     const rsync = await resumeSync;
+
+    console.log('\n--- Tic-Tac-Toe server-authoritative outcome ---');
+    const tttRoom = 'test-ttt-authoritative';
+    const tttStart1 = once(p1.socket, 'ttt_start');
+    const tttStart2 = once(p2b.socket, 'ttt_start');
+    p1.socket.emit('ttt_join', { room: tttRoom, player: 1, supabaseId: 'test-user-aaa', name: 'Alice', bet: 5000, currency: 'HTG', manches: 1 });
+    p2b.socket.emit('ttt_join', { room: tttRoom, player: 2, supabaseId: 'test-user-bbb', name: 'Bob', bet: 5000, currency: 'HTG', manches: 1 });
+    await Promise.all([tttStart1, tttStart2]);
+    await emitAndWait(p1.socket, p2b.socket, 'ttt_move', { room: tttRoom, player: 1, row: 0, col: 0, symbol: 'X' }, 'ttt_move');
+    await emitAndWait(p2b.socket, p1.socket, 'ttt_move', { room: tttRoom, player: 2, row: 1, col: 0, symbol: 'O' }, 'ttt_move');
+    await emitAndWait(p1.socket, p2b.socket, 'ttt_move', { room: tttRoom, player: 1, row: 0, col: 1, symbol: 'X' }, 'ttt_move');
+    await emitAndWait(p2b.socket, p1.socket, 'ttt_move', { room: tttRoom, player: 2, row: 1, col: 1, symbol: 'O' }, 'ttt_move');
+    const tttOver1 = once(p1.socket, 'game:over', 6000);
+    const tttOver2 = once(p2b.socket, 'game:over', 6000);
+    p1.socket.emit('ttt_move', { room: tttRoom, player: 1, row: 0, col: 2, symbol: 'X' });
+    const [tttResult1, tttResult2] = await Promise.all([tttOver1, tttOver2]);
+    check('TTT winner receives only a win', tttResult1.game === 'tictactoe' && tttResult1.result === 'win' && tttResult1.myResult > 0, tttResult1);
+    check('TTT loser receives only a loss', tttResult2.game === 'tictactoe' && tttResult2.result === 'loss' && tttResult2.myResult < 0, tttResult2);
+
+    console.log('\n--- Quoridor server-authoritative outcome ---');
+    const quoriRoom = 'test-quoridor-authoritative';
+    const quoriStart1 = once(p1.socket, 'quoridor_start');
+    const quoriStart2 = once(p2b.socket, 'quoridor_start');
+    p1.socket.emit('quoridor_join', { room: quoriRoom, player: 1, supabaseId: 'test-user-aaa', name: 'Alice', bet: 5000, currency: 'HTG' });
+    p2b.socket.emit('quoridor_join', { room: quoriRoom, player: 2, supabaseId: 'test-user-bbb', name: 'Bob', bet: 5000, currency: 'HTG' });
+    await Promise.all([quoriStart1, quoriStart2]);
+    const p1Path = [{r:7,c:4},{r:6,c:4},{r:5,c:4},{r:4,c:4},{r:3,c:4},{r:2,c:4},{r:1,c:4}];
+    const p2Path = [{r:0,c:3},{r:0,c:2},{r:0,c:1},{r:0,c:0},{r:1,c:0},{r:1,c:1},{r:1,c:2}];
+    for (let i = 0; i < p1Path.length; i++) {
+      await emitAndWait(p1.socket, p2b.socket, 'quoridor_move', { room: quoriRoom, player: 1, moveType: 'move', data: p1Path[i] }, 'quoridor_move');
+      await emitAndWait(p2b.socket, p1.socket, 'quoridor_move', { room: quoriRoom, player: 2, moveType: 'move', data: p2Path[i] }, 'quoridor_move');
+    }
+    const quoriOver1 = once(p1.socket, 'game:over');
+    const quoriOver2 = once(p2b.socket, 'game:over');
+    p1.socket.emit('quoridor_move', { room: quoriRoom, player: 1, moveType: 'move', data: { r: 0, c: 4 } });
+    const [quoriResult1, quoriResult2] = await Promise.all([quoriOver1, quoriOver2]);
+    check('Quoridor winner receives only a win', quoriResult1.game === 'quoridor' && quoriResult1.result === 'win' && quoriResult1.myResult > 0, quoriResult1);
+    check('Quoridor loser receives only a loss', quoriResult2.game === 'quoridor' && quoriResult2.result === 'loss' && quoriResult2.myResult < 0, quoriResult2);
     check('Sync de reprise diffusée à la reconnexion (version 2)', rsync.version === 2, rsync.version);
 
     console.log('\n══════════════════════════════');

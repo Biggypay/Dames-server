@@ -34,12 +34,15 @@ const ALLOWED_ORIGINS = ORIGIN === '*' ? '*' : ORIGIN.split(',').map(origin => o
 // (site publié, aperçu id-preview--..., remix, PWA installée) : l'appli
 // MindSpille tourne sur lovable.app et doit pouvoir interroger /health,
 // ouvrir les sockets et intégrer les jeux en iframe.
-const LOVABLE_ORIGIN_RE = /^https:\/\/[a-z0-9-]+\.lovable\.app$/i;
+function originMatches(pattern, origin) {
+  if (pattern === origin) return true;
+  if (pattern === 'https://*.lovable.app') return /^https:\/\/[a-z0-9-]+\.lovable\.app$/i.test(origin);
+  return false;
+}
 function isAllowedOrigin(origin) {
   if (!origin) return false;
   if (ALLOWED_ORIGINS === '*') return true;
-  if (Array.isArray(ALLOWED_ORIGINS) && ALLOWED_ORIGINS.includes(origin)) return true;
-  return LOVABLE_ORIGIN_RE.test(origin);
+  return Array.isArray(ALLOWED_ORIGINS) && ALLOWED_ORIGINS.some(pattern => originMatches(pattern, origin));
 }
 const SUPABASE_URL = String(process.env.SUPABASE_URL || '').replace(/\/$/, '');
 const SUPABASE_PUBLISHABLE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || '';
@@ -54,7 +57,14 @@ if (process.env.NODE_ENV === 'production' && (!process.env.JWT_SECRET || !SUPABA
 const FRAME_ANCESTORS = process.env.FRAME_ANCESTORS || '*';
 
 const io = new Server(server, {
-  cors: { origin: true, methods: ['GET', 'POST'] },
+  cors: {
+    origin: (origin, callback) => callback(null, !origin || isAllowedOrigin(origin)),
+    methods: ['GET', 'POST']
+  },
+  allowRequest: (req, callback) => {
+    const origin = req.headers.origin;
+    callback(null, !origin || isAllowedOrigin(origin));
+  },
   maxHttpBufferSize: 1e5   // 100 KB max par message socket (anti-flood mémoire)
 });
 
@@ -62,7 +72,7 @@ app.disable('x-powered-by');
 app.use(express.json({ limit: '64kb' }));   // limite la taille des corps de requête
 app.use((req, res, next) => {
   const requestOrigin = req.headers.origin;
-  if (requestOrigin) {
+  if (requestOrigin && isAllowedOrigin(requestOrigin)) {
     // On reflète l'origine appelante : l'appli MindSpille peut tourner sur
     // lovable.app, un aperçu ou une app installée (origine variable). La
     // sécurité réelle vient de la validation du jeton Supabase et des Bearer
@@ -75,6 +85,7 @@ app.use((req, res, next) => {
   }
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Content-Security-Policy', "frame-ancestors 'self' " + FRAME_ANCESTORS);
   // On garde frame-ancestors permissif pour l'iframe Lovable, mais on ajoute les autres protections.
   // Pas de restriction d'affichage en iframe : l'appli MindSpille est aussi
   // une app native (WebView) dont l'origine (capacitor://…, https://localhost…)
@@ -188,12 +199,188 @@ function bindDatabaseGame(room, gameId) {
 }
 
 const DB_GAME_TYPES = { dames: 'checkers', tictactoe: 'tictactoe', quoridor: 'quoridor', penalty: 'penalty_shootout', chifoumi: 'rock_paper_scissors' };
+const ROOM_MAPS = { dames: damesRooms, tictactoe: tttRooms, quoridor: quoriRooms, penalty: penaltyRooms, chifoumi: chifoumiRooms };
+const ROOM_PERSIST_INTERVAL = 3000;
+const ROOM_RETENTION_MS = 10 * 60 * 1000;
+let roomPersistenceInFlight = false;
+
+function serverSupabaseHeaders() {
+  return {
+    apikey: SUPABASE_SERVICE_ROLE_KEY,
+    Authorization: 'Bearer ' + SUPABASE_SERVICE_ROLE_KEY,
+    'Content-Type': 'application/json'
+  };
+}
+
+async function callServerStateRpc(name, payload) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(SUPABASE_URL + '/rest/v1/rpc/' + name, {
+      method: 'POST', headers: serverSupabaseHeaders(), body: JSON.stringify(payload || {}), signal: controller.signal
+    });
+    if (!response.ok) throw new Error(name + ' failed: ' + response.status + ' ' + (await response.text()).slice(0, 300));
+    const text = await response.text();
+    return text ? JSON.parse(text) : null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function serializableRoomState(room) {
+  const ignored = new Set(['turnTimer', 'graceTimer', 'disconnectTimer', 'settlementPromise', 'persistTimer', 'cleanupTimer']);
+  const state = JSON.parse(JSON.stringify(room, (key, value) => {
+    if (ignored.has(key)) return undefined;
+    if (value instanceof Set) return [...value];
+    return value;
+  }));
+  state.players = {};
+  for (const slot of [1, 2]) {
+    const player = room.players?.[slot];
+    if (!player) continue;
+    state.players[slot] = {
+      slot,
+      supabaseId: player.supabaseId,
+      name: safeName(player.name),
+      connected: false,
+      socketId: null,
+      userId: null
+    };
+  }
+  return state;
+}
+
+function persistedRoomPayload(gameName, room) {
+  if (!room || !validRoom(room.id) || !isUuid(room.databaseGameId)) return null;
+  if (!['waiting', 'playing', 'paused', 'finished'].includes(room.status)) return null;
+  return {
+    game_type: gameName,
+    room_id: room.id,
+    game_id: room.databaseGameId,
+    status: room.status,
+    state: serializableRoomState(room)
+  };
+}
+
+async function persistRoomState(gameName, room) {
+  const payload = persistedRoomPayload(gameName, room);
+  if (!payload) return;
+  await callServerStateRpc('save_game_server_room_states', { p_rooms: [payload] });
+}
+
+function persistRoomSoon(gameName, room) {
+  void persistRoomState(gameName, room).catch(error => {
+    console.error('[persistence] immediate save failed', gameName, room?.id, error.message);
+  });
+}
+
+async function persistAllRoomStates() {
+  if (roomPersistenceInFlight || !SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return;
+  const rooms = [];
+  for (const [gameName, roomMap] of Object.entries(ROOM_MAPS)) {
+    for (const room of roomMap.values()) {
+      const payload = persistedRoomPayload(gameName, room);
+      if (payload && (room.status !== 'finished' || room.pendingSettlement)) rooms.push(payload);
+    }
+  }
+  if (!rooms.length) return;
+  roomPersistenceInFlight = true;
+  try {
+    await callServerStateRpc('save_game_server_room_states', { p_rooms: rooms });
+  } catch (error) {
+    console.error('[persistence] save failed', error.message);
+  } finally {
+    roomPersistenceInFlight = false;
+  }
+}
+
+async function deletePersistedRoom(gameName, roomId) {
+  try {
+    await callServerStateRpc('delete_game_server_room_state', { p_game_type: gameName, p_room_id: roomId });
+  } catch (error) {
+    console.error('[persistence] delete failed', roomId, error.message);
+  }
+}
+
+function scheduleRoomCleanup(gameName, roomId, room) {
+  const roomMap = ROOM_MAPS[gameName];
+  if (!roomMap || room.cleanupTimer) return;
+  room.cleanupTimer = setTimeout(() => {
+    if (roomMap.get(roomId) === room && room.status === 'finished') roomMap.delete(roomId);
+  }, ROOM_RETENTION_MS);
+  if (room.cleanupTimer.unref) room.cleanupTimer.unref();
+}
+
+function hydratePersistedRoom(record) {
+  if (!record || !DB_GAME_TYPES[record.game_type] || !validRoom(record.room_id) || !isUuid(record.game_id)) return null;
+  const room = record.state && typeof record.state === 'object' ? record.state : null;
+  if (!room) return null;
+  room.id = record.room_id;
+  room.databaseGameId = record.game_id;
+  room.players = room.players || {};
+  for (const slot of [1, 2]) {
+    const player = room.players[slot];
+    if (!player) continue;
+    player.slot = slot;
+    player.connected = false;
+    player.socketId = null;
+    player.userId = null;
+  }
+  room.turnTimer = null; room.graceTimer = null; room.disconnectTimer = null;
+  room.settlementPromise = null; room.cleanupTimer = null; room.reconnectDeadline = null;
+  room.mutualQuitRequests = new Set(Array.isArray(room.mutualQuitRequests) ? room.mutualQuitRequests : []);
+  if (room.status !== 'finished') {
+    const playerCount = [room.players[1], room.players[2]].filter(Boolean).length;
+    room.status = record.db_status === 'in_progress' || playerCount === 2 ? 'paused' : 'waiting';
+  }
+  return room;
+}
+
+async function restorePersistedRooms() {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return;
+  try {
+    const records = await callServerStateRpc('load_game_server_room_states', {});
+    if (!Array.isArray(records)) return;
+    let restored = 0;
+    for (const record of records) {
+      const room = hydratePersistedRoom(record);
+      const roomMap = ROOM_MAPS[record?.game_type];
+      if (!room || !roomMap) continue;
+      roomMap.set(room.id, room);
+      restored++;
+      if (room.status === 'finished' && room.pendingSettlement) {
+        const pending = room.pendingSettlement;
+        void settleRoomInSupabase(room, record.game_type, pending.winnerSlot, pending.reason);
+      } else if (room.status === 'paused') {
+        // A Render restart disconnects both sockets. Keep the exact board, but
+        // apply the same 60-second reconnect rule as a normal disconnection.
+        room.reconnectDeadline = Date.now() + 60000;
+        room.disconnectTimer = setTimeout(() => {
+          room.disconnectTimer = null;
+          if (room.status !== 'finished' && !room.players[1]?.connected && !room.players[2]?.connected) {
+            finishBothDisconnected(room, record.game_type, room.id);
+          }
+        }, 60000);
+        if (room.disconnectTimer.unref) room.disconnectTimer.unref();
+      }
+    }
+    if (restored) console.info('[persistence] restored rooms', restored);
+  } catch (error) {
+    console.error('[persistence] restore failed', error.message);
+  }
+}
+
+const _roomPersistenceLoop = setInterval(() => { void persistAllRoomStates(); }, ROOM_PERSIST_INTERVAL);
+if (_roomPersistenceLoop.unref) _roomPersistenceLoop.unref();
+
 function databaseResult(winnerSlot, reason) {
   if (winnerSlot === 0) return reason === 'both_disconnected' || reason === 'mutual_quit' ? 'mutual_quit' : 'draw';
   return reason === 'timeout' ? 'timeout' : 'win';
 }
 async function settleRoomInSupabase(room, game, winnerSlot, reason) {
   if (room.settlementPromise) return room.settlementPromise;
+  room.pendingSettlement = { winnerSlot, reason };
   if (!room.databaseGameId) {
     console.error('[settlement] Missing games.id for room', room.id);
     return null;
@@ -208,7 +395,10 @@ async function settleRoomInSupabase(room, game, winnerSlot, reason) {
     return null;
   }
   room.settlementPromise = (async () => {
-    const headers = { apikey: SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + SUPABASE_SERVICE_ROLE_KEY, 'Content-Type': 'application/json' };
+    // Store the terminal outcome before touching wallets. If Render restarts
+    // during settlement, startup can safely retry the same idempotent result.
+    await persistRoomState(game, room);
+    const headers = serverSupabaseHeaders();
     const gameId = encodeURIComponent(room.databaseGameId);
     const lookup = await fetch(SUPABASE_URL + '/rest/v1/games?id=eq.' + gameId + '&select=id,game_type,player1_id,player2_id,bet_amount,status', { headers });
     if (!lookup.ok) throw new Error('Cannot verify database game: ' + lookup.status);
@@ -233,6 +423,9 @@ async function settleRoomInSupabase(room, game, winnerSlot, reason) {
     const settled = await fetch(SUPABASE_URL + '/rest/v1/rpc/submit_game_result', { method: 'POST', headers, body: JSON.stringify(payload) });
     if (!settled.ok) throw new Error('Settlement RPC failed: ' + settled.status + ' ' + (await settled.text()).slice(0, 400));
     room.settledAt = Date.now();
+    room.pendingSettlement = null;
+    await deletePersistedRoom(game, room.id);
+    scheduleRoomCleanup(game, room.id, room);
     console.info('[settlement] completed', room.databaseGameId, game, payload.p_result);
   })().catch(error => {
     room.settlementPromise = null; // An operator may retry only after investigating server logs.
@@ -249,9 +442,9 @@ function joinRoomAsAuthenticatedPlayer(socket, roomState, roomId, player, claime
   if (!user || !user.supabaseId) return rejectSocket(socket, 'Authentification requise.');
   if (claimedSupabaseId && claimedSupabaseId !== user.supabaseId) return rejectSocket(socket, 'Identité de joueur invalide.');
   const other = roomState.players[player === 1 ? 2 : 1];
-  if (other && other.userId === user.id) return rejectSocket(socket, 'Un joueur ne peut pas occuper les deux places.');
+  if (other && other.supabaseId === user.supabaseId) return rejectSocket(socket, 'Un joueur ne peut pas occuper les deux places.');
   const existing = roomState.players[player];
-  if (existing && existing.userId !== user.id) return rejectSocket(socket, 'Cette place est déjà occupée.');
+  if (existing && existing.supabaseId !== user.supabaseId) return rejectSocket(socket, 'Cette place est déjà occupée.');
   roomState.players[player] = {
     socketId: socket.id,
     userId: user.id,
@@ -262,6 +455,38 @@ function joinRoomAsAuthenticatedPlayer(socket, roomState, roomId, player, claime
   };
   socket.join(roomId);
   return roomState.players[player];
+}
+
+async function verifyDatabaseGameForJoin(socket, gameId, gameName, player, bet) {
+  const user = authenticatedSocketUser(socket);
+  if (!user?.supabaseId) return { ok: false, message: 'Authentification requise.' };
+  if (!isUuid(gameId)) {
+    if (process.env.NODE_ENV !== 'production' && !SUPABASE_SERVICE_ROLE_KEY) return { ok: true };
+    return { ok: false, message: 'Identifiant de partie manquant ou invalide.' };
+  }
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return { ok: false, message: 'Validation serveur temporairement indisponible.' };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(
+      SUPABASE_URL + '/rest/v1/games?id=eq.' + encodeURIComponent(gameId) + '&select=id,game_type,player1_id,player2_id,bet_amount,status',
+      { headers: serverSupabaseHeaders(), signal: controller.signal }
+    );
+    if (!response.ok) return { ok: false, message: 'Impossible de valider la partie.' };
+    const rows = await response.json();
+    const game = Array.isArray(rows) ? rows[0] : null;
+    const expectedPlayer = player === 1 ? game?.player1_id : game?.player2_id;
+    const sameBet = game && Math.abs(Number(game.bet_amount || 0) - Number(bet || 0)) < 0.0001;
+    if (!game || game.game_type !== DB_GAME_TYPES[gameName] || expectedPlayer !== user.supabaseId || !sameBet) {
+      return { ok: false, message: 'Cette partie ne correspond pas au joueur, au jeu ou à la mise.' };
+    }
+    if (!['waiting', 'in_progress'].includes(game.status)) return { ok: false, message: 'Cette partie est déjà terminée.' };
+    return { ok: true };
+  } catch {
+    return { ok: false, message: 'Validation serveur temporairement indisponible.' };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 // Limiteur HTTP anti brute-force / credential stuffing sur l'authentification
@@ -412,6 +637,7 @@ function finishTTTRound(room, roomId, winnerSlot, winLine) {
   const winner = winnerSlot || 'draw';
   io.to(roomId).emit('ttt_manche_result', { room: roomId, winner, winLine: winLine ? winLine.map(index => ({ row: Math.floor(index / 3), col: index % 3 })) : null, matchW: state.matchW, matchR: state.matchR, manchesDone: state.manchesDone, mancheResults: state.mancheResults, isTiebreaker: state.isTiebreaker, nextStarterPlayer: state.mancheStarterPlayer });
   const matchWinner = state.isTiebreaker ? winnerSlot : tttMatchWinner(state, room.totalManches);
+  persistRoomSoon('tictactoe', room);
   setTimeout(() => {
     if (room.status !== 'playing') return;
     if (matchWinner) return notifyTTTRoomOver(room, roomId, matchWinner, 'normal');
@@ -511,7 +737,7 @@ async function verifySupabaseAccessToken(accessToken) {
 }
 
 function issueServerToken(res, user) {
-  const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
+  const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '2h' });
   res.json({ token, userId: user.id, username: user.username });
 }
 
@@ -529,6 +755,9 @@ function authenticateSocketToken(socket, token) {
 }
 
 io.use((socket, next) => {
+  const forwarded = String(socket.handshake.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  const ip = forwarded || socket.handshake.address || 'unknown';
+  if (!rateLimit('socket-connect:' + ip, 60, 60000)) return next(new Error('rate_limited'));
   const token = socket.handshake.auth && socket.handshake.auth.token;
   if (!token) return next();
   if (!authenticateSocketToken(socket, token)) return next(new Error('unauthorized'));
@@ -710,17 +939,7 @@ function startPenaltyTurnTimer(proom, roomId) {
       const hp2Grace = proom.choices[2] !== undefined;
 
       if (!hp1Grace && !hp2Grace) {
-        proom.status = 'finished';
-        const { bet } = calcFinancial(proom.betAmount);
-        const penalty = Math.round(bet * 0.05);
-        const cp = {
-          type: 'game_over', game: 'penalty', room: roomId, result: 'cancel', reason: 'both_disconnected',
-          penalty, p1Id: proom.players[1]?.supabaseId, p2Id: proom.players[2]?.supabaseId,
-          betAmount: bet, currency: proom.currency || 'HTG'
-        };
-        if (proom.players[1]?.socketId) { io.to(proom.players[1].socketId).emit('game:over', { ...cp, myResult: -penalty }); io.to(proom.players[1].socketId).emit('game:result', { postMessage: { ...cp, myResult: -penalty } }); }
-        if (proom.players[2]?.socketId) { io.to(proom.players[2].socketId).emit('game:over', { ...cp, myResult: -penalty }); io.to(proom.players[2].socketId).emit('game:result', { postMessage: { ...cp, myResult: -penalty } }); }
-        io.to(roomId).emit('game:result', { postMessage: cp });
+        finishBothDisconnected(proom, 'penalty', roomId);
       } else if (hp1Grace && hp2Grace) {
         resolvePenaltyRound(proom, roomId);
       } else {
@@ -755,6 +974,7 @@ function resolvePenaltyRound(proom, roomId) {
     nextRound, gameOver: gameIsOver
   });
 
+  persistRoomSoon('penalty', proom);
   if (!gameIsOver) {
     proom.currentRound = nextRound;
     proom.choices      = {};
@@ -816,13 +1036,7 @@ function startChifoumiTurnTimer(croom, roomId) {
       const hp2Grace = croom.choices[2] !== undefined;
 
       if (!hp1Grace && !hp2Grace) {
-        croom.status = 'finished';
-        const { bet } = calcFinancial(croom.betAmount);
-        const penalty = Math.round(bet * 0.05);
-        const cp = { type: 'game_over', game: 'chifoumi', room: roomId, result: 'cancel', reason: 'both_disconnected', penalty, p1Id: croom.players[1]?.supabaseId, p2Id: croom.players[2]?.supabaseId, betAmount: bet, currency: croom.currency || 'HTG' };
-        if (croom.players[1]?.socketId) { io.to(croom.players[1].socketId).emit('game:over', { ...cp, myResult: -penalty }); io.to(croom.players[1].socketId).emit('game:result', { postMessage: { ...cp, myResult: -penalty } }); }
-        if (croom.players[2]?.socketId) { io.to(croom.players[2].socketId).emit('game:over', { ...cp, myResult: -penalty }); io.to(croom.players[2].socketId).emit('game:result', { postMessage: { ...cp, myResult: -penalty } }); }
-        io.to(roomId).emit('game:result', { postMessage: cp });
+        finishBothDisconnected(croom, 'chifoumi', roomId);
       } else {
         const winnerSlot = hp1Grace ? 1 : 2;
         notifyChifoumiRoomOver(croom, roomId, winnerSlot, 'timeout');
@@ -846,6 +1060,7 @@ function resolveChifoumiRound(croom, roomId) {
   if (winnerSlot === 1) croom.scores[0]++;
   if (winnerSlot === 2) croom.scores[1]++;
   croom.history.push({ round: croom.currentRound, choice1, choice2, winnerSlot });
+  persistRoomSoon('chifoumi', croom);
 
   for (const slot of [1, 2]) {
     const player = croom.players[slot];
@@ -868,6 +1083,42 @@ function resolveChifoumiRound(croom, roomId) {
   croom.awaitingNextRound = true;
 }
 
+function requireNonProductionLegacyGame(req, res, next) {
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(410).json({ error: 'Cette ancienne API de jeu est désactivée. Utilisez le lobby sécurisé.' });
+  }
+  next();
+}
+
+function clearTimersForGame(gameName, room) {
+  if (gameName === 'dames') clearDamesTurnTimers(room);
+  else if (gameName === 'tictactoe') clearTTTTurnTimers(room);
+  else if (gameName === 'quoridor') clearQuoriTurnTimers(room);
+  else if (gameName === 'penalty') clearPenaltyTurnTimers(room);
+  else if (gameName === 'chifoumi') clearChifoumiTurnTimers(room);
+}
+
+function finishBothDisconnected(room, gameName, roomId) {
+  if (!room || room.status === 'finished') return;
+  room.status = 'finished';
+  room.reconnectDeadline = null;
+  clearTimersForGame(gameName, room);
+  if (room.disconnectTimer) { clearTimeout(room.disconnectTimer); room.disconnectTimer = null; }
+  room.pendingSettlement = { winnerSlot: 0, reason: 'both_disconnected' };
+  void settleRoomInSupabase(room, gameName, 0, 'both_disconnected');
+  const p1 = room.players[1], p2 = room.players[2];
+  const { bet } = calcFinancial(room.betAmount);
+  const penalty = Math.round(bet * 0.05);
+  const payload = {
+    type: 'game_over', game: gameName, room: roomId, result: 'cancel', reason: 'both_disconnected',
+    penalty, p1Id: p1?.supabaseId, p2Id: p2?.supabaseId, betAmount: bet,
+    currency: room.currency || 'HTG', message: 'Les deux joueurs sont absents. Pénalité de 5% appliquée.'
+  };
+  if (p1?.socketId) { io.to(p1.socketId).emit('game:over', { ...payload, myResult: -penalty }); io.to(p1.socketId).emit('game:result', { postMessage: { ...payload, myResult: -penalty } }); }
+  if (p2?.socketId) { io.to(p2.socketId).emit('game:over', { ...payload, myResult: -penalty }); io.to(p2.socketId).emit('game:result', { postMessage: { ...payload, myResult: -penalty } }); }
+  io.to(roomId).emit('game:result', { postMessage: payload });
+}
+
 // ══════════════════════════════════════════════════════════
 //  PAUSE / REPRISE / ANNULATION (Sanction 5% si les deux abandonnent)
 // ══════════════════════════════════════════════════════════
@@ -876,6 +1127,7 @@ function pauseAndWatch({ room, roomId, gameName, getP1, getP2, winFn, onResume }
   room.status = 'paused';
   const serverTime = Date.now();
   room.reconnectDeadline = serverTime + 60000;
+  persistRoomSoon(gameName, room);
   io.to(roomId).emit('game:reconnect_deadline', { game: gameName, serverTime, reconnectDeadline: room.reconnectDeadline });
   room.disconnectTimer = setTimeout(() => {
     if (room.status === 'finished') return;
@@ -889,18 +1141,7 @@ function pauseAndWatch({ room, roomId, gameName, getP1, getP2, winFn, onResume }
       return;
     }
     if (!p1back && !p2back) {
-      room.status = 'finished';
-      void settleRoomInSupabase(room, gameName, 0, 'both_disconnected');
-      const { bet } = calcFinancial(room.betAmount);
-      const penalty = Math.round(bet * 0.05);
-      const cp = {
-        type: 'game_over', game: gameName, room: roomId, result: 'cancel', reason: 'both_disconnected',
-        penalty, p1Id: p1?.supabaseId, p2Id: p2?.supabaseId, betAmount: bet, currency: room.currency || 'HTG',
-        message: 'Les deux joueurs se sont déconnectés. Pénalité de 5% appliquée.'
-      };
-      if (p1?.socketId) { io.to(p1.socketId).emit('game:over', { ...cp, myResult: -penalty }); io.to(p1.socketId).emit('game:result', { postMessage: { ...cp, myResult: -penalty } }); }
-      if (p2?.socketId) { io.to(p2.socketId).emit('game:over', { ...cp, myResult: -penalty }); io.to(p2.socketId).emit('game:result', { postMessage: { ...cp, myResult: -penalty } }); }
-      io.to(roomId).emit('game:result', { postMessage: cp });
+      finishBothDisconnected(room, gameName, roomId);
     } else {
       room.status = 'playing';
       room.reconnectDeadline = null;
@@ -925,6 +1166,8 @@ function notifyGameOver(game, winner, reason = 'checkmate') {
   emitToUser(loserId,  'game:result', { postMessage: { ...base, result: 'loss', myResult: -bet } });
   // Player-specific results must not be broadcast to the whole room: both
   // sockets belong to it, so a shared win packet made the loser look like a winner.
+  const cleanup = setTimeout(() => { if (games.get(game.id) === game) games.delete(game.id); }, ROOM_RETENTION_MS);
+  if (cleanup.unref) cleanup.unref();
 }
 
 function notifyDamesRoomOver(room, roomId, winnerSlot, reason = 'normal') {
@@ -1055,7 +1298,7 @@ app.get('/health', (req, res) => {
     games: games.size, damesRooms: damesRooms.size,
     tttRooms: tttRooms.size, quoriRooms: quoriRooms.size,
     penaltyRooms: penaltyRooms.size, chifoumiRooms: chifoumiRooms.size,
-    queue: [...queue.entries()].map(([amt, p]) => ({ betAmount: amt, waiting: p.length }))
+    queuedPlayers: [...queue.values()].reduce((total, players) => total + players.length, 0)
   });
 });
 
@@ -1096,14 +1339,17 @@ const serveSmart = (possibleNames, injectRoom = false) => (req, res) => {
   if (injectRoom) {
     const { room, p1Id, p2Id } = req.query;
     if (!room && p1Id && p2Id) {
+      if (!isUuid(p1Id) || !isUuid(p2Id)) return res.status(400).send('Identifiants de joueurs invalides.');
       const ids = [p1Id, p2Id].sort();
       const generatedRoom = 'room-' + ids[0].slice(-8) + '-' + ids[1].slice(-8);
-      const injection = `<script>(function(){ var u = new URL(window.location.href); if (!u.searchParams.get('room')) { u.searchParams.set('room', '${generatedRoom}'); window.history.replaceState({}, '', u.toString()); } })();</script>`;
+      const safeRoomLiteral = JSON.stringify(generatedRoom).replace(/</g, '\\u003c');
+      const injection = `<script>(function(){ var u = new URL(window.location.href); if (!u.searchParams.get('room')) { u.searchParams.set('room', ${safeRoomLiteral}); window.history.replaceState({}, '', u.toString()); } })();</script>`;
       html = html.replace('</head>', injection + '\n</head>');
     }
   }
 
   res.setHeader('Content-Type', 'text/html;charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store, max-age=0');
   res.send(html);
 };
 
@@ -1138,7 +1384,7 @@ app.post('/auth/register', authRateLimit, async (req, res) => {
   for (const u of users.values()) if (u.username === username) return res.status(409).json({ error: 'Nom déjà pris' });
   const id = uuid();
   users.set(id, { id, username, password: bcrypt.hashSync(password, 10), supabaseId: supabaseId || null });
-  const token = jwt.sign({ userId: id }, JWT_SECRET, { expiresIn: '7d' });
+  const token = jwt.sign({ userId: id }, JWT_SECRET, { expiresIn: '2h' });
   res.json({ token, userId: id, username });
 });
 
@@ -1157,11 +1403,11 @@ app.post('/auth/login', authRateLimit, async (req, res) => {
   const user = [...users.values()].find(u => u.username === username);
   if (!user || !bcrypt.compareSync(password, user.password)) return res.status(401).json({ error: 'Identifiants incorrects' });
   if (supabaseId) user.supabaseId = supabaseId;
-  const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
+  const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '2h' });
   res.json({ token, userId: user.id, username: user.username });
 });
 
-app.post('/matchmaking/join', requireAuth, (req, res) => {
+app.post('/matchmaking/join', requireNonProductionLegacyGame, requireAuth, (req, res) => {
   const { betAmount, username } = req.body;
   if (!betAmount || betAmount <= 0) return res.status(400).json({ error: 'Montant invalide' });
   const userId = req.userId;
@@ -1191,14 +1437,14 @@ app.post('/matchmaking/join', requireAuth, (req, res) => {
   }
 });
 
-app.post('/matchmaking/leave', requireAuth, (req, res) => {
+app.post('/matchmaking/leave', requireNonProductionLegacyGame, requireAuth, (req, res) => {
   const { betAmount } = req.body;
   if (betAmount) { const ex = queue.get(betAmount) || []; queue.set(betAmount, ex.filter(p => p.userId !== req.userId)); }
   else for (const [amt, pl] of queue.entries()) queue.set(amt, pl.filter(p => p.userId !== req.userId));
   res.json({ status: 'left' });
 });
 
-app.post('/game/join', requireAuth, (req, res) => {
+app.post('/game/join', requireNonProductionLegacyGame, requireAuth, (req, res) => {
   const { gameId, username, color, betAmount } = req.body;
   if (!gameId) return res.status(400).json({ error: 'gameId requis' });
   const userId = req.userId;
@@ -1230,7 +1476,7 @@ app.post('/game/join', requireAuth, (req, res) => {
   return res.json({ status: 'ready', gameId, youAre: myColor, opponent: myColor === 'white' ? bUser?.username : wUser?.username });
 });
 
-app.get('/games/:id', requireAuth, (req, res) => {
+app.get('/games/:id', requireNonProductionLegacyGame, requireAuth, (req, res) => {
   const game = games.get(req.params.id);
   if (!game) return res.status(404).json({ error: 'Partie introuvable' });
   const color = game.playerWhite === req.userId ? 'white' : game.playerBlack === req.userId ? 'black' : null;
@@ -1238,7 +1484,7 @@ app.get('/games/:id', requireAuth, (req, res) => {
   res.json({ gameId: game.id, board: game.board, currentPlayer: game.currentPlayer, status: game.status, winner: game.winner, betAmount: game.betAmount, youAre: color, opponentName: color === 'white' ? users.get(game.playerBlack)?.username : users.get(game.playerWhite)?.username });
 });
 
-app.post('/games/:id/move', requireAuth, (req, res) => {
+app.post('/games/:id/move', requireNonProductionLegacyGame, requireAuth, (req, res) => {
   const game = games.get(req.params.id);
   if (!game || game.status !== 'playing') return res.status(400).json({ error: 'Partie non disponible' });
   const color = game.playerWhite === req.userId ? 'white' : game.playerBlack === req.userId ? 'black' : null;
@@ -1254,7 +1500,7 @@ app.post('/games/:id/move', requireAuth, (req, res) => {
   res.json(update);
 });
 
-app.post('/games/:id/resign', requireAuth, (req, res) => {
+app.post('/games/:id/resign', requireNonProductionLegacyGame, requireAuth, (req, res) => {
   const game = games.get(req.params.id);
   if (!game || game.status !== 'playing') return res.status(400).json({ error: 'Impossible' });
   const color = game.playerWhite === req.userId ? 'white' : game.playerBlack === req.userId ? 'black' : null;
@@ -1267,6 +1513,15 @@ app.post('/games/:id/resign', requireAuth, (req, res) => {
 //  SOCKET.IO
 // ══════════════════════════════════════════════════════════
 io.on('connection', (socket) => {
+  socket.authDeadline = setTimeout(() => {
+    if (!socket.userId) socket.disconnect(true);
+  }, 15000);
+  if (socket.authDeadline.unref) socket.authDeadline.unref();
+
+  const authenticated = () => {
+    if (socket.authDeadline) { clearTimeout(socket.authDeadline); socket.authDeadline = null; }
+  };
+  if (socket.userId) authenticated();
 
   // Anti-flood : un socket qui envoie un volume anormal d'événements est déconnecté.
   // Seuil très large (500 / 10 s) : les vrais joueurs ne l'atteignent jamais, seuls les bots.
@@ -1277,7 +1532,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('auth', ({ token }) => {
-    if (authenticateSocketToken(socket, token)) socket.emit('auth:ok', { userId: socket.userId });
+    if (authenticateSocketToken(socket, token)) { authenticated(); socket.emit('auth:ok', { userId: socket.userId }); }
     else socket.emit('auth:error', { message: 'Token invalide ou session expirée' });
   });
 
@@ -1290,7 +1545,8 @@ io.on('connection', (socket) => {
         users.set(found.id, found);
       }
       socketUsers.set(socket.id, found.id); socket.userId = found.id;
-      const token = jwt.sign({ userId: found.id }, JWT_SECRET, { expiresIn: '7d' });
+      authenticated();
+      const token = jwt.sign({ userId: found.id }, JWT_SECRET, { expiresIn: '2h' });
       return socket.emit('auth:ok', { userId: found.id, token });
     }
     if (!LEGACY_LOCAL_AUTH) {
@@ -1301,7 +1557,8 @@ io.on('connection', (socket) => {
     for (const u of users.values()) if (u.supabaseId === supabaseId) { found = u; break; }
     if (!found) { const id = uuid(); found = { id, username: username || 'Joueur', supabaseId }; users.set(id, found); }
     socketUsers.set(socket.id, found.id); socket.userId = found.id;
-    const token = jwt.sign({ userId: found.id }, JWT_SECRET, { expiresIn: '7d' });
+    authenticated();
+    const token = jwt.sign({ userId: found.id }, JWT_SECRET, { expiresIn: '2h' });
     socket.emit('auth:ok', { userId: found.id, token });
   });
 
@@ -1316,8 +1573,10 @@ io.on('connection', (socket) => {
   // ══════════════════════════════════════════════════════
   //  DAMES MULTIJOUEUR
   // ══════════════════════════════════════════════════════
-  socket.on('dames_join', ({ room, player, supabaseId, name, bet, currency, gameId }) => {
+  socket.on('dames_join', async ({ room, player, supabaseId, name, bet, currency, gameId }) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return rejectSocket(socket, 'Room ou joueur invalide.');
+    const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'dames', player, bet);
+    if (!databaseCheck.ok) return rejectSocket(socket, databaseCheck.message);
     let droom = damesRooms.get(room);
     if (!droom) {
       droom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, engineBoard: initialBoard(), boardState: JSON.stringify(checkersClientBoard(initialBoard())), currentPlayer: 0, lastMove: null, stateVersion: 0, turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null, turnPlayer: null };
@@ -1326,6 +1585,7 @@ io.on('connection', (socket) => {
     if (!bindDatabaseGame(droom, gameId)) return rejectSocket(socket, 'Cette room est déjà liée à une autre partie.');
     if (!joinRoomAsAuthenticatedPlayer(socket, droom, room, player, supabaseId, name)) return;
     if (bet && !droom.betAmount) droom.betAmount = bet;
+    persistRoomSoon('dames', droom);
 
     if (droom.status === 'playing' || droom.status === 'paused') {
       const p1 = droom.players[1], p2 = droom.players[2];
@@ -1347,12 +1607,7 @@ io.on('connection', (socket) => {
             const p1b = droom.players[1]?.connected === true, p2b = droom.players[2]?.connected === true;
             droom.disconnectTimer = null;
             if (!p1b && !p2b) {
-              droom.status = 'finished';
-              const { bet: b } = calcFinancial(droom.betAmount); const penalty = Math.round(b * 0.05);
-              const cp = { type: 'game_over', game: 'dames', room, result: 'cancel', reason: 'both_disconnected', penalty, p1Id: droom.players[1]?.supabaseId, p2Id: droom.players[2]?.supabaseId, betAmount: b, currency: droom.currency || 'HTG' };
-              if (droom.players[1]?.socketId) io.to(droom.players[1].socketId).emit('game:over', { ...cp, myResult: -penalty });
-              if (droom.players[2]?.socketId) io.to(droom.players[2].socketId).emit('game:over', { ...cp, myResult: -penalty });
-              io.to(room).emit('game:result', { postMessage: cp });
+              finishBothDisconnected(droom, 'dames', room);
             } else { const ws = p1b ? 1 : 2; droom.status = 'playing'; notifyDamesRoomOver(droom, room, ws, 'forfeit'); }
           }, 60000);
         }
@@ -1372,6 +1627,7 @@ io.on('connection', (socket) => {
     if (droom.players[1] && droom.players[2] && droom.status === 'waiting') {
       droom.status = 'playing';
       droom.startedAt = Date.now();
+      persistRoomSoon('dames', droom);
       const p1 = droom.players[1], p2 = droom.players[2];
       io.to(p1.socketId).emit('dames_start', { room, yourSlot: 1, opponentName: p2.name, bet: droom.betAmount, currency: droom.currency, reconnected: false });
       io.to(p2.socketId).emit('dames_start', { room, yourSlot: 2, opponentName: p1.name, bet: droom.betAmount, currency: droom.currency, reconnected: false });
@@ -1401,6 +1657,7 @@ io.on('connection', (socket) => {
     // Accusé de réception : le joueur sait que son coup est enregistré. Sans
     // ack sous quelques secondes, son client redemande l'état complet.
     socket.emit('dames_move_ack', { room, version: droom.stateVersion, currentPlayer: droom.currentPlayer });
+    persistRoomSoon('dames', droom);
     if (result.winner) return notifyDamesRoomOver(droom, room, result.winner === 'white' ? 1 : 2, 'checkmate');
     startDamesTurnTimer(droom, room, droom.currentPlayer + 1);
   });
@@ -1424,8 +1681,10 @@ io.on('connection', (socket) => {
   // ══════════════════════════════════════════════════════
   //  TTT MULTIJOUEUR
   // ══════════════════════════════════════════════════════
-  socket.on('ttt_join', ({ room, player, supabaseId, name, bet, currency, manches, gameId }) => {
+  socket.on('ttt_join', async ({ room, player, supabaseId, name, bet, currency, manches, gameId }) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return rejectSocket(socket, 'Room ou joueur invalide.');
+    const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'tictactoe', player, bet);
+    if (!databaseCheck.ok) return rejectSocket(socket, databaseCheck.message);
     let troom = tttRooms.get(room);
     if (!troom) {
       troom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, gameState: tttState(), turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null, turnPlayer: null, totalManches: Math.max(1, Math.min(15, Number(manches) || 5)) };
@@ -1434,6 +1693,7 @@ io.on('connection', (socket) => {
     if (!bindDatabaseGame(troom, gameId)) return rejectSocket(socket, 'Cette room est déjà liée à une autre partie.');
     if (!joinRoomAsAuthenticatedPlayer(socket, troom, room, player, supabaseId, name)) return;
     if (bet && !troom.betAmount) troom.betAmount = bet;
+    persistRoomSoon('tictactoe', troom);
 
     if (troom.status === 'playing' || troom.status === 'paused') {
       const p1 = troom.players[1], p2 = troom.players[2];
@@ -1454,12 +1714,7 @@ io.on('connection', (socket) => {
             const p1b = troom.players[1]?.connected === true, p2b = troom.players[2]?.connected === true;
             troom.disconnectTimer = null;
             if (!p1b && !p2b) {
-              troom.status = 'finished';
-              const { bet: b } = calcFinancial(troom.betAmount); const penalty = Math.round(b * 0.05);
-              const cp = { type: 'game_over', game: 'tictactoe', room, result: 'cancel', reason: 'both_disconnected', penalty, p1Id: troom.players[1]?.supabaseId, p2Id: troom.players[2]?.supabaseId, betAmount: b, currency: troom.currency || 'HTG' };
-              if (troom.players[1]?.socketId) { io.to(troom.players[1].socketId).emit('game:over', { ...cp, myResult: -penalty }); io.to(troom.players[1].socketId).emit('game:result', { postMessage: { ...cp, myResult: -penalty } }); }
-              if (troom.players[2]?.socketId) { io.to(troom.players[2].socketId).emit('game:over', { ...cp, myResult: -penalty }); io.to(troom.players[2].socketId).emit('game:result', { postMessage: { ...cp, myResult: -penalty } }); }
-              io.to(room).emit('game:result', { postMessage: cp });
+              finishBothDisconnected(troom, 'tictactoe', room);
             } else { const ws = p1b ? 1 : 2; troom.status = 'playing'; notifyTTTRoomOver(troom, room, ws, 'forfeit'); }
           }, 60000);
         }
@@ -1479,6 +1734,7 @@ io.on('connection', (socket) => {
     if (troom.players[1] && troom.players[2] && troom.status === 'waiting') {
       troom.status = 'playing';
       troom.startedAt = Date.now();
+      persistRoomSoon('tictactoe', troom);
       const p1 = troom.players[1], p2 = troom.players[2];
       io.to(p1.socketId).emit('ttt_start', { room, yourSlot: 1, opponentName: p2.name, bet: troom.betAmount, currency: troom.currency, reconnected: false, totalManches: troom.totalManches });
       io.to(p2.socketId).emit('ttt_start', { room, yourSlot: 2, opponentName: p1.name, bet: troom.betAmount, currency: troom.currency, reconnected: false, totalManches: troom.totalManches });
@@ -1497,6 +1753,7 @@ io.on('connection', (socket) => {
     const draw = !line && state.board.every(Boolean);
     state.currentPlayer = player === 1 ? 1 : 0;
     socket.to(room).emit('ttt_move', { room, player, row, col, symbol: expectedSymbol, boardState: JSON.stringify(state.board), nextPlayer: state.currentPlayer });
+    persistRoomSoon('tictactoe', troom);
     if (line || draw) return finishTTTRound(troom, room, line ? player : 0, line);
     startTTTTurnTimer(troom, room, state.currentPlayer + 1);
   });
@@ -1512,8 +1769,10 @@ io.on('connection', (socket) => {
   // ══════════════════════════════════════════════════════
   //  QUORIDOR MULTIJOUEUR
   // ══════════════════════════════════════════════════════
-  socket.on('quoridor_join', ({ room, player, supabaseId, name, bet, currency, gameId }) => {
+  socket.on('quoridor_join', async ({ room, player, supabaseId, name, bet, currency, gameId }) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return rejectSocket(socket, 'Room ou joueur invalide.');
+    const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'quoridor', player, bet);
+    if (!databaseCheck.ok) return rejectSocket(socket, databaseCheck.message);
     let qroom = quoriRooms.get(room);
     if (!qroom) {
       qroom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, gameState: quoriInitialState(), currentSlot: 1, turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null, turnPlayer: null };
@@ -1522,6 +1781,7 @@ io.on('connection', (socket) => {
     if (!bindDatabaseGame(qroom, gameId)) return rejectSocket(socket, 'Cette room est déjà liée à une autre partie.');
     if (!joinRoomAsAuthenticatedPlayer(socket, qroom, room, player, supabaseId, name)) return;
     if (bet && !qroom.betAmount) qroom.betAmount = bet;
+    persistRoomSoon('quoridor', qroom);
 
     if (qroom.status === 'playing' || qroom.status === 'paused') {
       const p1 = qroom.players[1], p2 = qroom.players[2];
@@ -1542,12 +1802,7 @@ io.on('connection', (socket) => {
             const p1b = qroom.players[1]?.connected === true, p2b = qroom.players[2]?.connected === true;
             qroom.disconnectTimer = null;
             if (!p1b && !p2b) {
-              qroom.status = 'finished';
-              const { bet: b } = calcFinancial(qroom.betAmount); const penalty = Math.round(b * 0.05);
-              const cp = { type: 'game_over', game: 'quoridor', room, result: 'cancel', reason: 'both_disconnected', penalty, p1Id: qroom.players[1]?.supabaseId, p2Id: qroom.players[2]?.supabaseId, betAmount: b, currency: qroom.currency || 'HTG' };
-              if (qroom.players[1]?.socketId) { io.to(qroom.players[1].socketId).emit('game:over', { ...cp, myResult: -penalty }); io.to(qroom.players[1].socketId).emit('game:result', { postMessage: { ...cp, myResult: -penalty } }); }
-              if (qroom.players[2]?.socketId) { io.to(qroom.players[2].socketId).emit('game:over', { ...cp, myResult: -penalty }); io.to(qroom.players[2].socketId).emit('game:result', { postMessage: { ...cp, myResult: -penalty } }); }
-              io.to(room).emit('game:result', { postMessage: cp });
+              finishBothDisconnected(qroom, 'quoridor', room);
             } else { const ws = p1b ? 1 : 2; qroom.status = 'playing'; notifyQuoriRoomOver(qroom, room, ws, 'forfeit'); }
           }, 60000);
         }
@@ -1567,6 +1822,7 @@ io.on('connection', (socket) => {
     if (qroom.players[1] && qroom.players[2] && qroom.status === 'waiting') {
       qroom.status = 'playing';
       qroom.startedAt = Date.now();
+      persistRoomSoon('quoridor', qroom);
       const p1 = qroom.players[1], p2 = qroom.players[2];
       io.to(p1.socketId).emit('quoridor_start', { room, yourSlot: 1, opponentName: p2.name, bet: qroom.betAmount, currency: qroom.currency, reconnected: false });
       io.to(p2.socketId).emit('quoridor_start', { room, yourSlot: 2, opponentName: p1.name, bet: qroom.betAmount, currency: qroom.currency, reconnected: false });
@@ -1595,6 +1851,7 @@ io.on('connection', (socket) => {
     qroom.currentSlot = player === 1 ? 2 : 1;
     state.currentSlot = qroom.currentSlot;
     socket.to(room).emit('quoridor_move', { room, player, moveType, data: { r: data.r, c: data.c }, gameState: JSON.stringify(state), nextPlayer: qroom.currentSlot - 1 });
+    persistRoomSoon('quoridor', qroom);
     if (winnerSlot) return notifyQuoriRoomOver(qroom, room, winnerSlot, 'normal');
     startQuoriTurnTimer(qroom, room, qroom.currentSlot);
   });
@@ -1608,8 +1865,10 @@ io.on('connection', (socket) => {
   // ══════════════════════════════════════════════════════
   //  PENALTY SHOOTOUT MULTIJOUEUR
   // ══════════════════════════════════════════════════════
-  socket.on('penalty_join', ({ room, player, supabaseId, name, bet, currency, gameId }) => {
+  socket.on('penalty_join', async ({ room, player, supabaseId, name, bet, currency, gameId }) => {
     if (!validRoom(room) || !validPlayerSlot(player)) { socket.emit('penalty_error', { message: 'room_or_player_invalid', detail: 'Room ou joueur invalide.' }); return; }
+    const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'penalty', player, bet);
+    if (!databaseCheck.ok) return rejectSocket(socket, databaseCheck.message);
     let proom = penaltyRooms.get(room);
 
     if (!proom) {
@@ -1624,6 +1883,7 @@ io.on('connection', (socket) => {
 
     if (!joinRoomAsAuthenticatedPlayer(socket, proom, room, player, supabaseId, name)) return;
     if (bet && !proom.betAmount) proom.betAmount = bet;
+    persistRoomSoon('penalty', proom);
 
     if (proom.status === 'playing' || proom.status === 'paused') {
       const p1 = proom.players[1], p2 = proom.players[2];
@@ -1645,12 +1905,7 @@ io.on('connection', (socket) => {
             const p2b = proom.players[2]?.connected === true;
             proom.disconnectTimer = null;
             if (!p1b && !p2b) {
-              proom.status = 'finished';
-              const { bet: b } = calcFinancial(proom.betAmount); const penalty = Math.round(b * 0.05);
-              const cp = { type: 'game_over', game: 'penalty', room, result: 'cancel', reason: 'both_disconnected', penalty, p1Id: proom.players[1]?.supabaseId, p2Id: proom.players[2]?.supabaseId, betAmount: b, currency: proom.currency || 'HTG' };
-              if (proom.players[1]?.socketId) { io.to(proom.players[1].socketId).emit('game:over', { ...cp, myResult: -penalty }); io.to(proom.players[1].socketId).emit('game:result', { postMessage: { ...cp, myResult: -penalty } }); }
-              if (proom.players[2]?.socketId) { io.to(proom.players[2].socketId).emit('game:over', { ...cp, myResult: -penalty }); io.to(proom.players[2].socketId).emit('game:result', { postMessage: { ...cp, myResult: -penalty } }); }
-              io.to(room).emit('game:result', { postMessage: cp });
+              finishBothDisconnected(proom, 'penalty', room);
             } else {
               const ws = p1b ? 1 : 2; proom.status = 'playing'; notifyPenaltyRoomOver(proom, room, ws, 'forfeit');
             }
@@ -1674,6 +1929,7 @@ io.on('connection', (socket) => {
     if (proom.players[1] && proom.players[2] && proom.status === 'waiting') {
       proom.status = 'playing';
       proom.startedAt = Date.now();
+      persistRoomSoon('penalty', proom);
       const p1 = proom.players[1], p2 = proom.players[2];
       io.to(p1.socketId).emit('penalty_start', { room, yourSlot: 1, opponentName: p2.name, bet: proom.betAmount, currency: proom.currency, reconnected: false });
       io.to(p2.socketId).emit('penalty_start', { room, yourSlot: 2, opponentName: p1.name, bet: proom.betAmount, currency: proom.currency, reconnected: false });
@@ -1687,6 +1943,7 @@ io.on('connection', (socket) => {
     if (!proom || proom.status !== 'playing' || proom.currentRound !== round || proom.players[player]?.socketId !== socket.id) return;
     if (!Number.isInteger(zone) || zone < 0 || zone > 8 || proom.choices[player] !== undefined) return;
     proom.choices[player] = zone;
+    persistRoomSoon('penalty', proom);
     socket.to(room).emit('penalty_choice_received', { player });
 
     if (proom.choices[1] !== undefined && proom.choices[2] !== undefined) {
@@ -1707,8 +1964,10 @@ io.on('connection', (socket) => {
   // ══════════════════════════════════════════════════════
   //  CHIFOUMI MULTIJOUEUR
   // ══════════════════════════════════════════════════════
-  socket.on('chifoumi_join', ({ room, player, supabaseId, name, bet, currency, gameId }) => {
+  socket.on('chifoumi_join', async ({ room, player, supabaseId, name, bet, currency, gameId }) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return rejectSocket(socket, 'Room ou joueur invalide.');
+    const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'chifoumi', player, bet);
+    if (!databaseCheck.ok) return rejectSocket(socket, databaseCheck.message);
     let croom = chifoumiRooms.get(room);
     if (!croom) {
       croom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, currentRound: 1, scores: [0, 0], choices: {}, history: [], turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null };
@@ -1717,6 +1976,7 @@ io.on('connection', (socket) => {
     if (!bindDatabaseGame(croom, gameId)) return rejectSocket(socket, 'Cette room est déjà liée à une autre partie.');
     if (!joinRoomAsAuthenticatedPlayer(socket, croom, room, player, supabaseId, name)) return;
     if (bet && !croom.betAmount) croom.betAmount = bet;
+    persistRoomSoon('chifoumi', croom);
 
     if (croom.status === 'playing' || croom.status === 'paused') {
       const p1 = croom.players[1], p2 = croom.players[2];
@@ -1737,12 +1997,7 @@ io.on('connection', (socket) => {
             const p1b = croom.players[1]?.connected === true, p2b = croom.players[2]?.connected === true;
             croom.disconnectTimer = null;
             if (!p1b && !p2b) {
-              croom.status = 'finished';
-              const { bet: b } = calcFinancial(croom.betAmount); const penalty = Math.round(b * 0.05);
-              const cp = { type: 'game_over', game: 'chifoumi', room, result: 'cancel', reason: 'both_disconnected', penalty, p1Id: croom.players[1]?.supabaseId, p2Id: croom.players[2]?.supabaseId, betAmount: b, currency: croom.currency || 'HTG' };
-              if (croom.players[1]?.socketId) { io.to(croom.players[1].socketId).emit('game:over', { ...cp, myResult: -penalty }); io.to(croom.players[1].socketId).emit('game:result', { postMessage: { ...cp, myResult: -penalty } }); }
-              if (croom.players[2]?.socketId) { io.to(croom.players[2].socketId).emit('game:over', { ...cp, myResult: -penalty }); io.to(croom.players[2].socketId).emit('game:result', { postMessage: { ...cp, myResult: -penalty } }); }
-              io.to(room).emit('game:result', { postMessage: cp });
+              finishBothDisconnected(croom, 'chifoumi', room);
             } else { const ws = p1b ? 1 : 2; croom.status = 'playing'; notifyChifoumiRoomOver(croom, room, ws, 'forfeit'); }
           }, 60000);
         }
@@ -1763,6 +2018,7 @@ io.on('connection', (socket) => {
     if (croom.players[1] && croom.players[2] && croom.status === 'waiting') {
       croom.status = 'playing'; const p1 = croom.players[1], p2 = croom.players[2];
       croom.startedAt = Date.now();
+      persistRoomSoon('chifoumi', croom);
       io.to(p1.socketId).emit('chifoumi_start', { room, yourSlot: 1, opponentName: p2.name, bet: croom.betAmount, currency: croom.currency, reconnected: false });
       io.to(p2.socketId).emit('chifoumi_start', { room, yourSlot: 2, opponentName: p1.name, bet: croom.betAmount, currency: croom.currency, reconnected: false });
       setTimeout(() => { if (croom.status === 'playing') startChifoumiTurnTimer(croom, room); }, 3000);
@@ -1775,6 +2031,7 @@ io.on('connection', (socket) => {
     if (!croom || croom.status !== 'playing' || croom.players[player]?.socketId !== socket.id) return;
     if (!['pierre', 'feuille', 'ciseaux'].includes(choice) || croom.choices[player] !== undefined) return;
     croom.choices[player] = choice;
+    persistRoomSoon('chifoumi', croom);
     socket.to(room).emit('chifoumi_opponent_choice', { player });
     
     // Si les deux ont joué, on n'attend plus la période de grâce
@@ -1789,6 +2046,7 @@ io.on('connection', (socket) => {
       croom.currentRound = round;
       croom.choices = {};
       croom.awaitingNextRound = false;
+      persistRoomSoon('chifoumi', croom);
       startChifoumiTurnTimer(croom, room);
     }
   });
@@ -1842,6 +2100,7 @@ io.on('connection', (socket) => {
   //  DÉCONNEXION
   // ══════════════════════════════════════════════════════
   socket.on('disconnect', () => {
+    if (socket.authDeadline) { clearTimeout(socket.authDeadline); socket.authDeadline = null; }
     const userId = socketUsers.get(socket.id);
     socketUsers.delete(socket.id);
 
@@ -1951,6 +2210,14 @@ io.on('connection', (socket) => {
   });
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ Serveur Nano Banana v5.6 démarré sur le port ${PORT}`);
+async function startServer() {
+  await restorePersistedRooms();
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`✅ Serveur Nano Banana v5.6 démarré sur le port ${PORT}`);
+  });
+}
+
+startServer().catch(error => {
+  console.error('[startup] fatal error', error.message);
+  process.exit(1);
 });
