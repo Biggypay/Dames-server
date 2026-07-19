@@ -29,6 +29,18 @@ if (!process.env.JWT_SECRET) {
 }
 const ORIGIN          = process.env.ALLOWED_ORIGIN || '*';
 const ALLOWED_ORIGINS = ORIGIN === '*' ? '*' : ORIGIN.split(',').map(origin => origin.trim()).filter(Boolean);
+// Production, Lovable preview and installed-app origins. These first-party
+// origins must remain accepted even when Render still has an older, narrower
+// ALLOWED_ORIGIN value (for example only mindspille.lovable.app).
+const FIRST_PARTY_ORIGINS = new Set([
+  'https://mindspille.com',
+  'https://www.mindspille.com',
+  'https://mindspille.lovable.app',
+  'capacitor://localhost',
+  'ionic://localhost',
+  'http://localhost',
+  'https://localhost'
+]);
 
 // Autorise les origines configurées + tout sous-domaine *.lovable.app
 // (site publié, aperçu id-preview--..., remix, PWA installée) : l'appli
@@ -41,6 +53,8 @@ function originMatches(pattern, origin) {
 }
 function isAllowedOrigin(origin) {
   if (!origin) return false;
+  if (FIRST_PARTY_ORIGINS.has(origin)) return true;
+  if (/^https:\/\/[a-z0-9-]+\.lovable\.app$/i.test(origin)) return true;
   if (ALLOWED_ORIGINS === '*') return true;
   return Array.isArray(ALLOWED_ORIGINS) && ALLOWED_ORIGINS.some(pattern => originMatches(pattern, origin));
 }
@@ -54,7 +68,14 @@ if (process.env.NODE_ENV === 'production' && (!process.env.JWT_SECRET || !SUPABA
   throw new Error('Production requires JWT_SECRET, SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, SUPABASE_SERVICE_ROLE_KEY, ALLOWED_ORIGIN and FRAME_ANCESTORS. See .env.example.');
 }
 // Origines autorisées à embarquer le jeu en iframe (Lovable / domaine live). '*' = permissif.
-const FRAME_ANCESTORS = process.env.FRAME_ANCESTORS || '*';
+const FRAME_ANCESTORS = Array.from(new Set([
+  "'self'",
+  'https://mindspille.com',
+  'https://www.mindspille.com',
+  'https://mindspille.lovable.app',
+  'https://*.lovable.app',
+  ...String(process.env.FRAME_ANCESTORS || '').split(/\s+/).filter(value => value && value !== "'self'")
+])).join(' ');
 
 const io = new Server(server, {
   cors: {
@@ -85,7 +106,7 @@ app.use((req, res, next) => {
   }
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Content-Security-Policy', "frame-ancestors 'self' " + FRAME_ANCESTORS);
+  res.setHeader('Content-Security-Policy', 'frame-ancestors ' + FRAME_ANCESTORS);
   // On garde frame-ancestors permissif pour l'iframe Lovable, mais on ajoute les autres protections.
   // Pas de restriction d'affichage en iframe : l'appli MindSpille est aussi
   // une app native (WebView) dont l'origine (capacitor://…, https://localhost…)
