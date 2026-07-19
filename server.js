@@ -36,6 +36,15 @@ const FIRST_PARTY_ORIGINS = new Set([
   'https://mindspille.com',
   'https://www.mindspille.com',
   'https://mindspille.lovable.app',
+  // Online game pages are served in an iframe by this Render service. Their
+  // Socket.io handshake therefore carries the game-server origin, not the
+  // parent Lovable origin. Omitting it loads the HTML but rejects the socket
+  // with Engine.IO code 4 (Forbidden), leaving ROOM/SLOT on screen forever.
+  'https://games-server-top9.onrender.com',
+  'https://dames-server.onrender.com',
+  ...[process.env.RENDER_EXTERNAL_URL, process.env.GAME_SERVER_PUBLIC_URL]
+    .filter(Boolean)
+    .map(value => String(value).replace(/\/$/, '')),
   'capacitor://localhost',
   'ionic://localhost',
   'http://localhost',
