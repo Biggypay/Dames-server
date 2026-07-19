@@ -227,6 +227,25 @@ function initSocket(){
     });
   });
 
+  socket.on('connect_error', function(err){
+    var loadingText = document.querySelector('#loading p');
+    if(loadingText) loadingText.textContent = 'Connexion refusée par le serveur. Rechargez la page.';
+    window.parent.postMessage({
+      type: 'game-server:error',
+      game: 'dames',
+      gameId: GAME_ID,
+      message: (err && err.message) || 'Connexion Socket.io refusée.'
+    }, '*');
+  });
+
+  socket.on('dames_joined', function(data){
+    var loadingText = document.querySelector('#loading p');
+    if(!loadingText || gameReady) return;
+    loadingText.textContent = data && data.waitingForOpponent
+      ? "Connexion validée — attente de l'adversaire…"
+      : 'Connexion validée — démarrage du plateau…';
+  });
+
   socket.on('disconnect', function(){
     if(!gameOver) document.getElementById('reconn-bar').classList.add('show');
   });
@@ -340,6 +359,13 @@ function initSocket(){
 
   socket.on('game:error', function(data){
     if(gameOver) return;
+    if(!gameReady){
+      var loadingText = document.querySelector('#loading p');
+      var message = data && data.message ? data.message : 'La partie a été refusée par le serveur.';
+      if(loadingText) loadingText.textContent = message;
+      window.parent.postMessage({ type:'game-server:error', game:'dames', gameId:GAME_ID, message:message }, '*');
+      return;
+    }
     // Coup refusé (ou autre erreur) : l'accusé n'arrivera jamais. On récupère
     // l'état autoritatif immédiatement pour annuler la divergence locale.
     if(ackTimer){ clearTimeout(ackTimer); ackTimer = null; }

@@ -862,16 +862,40 @@ async function verifySupabaseAccessToken(accessToken) {
   }
 }
 
+function createServerToken(user) {
+  const payload = {
+    userId: user.id,
+    username: safeName(user.username, 'Joueur')
+  };
+  // supabaseId is signed by this server. Including it lets a valid session
+  // restore its in-memory user after a Render restart without trusting any
+  // browser-provided identity.
+  if (isUuid(user.supabaseId)) payload.supabaseId = user.supabaseId;
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: '2h' });
+}
+
 function issueServerToken(res, user) {
-  const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '2h' });
+  const token = createServerToken(user);
   res.json({ token, userId: user.id, username: user.username });
 }
 
 function authenticateSocketToken(socket, token) {
   if (typeof token !== 'string' || token.length > 4096) return false;
   try {
-    const { userId } = jwt.verify(token, JWT_SECRET);
-    if (!users.has(userId)) return false;
+    const payload = jwt.verify(token, JWT_SECRET);
+    if (!payload || typeof payload !== 'object' || !isUuid(payload.userId)) return false;
+    const { userId } = payload;
+    let user = users.get(userId);
+    if (!user && isUuid(payload.supabaseId)) {
+      user = {
+        id: userId,
+        username: safeName(payload.username, 'Joueur'),
+        supabaseId: payload.supabaseId
+      };
+      users.set(userId, user);
+      console.info('[auth] restored signed Supabase user after restart');
+    }
+    if (!user) return false;
     socketUsers.set(socket.id, userId);
     socket.userId = userId;
     return true;
@@ -1564,7 +1588,7 @@ app.post('/auth/register', authRateLimit, async (req, res) => {
   for (const u of users.values()) if (u.username === username) return res.status(409).json({ error: 'Nom déjà pris' });
   const id = uuid();
   users.set(id, { id, username, password: bcrypt.hashSync(password, 10), supabaseId: supabaseId || null });
-  const token = jwt.sign({ userId: id }, JWT_SECRET, { expiresIn: '2h' });
+  const token = createServerToken(users.get(id));
   res.json({ token, userId: id, username });
 });
 
@@ -1583,7 +1607,7 @@ app.post('/auth/login', authRateLimit, async (req, res) => {
   const user = [...users.values()].find(u => u.username === username);
   if (!user || !bcrypt.compareSync(password, user.password)) return res.status(401).json({ error: 'Identifiants incorrects' });
   if (supabaseId) user.supabaseId = supabaseId;
-  const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '2h' });
+  const token = createServerToken(user);
   res.json({ token, userId: user.id, username: user.username });
 });
 
@@ -1774,7 +1798,7 @@ io.on('connection', (socket) => {
       }
       socketUsers.set(socket.id, found.id); socket.userId = found.id;
       authenticated();
-      const token = jwt.sign({ userId: found.id }, JWT_SECRET, { expiresIn: '2h' });
+      const token = createServerToken(found);
       return socket.emit('auth:ok', { userId: found.id, token });
     }
     if (!LEGACY_LOCAL_AUTH) {
@@ -1786,7 +1810,7 @@ io.on('connection', (socket) => {
     if (!found) { const id = uuid(); found = { id, username: username || 'Joueur', supabaseId }; users.set(id, found); }
     socketUsers.set(socket.id, found.id); socket.userId = found.id;
     authenticated();
-    const token = jwt.sign({ userId: found.id }, JWT_SECRET, { expiresIn: '2h' });
+    const token = createServerToken(found);
     socket.emit('auth:ok', { userId: found.id, token });
   });
 
@@ -1814,6 +1838,11 @@ io.on('connection', (socket) => {
     if (!joinRoomAsAuthenticatedPlayer(socket, droom, room, player, supabaseId, name)) return;
     if (bet && !droom.betAmount) droom.betAmount = bet;
     persistRoomSoon('dames', droom);
+    socket.emit('dames_joined', {
+      room,
+      player,
+      waitingForOpponent: !(droom.players[1] && droom.players[2])
+    });
 
     if (droom.status === 'playing' || droom.status === 'paused') {
       const p1 = droom.players[1], p2 = droom.players[2];
