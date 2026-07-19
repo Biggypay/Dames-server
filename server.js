@@ -1494,7 +1494,69 @@ app.post('/matchmaking/leave', requireNonProductionLegacyGame, requireAuth, (req
   res.json({ status: 'left' });
 });
 
-app.post('/game/join', requireNonProductionLegacyGame, requireAuth, (req, res) => {
+// Compatibility gate used by the current web client before it opens the game
+// iframe. It never creates or mutates a legacy in-memory game. It only proves
+// that the authenticated Supabase account belongs to an active database game.
+// Socket.io validates these facts again before creating/restoring the room.
+app.post('/game/join', requireAuth, async (req, res) => {
+  const { gameId, username, supabaseId, betAmount } = req.body || {};
+  if (!isUuid(gameId)) return res.status(400).json({ error: 'Identifiant de partie invalide.' });
+
+  const user = users.get(req.userId);
+  if (!user?.supabaseId) return res.status(401).json({ error: 'Session Supabase requise.' });
+  if (supabaseId && supabaseId !== user.supabaseId) {
+    return res.status(403).json({ error: 'Identité de joueur invalide.' });
+  }
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    return res.status(503).json({ error: 'Validation serveur temporairement indisponible.' });
+  }
+  if (betAmount !== undefined && (!Number.isFinite(Number(betAmount)) || Number(betAmount) < 0)) {
+    return res.status(400).json({ error: 'Montant de mise invalide.' });
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(
+      SUPABASE_URL + '/rest/v1/games?id=eq.' + encodeURIComponent(gameId) + '&select=id,game_type,player1_id,player2_id,bet_amount,status',
+      { headers: serverSupabaseHeaders(), signal: controller.signal }
+    );
+    if (!response.ok) {
+      console.error('[game/join] database lookup failed', response.status);
+      return res.status(503).json({ error: 'Impossible de valider la partie pour le moment.' });
+    }
+
+    const rows = await response.json();
+    const game = Array.isArray(rows) ? rows[0] : null;
+    const playerSlot = game?.player1_id === user.supabaseId ? 1 : game?.player2_id === user.supabaseId ? 2 : 0;
+    const knownGameType = game && Object.values(DB_GAME_TYPES).includes(game.game_type);
+    const sameBet = betAmount === undefined || Math.abs(Number(game?.bet_amount || 0) - Number(betAmount)) < 0.0001;
+
+    if (!game || !playerSlot || !knownGameType || !sameBet) {
+      return res.status(403).json({ error: 'Cette partie ne correspond pas au joueur, au jeu ou à la mise.' });
+    }
+    if (!['waiting', 'in_progress'].includes(game.status)) {
+      return res.status(409).json({ error: 'Cette partie est déjà terminée.' });
+    }
+
+    if (username) user.username = safeName(username, user.username);
+    return res.json({
+      status: 'ready',
+      gameId: game.id,
+      gameType: game.game_type,
+      playerSlot,
+      youAre: playerSlot === 1 ? 'player1' : 'player2',
+      betAmount: Number(game.bet_amount || 0)
+    });
+  } catch (error) {
+    console.error('[game/join] validation failed', error?.message || error);
+    return res.status(503).json({ error: 'Validation serveur temporairement indisponible.' });
+  } finally {
+    clearTimeout(timeout);
+  }
+});
+
+app.post('/game/join-legacy', requireNonProductionLegacyGame, requireAuth, (req, res) => {
   const { gameId, username, color, betAmount } = req.body;
   if (!gameId) return res.status(400).json({ error: 'gameId requis' });
   const userId = req.userId;
