@@ -202,6 +202,7 @@ const DB_GAME_TYPES = { dames: 'checkers', tictactoe: 'tictactoe', quoridor: 'qu
 const ROOM_MAPS = { dames: damesRooms, tictactoe: tttRooms, quoridor: quoriRooms, penalty: penaltyRooms, chifoumi: chifoumiRooms };
 const ROOM_PERSIST_INTERVAL = 3000;
 const ROOM_RETENTION_MS = 10 * 60 * 1000;
+const SETTLEMENT_RETRY_MAX_DELAY_MS = 60 * 1000;
 let roomPersistenceInFlight = false;
 
 function serverSupabaseHeaders() {
@@ -229,7 +230,7 @@ async function callServerStateRpc(name, payload) {
 }
 
 function serializableRoomState(room) {
-  const ignored = new Set(['turnTimer', 'graceTimer', 'disconnectTimer', 'settlementPromise', 'persistTimer', 'cleanupTimer']);
+  const ignored = new Set(['turnTimer', 'graceTimer', 'disconnectTimer', 'settlementPromise', 'settlementRetryTimer', 'persistTimer', 'cleanupTimer']);
   const state = JSON.parse(JSON.stringify(room, (key, value) => {
     if (ignored.has(key)) return undefined;
     if (value instanceof Set) return [...value];
@@ -328,7 +329,7 @@ function hydratePersistedRoom(record) {
     player.userId = null;
   }
   room.turnTimer = null; room.graceTimer = null; room.disconnectTimer = null;
-  room.settlementPromise = null; room.cleanupTimer = null; room.reconnectDeadline = null;
+  room.settlementPromise = null; room.settlementRetryTimer = null; room.cleanupTimer = null; room.reconnectDeadline = null;
   room.mutualQuitRequests = new Set(Array.isArray(room.mutualQuitRequests) ? room.mutualQuitRequests : []);
   if (room.status !== 'finished') {
     const playerCount = [room.players[1], room.players[2]].filter(Boolean).length;
@@ -378,6 +379,21 @@ function databaseResult(winnerSlot, reason) {
   if (winnerSlot === 0) return reason === 'both_disconnected' || reason === 'mutual_quit' ? 'mutual_quit' : 'draw';
   return reason === 'timeout' ? 'timeout' : 'win';
 }
+
+function scheduleSettlementRetry(room, game) {
+  if (!room?.pendingSettlement || room.settlementRetryTimer) return;
+  const attempt = Math.max(0, Number(room.settlementRetryCount || 0));
+  const delay = Math.min(SETTLEMENT_RETRY_MAX_DELAY_MS, 2000 * (2 ** Math.min(attempt, 5)));
+  room.settlementRetryCount = attempt + 1;
+  room.settlementRetryTimer = setTimeout(() => {
+    room.settlementRetryTimer = null;
+    const pending = room.pendingSettlement;
+    if (pending) void settleRoomInSupabase(room, game, pending.winnerSlot, pending.reason);
+  }, delay);
+  if (room.settlementRetryTimer.unref) room.settlementRetryTimer.unref();
+  console.warn('[settlement] retry scheduled', room.databaseGameId, 'attempt', attempt + 1, 'in', delay, 'ms');
+}
+
 async function settleRoomInSupabase(room, game, winnerSlot, reason) {
   if (room.settlementPromise) return room.settlementPromise;
   room.pendingSettlement = { winnerSlot, reason };
@@ -400,7 +416,7 @@ async function settleRoomInSupabase(room, game, winnerSlot, reason) {
     await persistRoomState(game, room);
     const headers = serverSupabaseHeaders();
     const gameId = encodeURIComponent(room.databaseGameId);
-    const lookup = await fetch(SUPABASE_URL + '/rest/v1/games?id=eq.' + gameId + '&select=id,game_type,player1_id,player2_id,bet_amount,status', { headers });
+    const lookup = await fetch(SUPABASE_URL + '/rest/v1/games?id=eq.' + gameId + '&select=id,game_type,player1_id,player2_id,bet_amount,status,result,winner_id', { headers });
     if (!lookup.ok) throw new Error('Cannot verify database game: ' + lookup.status);
     const rows = await lookup.json();
     const dbGame = Array.isArray(rows) ? rows[0] : null;
@@ -408,15 +424,23 @@ async function settleRoomInSupabase(room, game, winnerSlot, reason) {
     const expectedType = DB_GAME_TYPES[game];
     const sameBet = dbGame && Math.abs(Number(dbGame.bet_amount || 0) - Number(room.betAmount || 0)) < 0.0001;
     if (!samePlayers || dbGame.game_type !== expectedType || !sameBet) throw new Error('Database game does not match authenticated room');
-    // A game can only be settled after the server has started it. This blocks
-    // stale lobby/reconnect events from finalising a game that never began.
-    if (dbGame.status !== 'in_progress') throw new Error('Database game is not in progress; settlement refused');
+    // A completed row is accepted only when it contains this exact server
+    // outcome. This is the idempotent retry path when an HTTP response was lost.
+    const expectedResult = databaseResult(winnerSlot, reason);
+    const expectedWinner = winnerSlot ? room.players[winnerSlot].supabaseId : null;
+    if (dbGame.status === 'completed') {
+      if (dbGame.result !== expectedResult || dbGame.winner_id !== expectedWinner) {
+        throw new Error('Completed database game conflicts with the authoritative room outcome');
+      }
+    } else if (dbGame.status !== 'in_progress') {
+      throw new Error('Database game was never started; settlement refused');
+    }
     const startedAt = Number(room.startedAt || Date.now());
     const payload = {
       p_game_id: room.databaseGameId,
       p_status: 'completed',
-      p_result: databaseResult(winnerSlot, reason),
-      p_winner_id: winnerSlot ? room.players[winnerSlot].supabaseId : null,
+      p_result: expectedResult,
+      p_winner_id: expectedWinner,
       p_platform_fee: winnerSlot ? Number(room.betAmount || 0) * 0.2 : 0,
       p_duration_seconds: Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
     };
@@ -424,13 +448,18 @@ async function settleRoomInSupabase(room, game, winnerSlot, reason) {
     if (!settled.ok) throw new Error('Settlement RPC failed: ' + settled.status + ' ' + (await settled.text()).slice(0, 400));
     room.settledAt = Date.now();
     room.pendingSettlement = null;
+    room.settlementRetryCount = 0;
+    if (room.settlementRetryTimer) clearTimeout(room.settlementRetryTimer);
+    room.settlementRetryTimer = null;
     await deletePersistedRoom(game, room.id);
     scheduleRoomCleanup(game, room.id, room);
     console.info('[settlement] completed', room.databaseGameId, game, payload.p_result);
   })().catch(error => {
-    room.settlementPromise = null; // An operator may retry only after investigating server logs.
+    room.settlementPromise = null;
     console.error('[settlement] failed', room.databaseGameId, error.message);
     io.to(room.id).emit('game:error', { message: 'Résultat validé, mais synchronisation portefeuille en attente. Ne relancez pas la partie.' });
+    persistRoomSoon(game, room);
+    scheduleSettlementRetry(room, game);
   });
   return room.settlementPromise;
 }
