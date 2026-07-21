@@ -1,8 +1,8 @@
 // ============================================================
 //  SERVEUR NANO BANANA — Socket.io + Express
-//  Dames 10x10 + Tic-Tac-Toe + Quoridor + Penalty Shootout + Chifoumi
+//  Dames 10x10 + Tic-Tac-Toe + Quoridor + Penalty Shootout + Chifoumi + Échecs
 //  Temps réel — Node 20
-//  v5.6 — Résolution du bug critique d'égalité (Match Nul)
+//  v5.7 — Ajout des Échecs (règles FIDE, moteur autoritatif serveur)
 // ============================================================
 require('dotenv').config();
 const express      = require('express');
@@ -17,6 +17,9 @@ const { v4: uuid } = require('uuid');
 const app    = express();
 const server = http.createServer(app);
 const PUBLIC = path.join(__dirname, 'public');
+// Moteur d'échecs FIDE partagé (même code que les pages 3D et le Worker IA).
+const { ChessEngineFactory } = require('./public/echecs-engine.js');
+const ChessEngine = ChessEngineFactory();
 const crypto     = require('crypto');
 const PORT       = process.env.PORT || 3000;
 
@@ -140,6 +143,7 @@ const damesRooms    = new Map();
 const quoriRooms    = new Map();
 const penaltyRooms  = new Map();
 const chifoumiRooms = new Map();
+const echecsRooms   = new Map();
 
 // ══════════════════════════════════════════════════════════
 //  SÉCURITÉ — limiteur de débit, validation, anti-fraude
@@ -228,8 +232,8 @@ function bindDatabaseGame(room, gameId) {
   return true;
 }
 
-const DB_GAME_TYPES = { dames: 'checkers', tictactoe: 'tictactoe', quoridor: 'quoridor', penalty: 'penalty_shootout', chifoumi: 'rock_paper_scissors' };
-const ROOM_MAPS = { dames: damesRooms, tictactoe: tttRooms, quoridor: quoriRooms, penalty: penaltyRooms, chifoumi: chifoumiRooms };
+const DB_GAME_TYPES = { dames: 'checkers', tictactoe: 'tictactoe', quoridor: 'quoridor', penalty: 'penalty_shootout', chifoumi: 'rock_paper_scissors', echecs: 'chess' };
+const ROOM_MAPS = { dames: damesRooms, tictactoe: tttRooms, quoridor: quoriRooms, penalty: penaltyRooms, chifoumi: chifoumiRooms, echecs: echecsRooms };
 const ROOM_PERSIST_INTERVAL = 3000;
 const ROOM_RETENTION_MS = 10 * 60 * 1000;
 const SETTLEMENT_RETRY_MAX_DELAY_MS = 60 * 1000;
@@ -1003,6 +1007,67 @@ const _damesSyncLoop = setInterval(() => {
 }, DAMES_SYNC_INTERVAL);
 if (_damesSyncLoop.unref) _damesSyncLoop.unref();
 
+// ── ÉCHECS : timers de tour + re-synchro autoritative (même modèle que Dames) ──
+function clearEchecsTurnTimers(eroom) {
+  if (eroom.turnTimer)  { clearTimeout(eroom.turnTimer);  eroom.turnTimer  = null; }
+  if (eroom.graceTimer) { clearTimeout(eroom.graceTimer); eroom.graceTimer = null; }
+  eroom.turnStartTime = null; eroom.graceStartTime = null; eroom.turnPlayer = null;
+}
+
+function startEchecsTurnTimer(eroom, roomId, playerSlot) {
+  clearEchecsTurnTimers(eroom);
+  if (eroom.status === 'finished') return;
+  const now = Date.now();
+  eroom.turnPlayer = playerSlot; eroom.turnStartTime = now; eroom.graceStartTime = null;
+  io.to(roomId).emit('echecs_turn_start', { player: playerSlot, startTime: now, duration: TURN_DURATION });
+  eroom.turnTimer = setTimeout(() => {
+    eroom.turnTimer = null;
+    if (eroom.status === 'finished') return;
+    const graceNow = Date.now();
+    eroom.graceStartTime = graceNow;
+    io.to(roomId).emit('echecs_turn_warning', { player: playerSlot, startTime: graceNow, duration: GRACE_DURATION });
+    eroom.graceTimer = setTimeout(() => {
+      eroom.graceTimer = null;
+      if (eroom.status === 'finished') return;
+      const winnerSlot = playerSlot === 1 ? 2 : 1;
+      notifyEchecsRoomOver(eroom, roomId, winnerSlot, 'timeout');
+    }, GRACE_DURATION);
+  }, TURN_DURATION);
+}
+
+// L'état vient de la persistance ou du réseau : on le revalide toujours avant usage.
+function ensureEchecsEngineState(eroom) {
+  const cleaned = ChessEngine.sanitizeState(eroom.engineState);
+  eroom.engineState = cleaned || ChessEngine.initialState();
+  return eroom.engineState;
+}
+
+function echecsSnapshot(eroom) {
+  const snap = {
+    room: eroom.id,
+    version: eroom.stateVersion || 0,
+    gameState: JSON.stringify(ChessEngine.exportState(ensureEchecsEngineState(eroom))),
+    currentPlayer: eroom.currentPlayer,
+    lastMove: eroom.lastMove || null,
+    status: eroom.status,
+    serverTime: Date.now()
+  };
+  if (eroom.turnPlayer !== null && eroom.status === 'playing') {
+    snap.turnPlayer = eroom.turnPlayer;
+    if (eroom.graceStartTime) { snap.graceStartTime = eroom.graceStartTime; snap.graceDuration = GRACE_DURATION; }
+    else if (eroom.turnStartTime) { snap.turnStartTime = eroom.turnStartTime; snap.turnDuration = TURN_DURATION; }
+  }
+  return snap;
+}
+
+const _echecsSyncLoop = setInterval(() => {
+  for (const [roomId, eroom] of echecsRooms) {
+    if (eroom.status !== 'playing') continue;
+    io.to(roomId).emit('echecs_state_sync', echecsSnapshot(eroom));
+  }
+}, DAMES_SYNC_INTERVAL);
+if (_echecsSyncLoop.unref) _echecsSyncLoop.unref();
+
 function clearTTTTurnTimers(troom) {
   if (troom.turnTimer)  { clearTimeout(troom.turnTimer);  troom.turnTimer  = null; }
   if (troom.graceTimer) { clearTimeout(troom.graceTimer); troom.graceTimer = null; }
@@ -1255,6 +1320,7 @@ function clearTimersForGame(gameName, room) {
   else if (gameName === 'quoridor') clearQuoriTurnTimers(room);
   else if (gameName === 'penalty') clearPenaltyTurnTimers(room);
   else if (gameName === 'chifoumi') clearChifoumiTurnTimers(room);
+  else if (gameName === 'echecs') clearEchecsTurnTimers(room);
 }
 
 function finishBothDisconnected(room, gameName, roomId) {
@@ -1421,6 +1487,29 @@ function notifyPenaltyRoomOver(proom, roomId, winnerSlot, reason = 'normal') {
   io.to(roomId).emit('game:result', { postMessage: base });
 }
 
+function notifyEchecsRoomOver(eroom, roomId, winnerSlot, reason = 'normal') {
+  if (eroom.status === 'finished') return;
+  eroom.status = 'finished'; clearEchecsTurnTimers(eroom);
+  if (eroom.disconnectTimer) { clearTimeout(eroom.disconnectTimer); eroom.disconnectTimer = null; }
+  const { bet, totalPot, commission, netGain } = calcFinancial(eroom.betAmount);
+  const p1 = eroom.players[1], p2 = eroom.players[2];
+  void settleRoomInSupabase(eroom, 'echecs', winnerSlot, reason);
+
+  if (winnerSlot === 0) {
+    const base = { type: 'game_over', game: 'echecs', room: roomId, winner: 'draw', winnerSlot: 0, p1Id: p1?.supabaseId, p2Id: p2?.supabaseId, betAmount: bet, totalPot, commission: 0, netGain: bet, currency: eroom.currency || 'HTG', reason: 'draw', detail: eroom.endDetail || reason };
+    if (p1?.socketId) { io.to(p1.socketId).emit('game:over', { ...base, result: 'draw', myResult: 0 }); io.to(p1.socketId).emit('game:result', { postMessage: { ...base, result: 'draw' } }); }
+    if (p2?.socketId) { io.to(p2.socketId).emit('game:over', { ...base, result: 'draw', myResult: 0 }); io.to(p2.socketId).emit('game:result', { postMessage: { ...base, result: 'draw' } }); }
+    io.to(roomId).emit('game:result', { postMessage: base });
+    return;
+  }
+
+  const winP = winnerSlot === 1 ? p1 : p2, losP = winnerSlot === 1 ? p2 : p1;
+  const base = { type: 'game_over', game: 'echecs', room: roomId, winner: winnerSlot === 1 ? 'player1' : 'player2', winnerSlot, winnerSupabaseId: winP?.supabaseId, loserSupabaseId: losP?.supabaseId, p1Id: p1?.supabaseId, p2Id: p2?.supabaseId, betAmount: bet, totalPot, commission, netGain, currency: eroom.currency || 'HTG', reason };
+  if (winP?.socketId) { io.to(winP.socketId).emit('game:over', { ...base, result: 'win',  myResult: +netGain }); io.to(winP.socketId).emit('game:result', { postMessage: { ...base, result: 'win',  myResult: +netGain } }); }
+  if (losP?.socketId) { io.to(losP.socketId).emit('game:over', { ...base, result: 'loss', myResult: -bet });     io.to(losP.socketId).emit('game:result', { postMessage: { ...base, result: 'loss', myResult: -bet } }); }
+  io.to(roomId).emit('game:result', { postMessage: base });
+}
+
 function notifyChifoumiRoomOver(room, roomId, winnerSlot, reason = 'normal') {
   if (room.status === 'finished') return;
   room.status = 'finished'; clearChifoumiTurnTimers(room);
@@ -1457,6 +1546,7 @@ app.get('/health', (req, res) => {
     games: games.size, damesRooms: damesRooms.size,
     tttRooms: tttRooms.size, quoriRooms: quoriRooms.size,
     penaltyRooms: penaltyRooms.size, chifoumiRooms: chifoumiRooms.size,
+    echecsRooms: echecsRooms.size,
     queuedPlayers: [...queue.values()].reduce((total, players) => total + players.length, 0)
   });
 });
@@ -1577,6 +1667,15 @@ app.get(['/chifoumi', '/chifoumi.html', '/chifoumi-online.html'], serveSmart(['c
 app.get(['/chifoumi-ai', '/chifoumi_ai.html', '/chifoumi-solo', '/chifoumi-entrainement', '/chifoumi-ia'], serveSmart(['chifoumi_ai.html', 'chifoumi-ai.html']));
 app.get(['/penalty', '/penalty.html', '/penalty_shootout.html', '/penalty-online.html', '/penalty_online.html'], serveSmart(['penalty_online.html', 'penalty_shootout.html', 'penalty-online.html', 'penalty.html'], true));
 app.get(['/penalty-ai', '/penalty_ai.html', '/penalty-solo', '/penalty-entrainement', '/penalty-ia'], serveSmart(['penalty_ai.html', 'penalty-ai.html'], true));
+app.get(['/echecs', '/echecs.html', '/echecs-online.html', '/echecs_multi.html', '/chess', '/chess.html', '/chess-online.html'], serveSmart(['echecs_multi.html', 'echecs.html', 'echecs-online.html']));
+app.get(['/echecs-ai', '/echecs_ai.html', '/echecs-solo', '/echecs-entrainement', '/echecs-ia', '/chess-ai', '/chess_ai.html', '/chess-solo', '/chess-ia'], serveSmart(['echecs_ai.html', 'echecs-ai.html']));
+
+// Moteur d'échecs partagé : servi depuis la même origine (pages 3D + Worker IA).
+app.get(['/echecs-engine.js', '/chess-engine.js'], (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Cache-Control', 'public, max-age=300');
+  res.sendFile(path.join(PUBLIC, 'echecs-engine.js'));
+});
 
 // -- REST API MATCHMAKING & AUTH --
 app.post('/auth/register', authRateLimit, async (req, res) => {
@@ -1942,6 +2041,134 @@ io.on('connection', (socket) => {
     if (!data || !validRoom(data.room)) return;
     // Legacy clients still emit this after their animation. It is intentionally
     // ignored: only the authoritative move engine can finish a match.
+  });
+
+  // ══════════════════════════════════════════════════════
+  //  ÉCHECS MULTIJOUEUR (moteur FIDE autoritatif serveur)
+  // ══════════════════════════════════════════════════════
+  socket.on('echecs_join', async ({ room, player, supabaseId, name, bet, currency, gameId }) => {
+    if (!validRoom(room) || !validPlayerSlot(player)) return rejectSocket(socket, 'Room ou joueur invalide.');
+    const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'echecs', player, bet);
+    if (!databaseCheck.ok) return rejectSocket(socket, databaseCheck.message);
+    let eroom = echecsRooms.get(room);
+    if (!eroom) {
+      eroom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, engineState: ChessEngine.initialState(), currentPlayer: 0, lastMove: null, stateVersion: 0, turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null, turnPlayer: null };
+      echecsRooms.set(room, eroom);
+    }
+    ensureEchecsEngineState(eroom);
+    if (!bindDatabaseGame(eroom, gameId)) return rejectSocket(socket, 'Cette room est déjà liée à une autre partie.');
+    if (!joinRoomAsAuthenticatedPlayer(socket, eroom, room, player, supabaseId, name)) return;
+    if (bet && !eroom.betAmount) eroom.betAmount = bet;
+    persistRoomSoon('echecs', eroom);
+    socket.emit('echecs_joined', {
+      room,
+      player,
+      waitingForOpponent: !(eroom.players[1] && eroom.players[2])
+    });
+
+    if (eroom.status === 'playing' || eroom.status === 'paused') {
+      const p1 = eroom.players[1], p2 = eroom.players[2];
+      const bothBack = p1?.connected && p2?.connected;
+      if (bothBack && eroom.disconnectTimer) {
+        clearTimeout(eroom.disconnectTimer); eroom.disconnectTimer = null; eroom.reconnectDeadline = null; eroom.status = 'playing';
+        startEchecsTurnTimer(eroom, room, eroom.pausedTurnPlayer || eroom.currentPlayer + 1 || 1);
+        io.to(room).emit('echecs_game_resumed', { message: 'Les deux joueurs sont de retour. La partie reprend !' });
+        io.to(room).emit('echecs_state_sync', echecsSnapshot(eroom));
+      } else if (eroom.disconnectTimer) {
+        setTimeout(() => socket.emit('game:reconnect_deadline', { game: 'echecs', serverTime: Date.now(), reconnectDeadline: eroom.reconnectDeadline }), 0);
+      }
+      else if (!bothBack) {
+        eroom.status = 'playing';
+        const otherSlot = player === 1 ? 2 : 1;
+        if (eroom.players[otherSlot] && !eroom.players[otherSlot].connected) {
+          eroom.disconnectTimer = setTimeout(() => {
+            if (eroom.status === 'finished') return;
+            const p1b = eroom.players[1]?.connected === true, p2b = eroom.players[2]?.connected === true;
+            eroom.disconnectTimer = null;
+            if (!p1b && !p2b) {
+              finishBothDisconnected(eroom, 'echecs', room);
+            } else { const ws = p1b ? 1 : 2; eroom.status = 'playing'; notifyEchecsRoomOver(eroom, room, ws, 'forfeit'); }
+          }, 60000);
+        }
+      }
+      socket.to(room).emit('echecs_player_status', { slot: player, connected: true, name });
+      socket.to(room).emit('player:reconnected', { message: `${name} est de retour !` });
+      const opponentName = player === 1 ? (eroom.players[2]?.name || 'Adversaire') : (eroom.players[1]?.name || 'Adversaire');
+      socket.emit('echecs_start', { room, yourSlot: player, opponentName, bet: eroom.betAmount, currency: eroom.currency, reconnected: true, paused: eroom.status === 'paused', gameState: JSON.stringify(ChessEngine.exportState(ensureEchecsEngineState(eroom))), currentPlayer: eroom.currentPlayer !== undefined ? eroom.currentPlayer : 0, lastMove: eroom.lastMove || null, stateVersion: eroom.stateVersion || 0 });
+      if (eroom.turnPlayer !== null && eroom.status === 'playing') {
+        const now = Date.now();
+        if (eroom.graceStartTime) socket.emit('echecs_turn_sync', { serverTime: now, turnPlayer: eroom.turnPlayer, graceStartTime: eroom.graceStartTime, duration: GRACE_DURATION });
+        else if (eroom.turnStartTime) socket.emit('echecs_turn_sync', { serverTime: now, turnPlayer: eroom.turnPlayer, turnStartTime: eroom.turnStartTime, duration: TURN_DURATION });
+      }
+      return;
+    }
+
+    if (eroom.players[1] && eroom.players[2] && eroom.status === 'waiting') {
+      eroom.status = 'playing';
+      eroom.startedAt = Date.now();
+      persistRoomSoon('echecs', eroom);
+      const p1 = eroom.players[1], p2 = eroom.players[2];
+      io.to(p1.socketId).emit('echecs_start', { room, yourSlot: 1, opponentName: p2.name, bet: eroom.betAmount, currency: eroom.currency, reconnected: false });
+      io.to(p2.socketId).emit('echecs_start', { room, yourSlot: 2, opponentName: p1.name, bet: eroom.betAmount, currency: eroom.currency, reconnected: false });
+      setTimeout(() => { if (eroom.status === 'playing') startEchecsTurnTimer(eroom, room, 1); }, 3000);
+    }
+  });
+
+  socket.on('echecs_move', ({ room, player, from, to, promo }) => {
+    if (!validRoom(room) || !validPlayerSlot(player)) return;
+    const eroom = echecsRooms.get(room);
+    if (!eroom || eroom.status !== 'playing' || eroom.players[player]?.socketId !== socket.id) return;
+    // Sur rejet, on renvoie l'état autoritatif : un client dont le plateau a
+    // divergé se recale au lieu de rester figé.
+    if (eroom.currentPlayer !== player - 1) { rejectSocket(socket, 'Ce n’est pas votre tour.'); return void socket.emit('echecs_state_sync', echecsSnapshot(eroom)); }
+    if (!from || !to || !Number.isInteger(from.row) || !Number.isInteger(from.col) || !Number.isInteger(to.row) || !Number.isInteger(to.col) ||
+        from.row < 0 || from.row > 7 || from.col < 0 || from.col > 7 || to.row < 0 || to.row > 7 || to.col < 0 || to.col > 7) {
+      return rejectSocket(socket, 'Coup d’échecs invalide.');
+    }
+    const state = ensureEchecsEngineState(eroom);
+    const expectedSide = player === 1 ? 0 : 1;
+    if (state.t !== expectedSide) { rejectSocket(socket, 'Ce n’est pas votre tour.'); return void socket.emit('echecs_state_sync', echecsSnapshot(eroom)); }
+    const mv = ChessEngine.findMove(state, from.row * 8 + from.col, to.row * 8 + to.col, promo);
+    if (!mv) { rejectSocket(socket, 'Coup d’échecs illégal.'); return void socket.emit('echecs_state_sync', echecsSnapshot(eroom)); }
+    eroom.engineState = ChessEngine.applyMove(state, mv);
+    eroom.currentPlayer = eroom.engineState.t;
+    eroom.stateVersion = (eroom.stateVersion || 0) + 1;
+    eroom.lastMove = { from: { row: from.row, col: from.col }, to: { row: to.row, col: to.col }, player };
+    const status = ChessEngine.gameStatus(eroom.engineState);
+    socket.to(room).emit('echecs_move', {
+      room, player,
+      from: { row: from.row, col: from.col },
+      to: { row: to.row, col: to.col },
+      promo: mv.p || 0,
+      gameState: JSON.stringify(ChessEngine.exportState(eroom.engineState)),
+      nextPlayer: eroom.currentPlayer,
+      version: eroom.stateVersion
+    });
+    // Accusé de réception : le joueur sait que son coup est enregistré. Sans
+    // ack sous quelques secondes, son client redemande l'état complet.
+    socket.emit('echecs_move_ack', { room, version: eroom.stateVersion, currentPlayer: eroom.currentPlayer });
+    persistRoomSoon('echecs', eroom);
+    if (status.over) {
+      if (status.reason === 'checkmate') return notifyEchecsRoomOver(eroom, room, status.winner === 0 ? 1 : 2, 'checkmate');
+      eroom.endDetail = status.reason;
+      return notifyEchecsRoomOver(eroom, room, 0, 'draw');
+    }
+    startEchecsTurnTimer(eroom, room, eroom.currentPlayer + 1);
+  });
+
+  // Un joueur de la room peut redemander l'état exact à tout moment.
+  socket.on('echecs_request_state', ({ room } = {}) => {
+    if (!validRoom(room)) return;
+    if (!socketAllow(socket.id, 'esync', 20, 10000)) return;
+    const eroom = echecsRooms.get(room);
+    if (!eroom || !socketIsPlayer(eroom, socket.id)) return;
+    socket.emit('echecs_state_sync', echecsSnapshot(eroom));
+  });
+
+  socket.on('echecs_result', (data) => {
+    if (!data || !validRoom(data.room)) return;
+    // Résultat d'affichage uniquement : seul le moteur autoritatif du serveur
+    // peut terminer un match d'échecs (mat, pat, nulle, temps, abandon).
   });
 
   // ══════════════════════════════════════════════════════
@@ -2339,7 +2566,8 @@ io.on('connection', (socket) => {
       tictactoe: [tttRooms, notifyTTTRoomOver],
       quoridor: [quoriRooms, notifyQuoriRoomOver],
       penalty: [penaltyRooms, notifyPenaltyRoomOver],
-      chifoumi: [chifoumiRooms, notifyChifoumiRoomOver]
+      chifoumi: [chifoumiRooms, notifyChifoumiRoomOver],
+      echecs: [echecsRooms, notifyEchecsRoomOver]
     };
     const entry = entries[game];
     if (!entry) return;
@@ -2471,6 +2699,22 @@ io.on('connection', (socket) => {
         winFn: (winnerIsP1) => notifyChifoumiRoomOver(croom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'),
         onResume: () => startChifoumiTurnTimer(croom, roomId)
       });
+      break;
+    }
+
+    // Échecs Multijoueur
+    for (const [roomId, eroom] of echecsRooms.entries()) {
+      if (eroom.status !== 'playing' && eroom.status !== 'paused') continue;
+      let disconnectedSlot = null;
+      for (const [slot, p] of Object.entries(eroom.players)) { if (p.socketId === socket.id) { disconnectedSlot = parseInt(slot); break; } }
+      if (disconnectedSlot === null) continue;
+      eroom.players[disconnectedSlot].connected = false;
+      const dcName = eroom.players[disconnectedSlot]?.name || `Joueur ${disconnectedSlot}`;
+      socket.to(roomId).emit('echecs_player_status', { slot: disconnectedSlot, connected: false, name: dcName });
+      socket.to(roomId).emit('echecs_opponent_disconnected', { slot: disconnectedSlot, message: `${dcName} s'est déconnecté.` });
+      eroom.pausedTurnPlayer = eroom.turnPlayer || (eroom.currentPlayer + 1) || 1;
+      clearEchecsTurnTimers(eroom);
+      pauseAndWatch({ room: eroom, roomId, gameName: 'echecs', getP1: () => eroom.players[1], getP2: () => eroom.players[2], winFn: (winnerIsP1) => notifyEchecsRoomOver(eroom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startEchecsTurnTimer(eroom, roomId, eroom.pausedTurnPlayer || 1) });
       break;
     }
   });

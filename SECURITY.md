@@ -36,9 +36,10 @@ peut jouer des coups illégaux ou déclarer un score faux. L'anti-spoof actuel e
 **tiers**, mais **pas** un joueur de mentir sur SA partie.
 **Fix (gros chantier) :** rendre le serveur **autoritatif** — il rejoue/valide chaque coup et **calcule
 lui-même le gagnant**, sans jamais croire le client. **Fait pour les dames** (sockets : `applyMove`
-+ version d'état + re-synchro automatique anti-gel) ; les coups Tic-Tac-Toe et Quoridor sont aussi
-validés côté serveur. Reste : étendre la **re-synchro automatique** aux autres jeux et durcir
-l'arbitrage de Penalty/Chifoumi.
++ version d'état + re-synchro automatique anti-gel) **et pour les échecs** (moteur FIDE complet
+`public/echecs-engine.js` : légalité des coups, mat, pat, nulles — le client n'est jamais cru) ;
+les coups Tic-Tac-Toe et Quoridor sont aussi validés côté serveur. Reste : étendre la
+**re-synchro automatique** aux autres jeux et durcir l'arbitrage de Penalty/Chifoumi.
 
 ### 2. 🟦 Portefeuille & anti double-dépense (Supabase)
 Double dépôt/retrait, soldes négatifs, crédits en double : à sécuriser dans Supabase avec
