@@ -44,7 +44,7 @@ function waitHealth(retries = 40) {
   });
 }
 
-function httpRequest(pathname, { method = 'GET', headers = {} } = {}) {
+function httpRequest(pathname, { method = 'GET', headers = {}, body = null } = {}) {
   return new Promise((resolve, reject) => {
     const req = http.request(URL + pathname, { method, headers }, res => {
       let body = '';
@@ -53,7 +53,7 @@ function httpRequest(pathname, { method = 'GET', headers = {} } = {}) {
       res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
     });
     req.on('error', reject);
-    req.end();
+    req.end(body);
   });
 }
 
@@ -222,6 +222,25 @@ async function main() {
 
     console.log('\n══════════════════════════════');
     console.log(failures === 0 ? '✅ TOUS LES TESTS PASSENT' : '❌ ' + failures + ' ÉCHEC(S)');
+    console.log('\n--- Forfait volontaire serveur-autoritatif ---');
+    const resignRoom = 'test-voluntary-resign';
+    const resignStart1 = once(p1.socket, 'ttt_start');
+    const resignStart2 = once(p2b.socket, 'ttt_start');
+    p1.socket.emit('ttt_join', { room: resignRoom, player: 1, supabaseId: 'test-user-aaa', name: 'Alice', bet: 5000, currency: 'HTG', manches: 1 });
+    p2b.socket.emit('ttt_join', { room: resignRoom, player: 2, supabaseId: 'test-user-bbb', name: 'Bob', bet: 5000, currency: 'HTG', manches: 1 });
+    await Promise.all([resignStart1, resignStart2]);
+    const resignLoss = once(p1.socket, 'game:over');
+    const resignWin = once(p2b.socket, 'game:over');
+    const resignResponse = await httpRequest('/game/resign', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + p1.token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ gameId: resignRoom })
+    });
+    const [resignLoserResult, resignWinnerResult] = await Promise.all([resignLoss, resignWin]);
+    check('Le forfait HTTP authentifié est accepté', [200, 202].includes(resignResponse.status), resignResponse);
+    check('Le joueur qui abandonne perd', resignLoserResult.result === 'loss' && resignLoserResult.reason === 'resign', resignLoserResult);
+    check('Son adversaire gagne', resignWinnerResult.result === 'win' && resignWinnerResult.reason === 'resign', resignWinnerResult);
+
     p1.socket.disconnect(); p2b.socket.disconnect();
   } finally {
     server.kill('SIGKILL');

@@ -1570,6 +1570,77 @@ function notifyChifoumiRoomOver(room, roomId, winnerSlot, reason = 'normal') {
   io.to(roomId).emit('game:result', { postMessage: base });
 }
 
+// A voluntary resignation is different from a mutual quit: one authenticated
+// participant gives up and the other participant wins. Keep this operation on
+// the authoritative game server so the room outcome and escrow are settled by
+// the same idempotent path as a normal server-detected victory.
+function getRoomFinisher(gameName) {
+  return {
+    dames: notifyDamesRoomOver,
+    tictactoe: notifyTTTRoomOver,
+    quoridor: notifyQuoriRoomOver,
+    penalty: notifyPenaltyRoomOver,
+    chifoumi: notifyChifoumiRoomOver,
+    echecs: notifyEchecsRoomOver
+  }[gameName] || null;
+}
+
+function findAuthoritativeRoom(gameId) {
+  for (const [gameName, roomMap] of Object.entries(ROOM_MAPS)) {
+    const direct = roomMap.get(gameId);
+    if (direct) return { gameName, roomId: gameId, room: direct };
+    for (const [roomId, room] of roomMap.entries()) {
+      if (room?.databaseGameId === gameId) return { gameName, roomId, room };
+    }
+  }
+  return null;
+}
+
+function resignAuthoritativeRoom(entry, supabaseId) {
+  const { gameName, roomId, room } = entry || {};
+  const finisher = getRoomFinisher(gameName);
+  if (!room || !finisher || (!isUuid(supabaseId) && process.env.NODE_ENV === 'production')) {
+    return { ok: false, status: 404, error: 'Partie autoritative introuvable.' };
+  }
+  const loserSlot = room.players?.[1]?.supabaseId === supabaseId
+    ? 1
+    : room.players?.[2]?.supabaseId === supabaseId
+      ? 2
+      : 0;
+  if (!loserSlot) return { ok: false, status: 403, error: 'Vous ne participez pas à cette partie.' };
+
+  // Once a terminal outcome has been chosen, never replace it. This is the
+  // idempotent retry path for a dialog that remained open while the 60-second
+  // server deadline elapsed.
+  if (room.status === 'finished') {
+    return {
+      ok: true,
+      alreadyFinished: true,
+      settlementPending: !!room.pendingSettlement,
+      gameName,
+      roomId
+    };
+  }
+  if (room.status !== 'playing' && room.status !== 'paused') {
+    return { ok: false, status: 409, error: 'La partie n’a pas encore commencé ou n’est plus abandonnable.' };
+  }
+
+  const winnerSlot = loserSlot === 1 ? 2 : 1;
+  if (!room.players?.[winnerSlot]?.supabaseId) {
+    return { ok: false, status: 409, error: 'L’adversaire de cette partie est introuvable.' };
+  }
+  finisher(room, roomId, winnerSlot, 'resign');
+  return {
+    ok: true,
+    alreadyFinished: false,
+    settlementPending: !!room.pendingSettlement,
+    gameName,
+    roomId,
+    loserSlot,
+    winnerSlot
+  };
+}
+
 // ══════════════════════════════════════════════════════════
 //  ROUTES HTTP (Auto-Correction & Debug 404)
 // ══════════════════════════════════════════════════════════
@@ -1839,6 +1910,31 @@ app.post('/game/join', requireAuth, async (req, res) => {
     console.error('[game/join] validation failed', error?.message || error);
     return res.status(503).json({ error: 'Validation serveur temporairement indisponible.' });
   }
+});
+
+// Used by the global reconnect dialog, where no game iframe/socket is open.
+// The signed server JWT identifies the Supabase participant; the browser can
+// neither choose the winner nor write games/wallets directly.
+app.post('/game/resign', requireAuth, (req, res) => {
+  if (!rateLimit('game-resign:' + req.userId, 10, 60000)) {
+    return res.status(429).json({ error: 'Trop de tentatives. Réessayez dans un instant.' });
+  }
+  const gameId = req.body?.gameId;
+  if (!isUuid(gameId) && !(process.env.NODE_ENV !== 'production' && validRoom(gameId))) {
+    return res.status(400).json({ error: 'Identifiant de partie invalide.' });
+  }
+  const user = users.get(req.userId);
+  if (!user?.supabaseId) return res.status(401).json({ error: 'Session Supabase requise.' });
+
+  const result = resignAuthoritativeRoom(findAuthoritativeRoom(gameId), user.supabaseId);
+  if (!result.ok) return res.status(result.status || 400).json({ error: result.error });
+  return res.status(result.settlementPending ? 202 : 200).json({
+    ok: true,
+    status: result.alreadyFinished ? 'already_finished' : 'resigned',
+    settlementPending: result.settlementPending,
+    game: result.gameName,
+    room: result.roomId
+  });
 });
 
 app.post('/game/join-legacy', requireNonProductionLegacyGame, requireAuth, (req, res) => {
@@ -2620,6 +2716,24 @@ io.on('connection', (socket) => {
   // ══════════════════════════════════════════════════════
   //  GAME:REJOIN (legacy)
   // ══════════════════════════════════════════════════════
+  // In-game voluntary resignation. The authenticated socket identity decides
+  // the loser; client-supplied slot/winner fields are deliberately ignored.
+  socket.on('game_resign', ({ room } = {}, acknowledge) => {
+    const reply = typeof acknowledge === 'function' ? acknowledge : () => {};
+    if (!validRoom(room) || !socketAllow(socket.id, 'resign', 5, 60000)) {
+      return reply({ ok: false, error: 'Demande de forfait invalide.' });
+    }
+    const user = authenticatedSocketUser(socket);
+    if (!user?.supabaseId) return reply({ ok: false, error: 'Authentification requise.' });
+    const result = resignAuthoritativeRoom(findAuthoritativeRoom(room), user.supabaseId);
+    if (!result.ok) return reply({ ok: false, error: result.error });
+    reply({
+      ok: true,
+      status: result.alreadyFinished ? 'already_finished' : 'resigned',
+      settlementPending: result.settlementPending
+    });
+  });
+
   socket.on('game:rejoin', ({ gameId }) => {
     const game = games.get(gameId);
     if (!game) return;
