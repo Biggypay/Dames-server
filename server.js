@@ -1918,6 +1918,7 @@ app.get('/health', (req, res) => {
     tttRooms: tttRooms.size, quoriRooms: quoriRooms.size,
     penaltyRooms: penaltyRooms.size, chifoumiRooms: chifoumiRooms.size,
     echecsRooms: echecsRooms.size, ludoRooms: ludoRooms.size,
+    ludoConfig: { finish: LUDO_FINISH, starts: { yellow: LUDO_START_OFFSET[1], blue: LUDO_START_OFFSET[2] } },
     queuedPlayers: [...queue.values()].reduce((total, players) => total + players.length, 0)
   });
 });
