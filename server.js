@@ -491,6 +491,13 @@ async function settleRoomInSupabase(room, game, winnerSlot, reason) {
     if (room.settlementRetryTimer) clearTimeout(room.settlementRetryTimer);
     room.settlementRetryTimer = null;
     await deletePersistedRoom(game, room.id);
+    // A persistence batch that started just before pendingSettlement was
+    // cleared can finish after the deletion and reinsert a stale terminal
+    // snapshot. Delete once more after two persistence intervals.
+    const finalPersistedCleanup = setTimeout(() => {
+      void deletePersistedRoom(game, room.id);
+    }, ROOM_PERSIST_INTERVAL * 2);
+    if (finalPersistedCleanup.unref) finalPersistedCleanup.unref();
     scheduleRoomCleanup(game, room.id, room);
     console.info('[settlement] completed', room.databaseGameId, game, payload.p_result);
   })().catch(error => {
