@@ -439,12 +439,17 @@ async function settleRoomInSupabase(room, game, winnerSlot, reason) {
     console.error('[settlement] SUPABASE_SERVICE_ROLE_KEY is not configured; refusing browser settlement.');
     return null;
   }
-  const p1 = room.players[1]?.supabaseId, p2 = room.players[2]?.supabaseId;
-  if (!isUuid(p1) || !isUuid(p2)) {
-    console.error('[settlement] Invalid room participants for', room.id);
-    return null;
-  }
   room.settlementPromise = (async () => {
+    // A Render restart can restore a paid database game whose second iframe
+    // never finished joining the in-memory room. Recover that immutable player
+    // identity from the database game before settling; never invent it from a
+    // browser payload.
+    if (!room.players?.[1]?.supabaseId || !room.players?.[2]?.supabaseId) {
+      await hydrateRoomParticipantsFromDatabase({ gameName: game, roomId: room.id, room });
+    }
+    const p1 = room.players?.[1]?.supabaseId, p2 = room.players?.[2]?.supabaseId;
+    if (!isUuid(p1) || !isUuid(p2)) throw new Error('Invalid room participants');
+
     // Store the terminal outcome before touching wallets. If Render restarts
     // during settlement, startup can safely retry the same idempotent result.
     await persistRoomState(game, room);
@@ -1596,6 +1601,31 @@ function findAuthoritativeRoom(gameId) {
   return null;
 }
 
+async function hydrateRoomParticipantsFromDatabase(entry) {
+  const { gameName, room } = entry || {};
+  if (!room || !isUuid(room.databaseGameId)) return false;
+  if (room.players?.[1]?.supabaseId && room.players?.[2]?.supabaseId) return true;
+
+  const dbGame = await loadDatabaseGameForJoin(room.databaseGameId);
+  const sameType = dbGame?.game_type === DB_GAME_TYPES[gameName];
+  const sameBet = dbGame && Math.abs(Number(dbGame.bet_amount || 0) - Number(room.betAmount || 0)) < 0.0001;
+  const existingP1 = room.players?.[1]?.supabaseId;
+  const existingP2 = room.players?.[2]?.supabaseId;
+  if (!sameType || !sameBet || (existingP1 && existingP1 !== dbGame.player1_id) || (existingP2 && existingP2 !== dbGame.player2_id)) {
+    return false;
+  }
+
+  room.players = room.players || {};
+  if (!existingP1 && isUuid(dbGame.player1_id)) {
+    room.players[1] = { slot: 1, supabaseId: dbGame.player1_id, name: 'Joueur 1', connected: false, socketId: null, userId: null };
+  }
+  if (!existingP2 && isUuid(dbGame.player2_id)) {
+    room.players[2] = { slot: 2, supabaseId: dbGame.player2_id, name: 'Joueur 2', connected: false, socketId: null, userId: null };
+  }
+  persistRoomSoon(gameName, room);
+  return !!(room.players[1]?.supabaseId && room.players[2]?.supabaseId);
+}
+
 function resignAuthoritativeRoom(entry, supabaseId) {
   const { gameName, roomId, room } = entry || {};
   const finisher = getRoomFinisher(gameName);
@@ -1915,7 +1945,7 @@ app.post('/game/join', requireAuth, async (req, res) => {
 // Used by the global reconnect dialog, where no game iframe/socket is open.
 // The signed server JWT identifies the Supabase participant; the browser can
 // neither choose the winner nor write games/wallets directly.
-app.post('/game/resign', requireAuth, (req, res) => {
+app.post('/game/resign', requireAuth, async (req, res) => {
   if (!rateLimit('game-resign:' + req.userId, 10, 60000)) {
     return res.status(429).json({ error: 'Trop de tentatives. Réessayez dans un instant.' });
   }
@@ -1926,7 +1956,13 @@ app.post('/game/resign', requireAuth, (req, res) => {
   const user = users.get(req.userId);
   if (!user?.supabaseId) return res.status(401).json({ error: 'Session Supabase requise.' });
 
-  const result = resignAuthoritativeRoom(findAuthoritativeRoom(gameId), user.supabaseId);
+  const entry = findAuthoritativeRoom(gameId);
+  try {
+    if (entry) await hydrateRoomParticipantsFromDatabase(entry);
+  } catch (error) {
+    console.error('[game/resign] participant recovery failed', error?.message || error);
+  }
+  const result = resignAuthoritativeRoom(entry, user.supabaseId);
   if (!result.ok) return res.status(result.status || 400).json({ error: result.error });
   return res.status(result.settlementPending ? 202 : 200).json({
     ok: true,
@@ -2718,14 +2754,20 @@ io.on('connection', (socket) => {
   // ══════════════════════════════════════════════════════
   // In-game voluntary resignation. The authenticated socket identity decides
   // the loser; client-supplied slot/winner fields are deliberately ignored.
-  socket.on('game_resign', ({ room } = {}, acknowledge) => {
+  socket.on('game_resign', async ({ room } = {}, acknowledge) => {
     const reply = typeof acknowledge === 'function' ? acknowledge : () => {};
     if (!validRoom(room) || !socketAllow(socket.id, 'resign', 5, 60000)) {
       return reply({ ok: false, error: 'Demande de forfait invalide.' });
     }
     const user = authenticatedSocketUser(socket);
     if (!user?.supabaseId) return reply({ ok: false, error: 'Authentification requise.' });
-    const result = resignAuthoritativeRoom(findAuthoritativeRoom(room), user.supabaseId);
+    const entry = findAuthoritativeRoom(room);
+    try {
+      if (entry) await hydrateRoomParticipantsFromDatabase(entry);
+    } catch (error) {
+      console.error('[game_resign] participant recovery failed', error?.message || error);
+    }
+    const result = resignAuthoritativeRoom(entry, user.supabaseId);
     if (!result.ok) return reply({ ok: false, error: result.error });
     reply({
       ok: true,
