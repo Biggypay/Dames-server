@@ -1,0 +1,771 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Ludo — Entraînement IA | Mindspille</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=Inter:wght@300;400;600;700&display=swap');
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%,#312e81 50%,#1e1b4b 100%);width:100vw;height:100vh;overflow:hidden;display:flex;flex-direction:column;color:#fff}
+
+/* ══ BARRE DU HAUT (identique aux Dames) ══ */
+#top{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;padding:12px 14px 6px;background:transparent;z-index:20;gap:8px}
+.profile{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:72px;opacity:0.5;transition:opacity 0.3s}
+.profile.active{opacity:1}
+.profile-timer-wrap{position:relative;width:54px;height:54px;transition:filter 0.3s}
+.profile.active.you-active .profile-timer-wrap{filter:drop-shadow(0 0 10px rgba(16,185,129,0.6))}
+.profile.active.ai-active .profile-timer-wrap{filter:drop-shadow(0 0 10px rgba(239,68,68,0.6))}
+.profile-timer-wrap svg{position:absolute;inset:0;width:100%;height:100%;transform:rotate(-90deg)}
+.timer-track{fill:none;stroke:rgba(255,255,255,0.08);stroke-width:4}
+.timer-arc{fill:none;stroke-width:4;stroke-linecap:round;stroke-dasharray:151;stroke-dashoffset:151;transition:stroke 0.3s}
+.profile-avatar{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;border-radius:50%;background:rgba(255,255,255,0.05);border:2px solid rgba(255,255,255,0.12);transition:border-color 0.3s,background 0.3s}
+.profile.active .profile-avatar{border-color:rgba(255,255,255,0.5);background:rgba(255,255,255,0.10)}
+.av-pawn{width:20px;height:26px;position:relative}
+.av-pawn::before{content:'';position:absolute;bottom:0;left:50%;transform:translateX(-50%);width:18px;height:8px;border-radius:4px 4px 3px 3px;background:inherit;box-shadow:0 1px 2px rgba(0,0,0,0.4)}
+.av-pawn::after{content:'';position:absolute;top:0;left:50%;transform:translateX(-50%);width:12px;height:14px;border-radius:50% 50% 40% 40%;background:inherit}
+.av-you{background:linear-gradient(135deg,#34d399,#059669)}
+.av-ai{background:linear-gradient(135deg,#f87171,#dc2626)}
+.profile-name{font-family:'Cinzel',serif;font-size:9px;letter-spacing:1.5px;color:rgba(255,255,255,0.45);text-transform:uppercase;transition:color 0.3s;max-width:78px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center}
+.profile.active .profile-name{color:rgba(255,255,255,0.9)}
+.home-count{font-family:'Cinzel',serif;font-size:10px;font-weight:700;letter-spacing:0.5px}
+.home-count.you{color:#34d399}.home-count.ai{color:#f87171}
+.top-center{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px}
+.manche-lbl{font-size:9px;color:rgba(255,255,255,.4);letter-spacing:1px;font-family:'Cinzel',serif}
+.bet-badge{font-size:9px;background:rgba(251,191,36,0.15);border:1px solid rgba(251,191,36,0.4);border-radius:99px;padding:2px 8px;color:#fbbf24;font-weight:600;letter-spacing:0.5px}
+.status-strip{font-family:'Cinzel',serif;font-size:11px;font-weight:600;letter-spacing:1px;padding:4px 14px;border-radius:99px;border:1px solid transparent;transition:all .35s;white-space:nowrap;max-width:90vw;overflow:hidden;text-overflow:ellipsis;text-align:center}
+.status-strip.you{background:rgba(16,185,129,0.12);border-color:rgba(16,185,129,0.4);color:#6ee7b7}
+.status-strip.ai{background:rgba(239,68,68,0.10);border-color:rgba(239,68,68,0.35);color:#fca5a5}
+.status-strip.neutral{background:rgba(255,255,255,0.05);border-color:rgba(255,255,255,0.08);color:rgba(255,255,255,0.55)}
+.timer-urgent .timer-arc{animation:urgentPulse 0.5s infinite alternate}
+@keyframes urgentPulse{from{opacity:1}to{opacity:0.4}}
+
+/* ══ ZONE DE JEU ══ */
+#wrap{flex:1 1 auto;position:relative;overflow:hidden;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:0;padding:6px}
+
+/* Plateau 15x15 */
+#board-wrap{position:relative;width:min(92vw, calc(100vh - 300px));max-width:500px;aspect-ratio:1}
+#board{position:absolute;inset:0;display:grid;grid-template-columns:repeat(15,1fr);grid-template-rows:repeat(15,1fr);border-radius:14px;overflow:hidden;background:#f4ecd8;box-shadow:0 10px 40px rgba(0,0,0,0.5),inset 0 0 0 2px rgba(251,191,36,0.25)}
+.cell{position:relative;border:0.5px solid rgba(120,100,70,0.16)}
+.cell.track{background:#fbf6ea}
+.cell.star{background:#fbf6ea}
+.cell.star::after{content:'★';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:0.7em;color:rgba(180,150,60,0.55)}
+.cell.start1{background:rgba(16,185,129,0.35)}
+.cell.start2{background:rgba(239,68,68,0.35)}
+.cell.startN{background:rgba(120,120,160,0.18)}
+.cell.lane1{background:rgba(16,185,129,0.55)}
+.cell.lane2{background:rgba(239,68,68,0.55)}
+.cell.laneN{background:rgba(200,190,160,0.35)}
+.cell.center{background:radial-gradient(circle at 50% 50%,#fde68a,#f59e0b)}
+.cell.yard1{background:rgba(16,185,129,0.20)}
+.cell.yard2{background:rgba(239,68,68,0.20)}
+.cell.yardN{background:rgba(120,120,160,0.10)}
+/* Anneaux de base (yards) */
+.yard-ring{position:absolute;border-radius:12px;border:2px solid rgba(255,255,255,0.35);background:rgba(255,255,255,0.06)}
+
+/* Couche des pions */
+#tokens{position:absolute;inset:0;pointer-events:none;z-index:5}
+.token{position:absolute;border-radius:50%;pointer-events:auto;cursor:default;
+  box-shadow:0 3px 6px rgba(0,0,0,0.45),inset 0 2px 3px rgba(255,255,255,0.5),inset 0 -3px 4px rgba(0,0,0,0.25);
+  border:1.5px solid rgba(0,0,0,0.25);display:flex;align-items:center;justify-content:center;
+  transition:left var(--stepms,220ms) cubic-bezier(.4,0,.2,1), top var(--stepms,220ms) cubic-bezier(.4,0,.2,1);z-index:5}
+.token.p1{background:radial-gradient(circle at 35% 30%,#6ee7b7,#10b981 55%,#047857)}
+.token.p2{background:radial-gradient(circle at 35% 30%,#fca5a5,#ef4444 55%,#b91c1c)}
+.token::after{content:'';width:34%;height:34%;border-radius:50%;background:rgba(255,255,255,0.85);box-shadow:inset 0 -1px 2px rgba(0,0,0,0.2)}
+.token.hop{z-index:30}
+.token.movable{cursor:pointer;animation:tokPulse 1s ease-in-out infinite}
+.token.movable::before{content:'';position:absolute;inset:-5px;border-radius:50%;border:2.5px solid #fbbf24;animation:ringPulse 1s ease-in-out infinite}
+@keyframes tokPulse{0%,100%{transform:var(--pos) scale(1)}50%{transform:var(--pos) scale(1.08)}}
+@keyframes ringPulse{0%,100%{opacity:0.4}50%{opacity:1}}
+.token.captured-fx{animation:capFx .42s ease forwards}
+@keyframes capFx{0%{filter:brightness(1)}40%{filter:brightness(1.8);transform:var(--pos) scale(1.3)}100%{filter:brightness(1)}}
+
+/* ══ DÉ ══ */
+#dice-zone{margin-top:14px;display:flex;flex-direction:column;align-items:center;gap:5px;z-index:8}
+#dice{width:52px;height:52px;border-radius:12px;background:linear-gradient(150deg,#fefdf9,#e9e2cf);box-shadow:0 5px 14px rgba(0,0,0,0.5),inset 0 2px 4px rgba(255,255,255,0.9),inset 0 -3px 5px rgba(0,0,0,0.15);display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr);padding:8px;place-items:center;transition:transform .2s}
+#dice.rolling{animation:diceShake .12s linear infinite}
+@keyframes diceShake{0%{transform:rotate(-12deg) scale(1.05)}50%{transform:rotate(12deg) scale(1.1)}100%{transform:rotate(-12deg) scale(1.05)}}
+#dice .dp{width:9px;height:9px;border-radius:50%;background:#1e293b;visibility:hidden}
+#dice .dp.on{visibility:visible}
+#dice.can-roll{cursor:pointer;box-shadow:0 5px 14px rgba(0,0,0,0.5),0 0 0 3px rgba(251,191,36,0.8),0 0 18px rgba(251,191,36,0.45);animation:diceCall 1.1s ease-in-out infinite}
+@keyframes diceCall{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
+#dice-hint{font-family:'Cinzel',serif;font-size:9px;letter-spacing:1px;color:rgba(255,255,255,0.55)}
+
+/* ══ CHARGEMENT ══ */
+#loading{position:absolute;inset:0;background:linear-gradient(135deg,#1e1b4b 0%,#312e81 100%);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:100;transition:opacity .6s}
+.spin{width:52px;height:52px;border:4px solid rgba(255,255,255,.08);border-top-color:#fbbf24;border-radius:50%;animation:sp 1s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+#loading p{color:rgba(255,255,255,.55);margin-top:16px;font-size:11px;letter-spacing:4px;font-family:'Cinzel',serif;text-align:center;padding:0 16px}
+
+/* ══ TOAST ══ */
+#toast{position:absolute;top:46%;left:50%;transform:translate(-50%,-50%);background:linear-gradient(135deg,rgba(30,27,75,.97),rgba(49,46,129,.97));border:1.5px solid rgba(251,191,36,.6);border-radius:20px;padding:24px 30px;text-align:center;pointer-events:none;z-index:140;display:none;box-shadow:0 15px 50px rgba(0,0,0,.6);min-width:230px}
+#toast-emoji{font-size:44px;margin-bottom:8px;min-height:50px}
+#toast-title{font-family:'Cinzel',serif;color:#fbbf24;font-size:20px;font-weight:700;margin-bottom:6px}
+#toast-sub{font-size:12px;color:rgba(255,255,255,.62);letter-spacing:0.5px;white-space:pre-line;line-height:1.5}
+#confetti-canvas{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:55}
+
+#flash{position:absolute;top:6px;left:50%;transform:translateX(-50%) translateY(-60px);background:rgba(30,27,75,0.95);border:1px solid rgba(251,191,36,0.5);color:#fbe08a;padding:8px 20px;border-radius:99px;font-size:12px;font-family:'Cinzel',serif;letter-spacing:1px;transition:transform .3s ease;z-index:70;pointer-events:none;white-space:nowrap;box-shadow:0 6px 20px rgba(0,0,0,0.4)}
+#flash.show{transform:translateX(-50%) translateY(0)}
+
+#replay-btn{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);z-index:80;display:none;background:linear-gradient(135deg,#ec4899,#f472b6);color:#fff;border:none;border-radius:99px;padding:12px 30px;font-family:'Cinzel',serif;font-size:14px;font-weight:700;cursor:pointer;box-shadow:0 8px 26px rgba(236,72,153,0.5)}
+#replay-btn.show{display:block;animation:replayUp 0.35s}
+@keyframes replayUp{from{opacity:0;transform:translate(-50%,12px)}to{opacity:1;transform:translate(-50%,0)}}
+#replay-btn:active{transform:translateX(-50%) scale(0.95)}
+
+/* ══ BARRE DU BAS ══ */
+#bot{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 14px;background:rgba(255,255,255,0.08);backdrop-filter:blur(12px);border-top:1px solid rgba(255,255,255,0.15);z-index:20}
+.bot-info{font-size:10px;color:rgba(255,255,255,0.42);letter-spacing:1px;font-family:'Cinzel',serif}
+.btn{background:rgba(255,255,255,0.10);color:#fff;border:1px solid rgba(255,255,255,0.28);border-radius:99px;padding:7px 15px;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s}
+.btn:active{transform:scale(0.95);background:rgba(255,255,255,0.22)}
+</style>
+</head>
+<body>
+<div id="top">
+  <div class="profile" id="profile-you">
+    <div class="profile-timer-wrap">
+      <svg viewBox="0 0 54 54"><circle class="timer-track" cx="27" cy="27" r="24"/><circle class="timer-arc" id="timer-arc-you" cx="27" cy="27" r="24" stroke="#10b981"/></svg>
+      <div class="profile-avatar"><div class="av-pawn av-you"></div></div>
+    </div>
+    <div class="profile-name" id="name-you">Vous</div>
+    <div class="home-count you" id="home-you">0/4</div>
+  </div>
+  <div class="top-center">
+    <div class="status-strip neutral" id="status">Ludo</div>
+    <span class="manche-lbl">Entraînement · IA</span>
+    <div class="bet-badge" id="betBadge" style="display:none;"></div>
+  </div>
+  <div class="profile" id="profile-ai">
+    <div class="profile-timer-wrap">
+      <svg viewBox="0 0 54 54"><circle class="timer-track" cx="27" cy="27" r="24"/><circle class="timer-arc" id="timer-arc-ai" cx="27" cy="27" r="24" stroke="#ef4444"/></svg>
+      <div class="profile-avatar"><div class="av-pawn av-ai"></div></div>
+    </div>
+    <div class="profile-name" id="name-ai">IA</div>
+    <div class="home-count ai" id="home-ai">0/4</div>
+  </div>
+</div>
+
+<div id="wrap">
+  <div id="board-wrap">
+    <div id="board"></div>
+    <div id="tokens"></div>
+  </div>
+  <div id="dice-zone">
+    <div id="dice">
+      <span class="dp"></span><span class="dp"></span><span class="dp"></span>
+      <span class="dp"></span><span class="dp"></span><span class="dp"></span>
+      <span class="dp"></span><span class="dp"></span><span class="dp"></span>
+    </div>
+    <div id="dice-hint">Lancez le dé</div>
+  </div>
+  <canvas id="confetti-canvas"></canvas>
+  <div id="loading"><div class="spin"></div><p>PRÉPARATION DE LA PARTIE...</p></div>
+  <div id="flash"></div>
+  <div id="toast"><div id="toast-emoji"></div><div id="toast-title"></div><div id="toast-sub"></div></div>
+  <button id="replay-btn">↻ Rejouer</button>
+</div>
+
+<div id="bot">
+  <span class="bot-info" id="bot-diff">NIVEAU</span>
+  <button class="btn" id="btn-sound">🔊</button>
+</div>
+
+<script>
+window.onerror=function(msg){var ld=document.getElementById('loading');if(ld){var p=ld.querySelector('p');if(p)p.textContent='ERREUR JS: '+msg;}return false;};
+
+(function(){
+'use strict';
+
+/* ══════════════════════════════════════════════════════════════════════
+   PARAMÈTRES
+══════════════════════════════════════════════════════════════════════ */
+var P=new URLSearchParams(location.search);
+var DIFFICULTY=(P.get('difficulty')||P.get('level')||'medium').toLowerCase();
+if(['easy','medium','hard','expert'].indexOf(DIFFICULTY)<0) DIFFICULTY='medium';
+var MY_NAME=P.get('name')||P.get('username')||'Vous';
+var CURRENCY=P.get('currency')||'HTG';
+var BET_AMOUNT=parseInt(P.get('bet')||'0',10)||0;
+var AI_DEBUG=!!P.get('debug');
+
+var YOU=1, AI=2;
+
+/* ══════════════════════════════════════════════════════════════════════
+   ⏱  RYTHME / ANIMATION  — réglages LENTS et lisibles (à ajuster si besoin)
+   Le déplacement se fait CASE PAR CASE : chaque pas dure STEP_MS.
+══════════════════════════════════════════════════════════════════════ */
+// Multiplicateur global (?fast=1 pour tester vite, ?speed=0.5 pour régler finement).
+var SPD = P.get('speed') ? (parseFloat(P.get('speed'))||1) : (P.get('fast')?0.28:1);
+var STEP_MS       = Math.round(260*SPD);   // durée d'un déplacement d'UNE case (pion) — lent, à l'œil
+var STEP_GAP      = Math.round(40*SPD);    // petite pause entre deux cases
+var DICE_ROLL_MS  = Math.round(780*SPD);   // durée de l'animation du dé qui roule
+var AI_THINK_MS   = Math.round(900*SPD);   // pause "réflexion" de l'IA avant de lancer le dé
+var AI_MOVE_MS    = Math.round(800*SPD);   // pause de l'IA après le dé, avant de déplacer
+var CAPTURE_MS    = Math.round(460*SPD);   // retour d'un pion capturé vers sa base
+var HANDOFF_MS    = Math.round(700*SPD);   // pause entre la fin d'un coup et le tour suivant
+var TIMER_DURATION= 30000;
+
+/* ══════════════════════════════════════════════════════════════════════
+   ▓▓▓ LOGIQUE PORTABLE #1 : RÈGLES (calquées sur le serveur autoritaire) ▓▓▓
+   Modèle d'un pion : "progress"
+     -1        = à la base (maison de départ)
+     0 .. 51   = sur le circuit commun (52 cases)   → case absolue = (START+progress) % 52
+     52 .. 56  = dans la colonne d'arrivée (5 cases privées, protégées)
+     57        = ARRIVÉ (au centre)  [LUDO_FINISH]
+   Règles : sortie de base uniquement sur un 6 ; avance = dé ; arrivée EXACTE
+   (progress+dé <= 57) ; capture si on atterrit sur une case NON sûre occupée
+   par l'adversaire ; blocus si 2 pions adverses sur une même case non sûre ;
+   tour supplémentaire sur 6, sur capture, ou en faisant arriver un pion ;
+   trois 6 de suite = tour perdu ; victoire quand les 4 pions sont arrivés.
+══════════════════════════════════════════════════════════════════════ */
+var FINISH=57;
+var START={1:39, 2:26};                                   // départs slot1 / slot2 (comme le serveur)
+var SAFE=new Set([0,8,13,21,26,34,39,47]);                // cases sûres (départs + étoiles)
+
+function absoluteCell(slot, progress){
+  return (progress>=0 && progress<=51) ? (START[slot]+progress)%52 : null;
+}
+function opponentBlockade(slot, targetProgress){
+  var target=absoluteCell(slot, targetProgress);
+  if(target===null || SAFE.has(target)) return false;
+  var other=slot===1?2:1;
+  var n=0;
+  for(var i=0;i<4;i++) if(absoluteCell(other, T[other][i])===target) n++;
+  return n>=2;
+}
+function legalMoves(slot, dice){
+  if(!(dice>=1&&dice<=6)) return [];
+  var legal=[];
+  for(var i=0;i<4;i++){
+    var progress=T[slot][i], target=null;
+    if(progress===-1){ if(dice===6) target=0; }
+    else if(progress>=0 && progress<FINISH && progress+dice<=FINISH) target=progress+dice;
+    if(target===null || opponentBlockade(slot, target)) continue;
+    legal.push(i);
+  }
+  return legal;
+}
+function applyMove(slot, idx, dice){
+  var from=T[slot][idx];
+  var to=from===-1?0:from+dice;
+  T[slot][idx]=to;
+  var captured=[];
+  var abs=absoluteCell(slot, to);
+  if(abs!==null && !SAFE.has(abs)){
+    var other=slot===1?2:1;
+    for(var i=0;i<4;i++){
+      if(absoluteCell(other, T[other][i])===abs){ T[other][i]=-1; captured.push(i); }
+    }
+  }
+  return {slot:slot, idx:idx, from:from, to:to, dice:dice, captured:captured, finished:to===FINISH};
+}
+function allFinished(slot){ return T[slot][0]===FINISH&&T[slot][1]===FINISH&&T[slot][2]===FINISH&&T[slot][3]===FINISH; }
+function finishedCount(slot){ var n=0; for(var i=0;i<4;i++) if(T[slot][i]===FINISH) n++; return n; }
+
+/* ══════════════════════════════════════════════════════════════════════
+   ▓▓▓ LOGIQUE PORTABLE #2 : IA équilibrée ▓▓▓
+   Choisit un coup légal par un score heuristique (arriver > capturer >
+   sécuriser > sortir de base > avancer), avec un peu de hasard aux niveaux
+   faibles pour rester battable ("ni trop forte, ni trop loin").
+══════════════════════════════════════════════════════════════════════ */
+var AI_RANDOMNESS={ easy:0.65, medium:0.28, hard:0.08, expert:0 };
+
+function opponentOn(slot, abs){
+  if(abs===null) return -1;
+  var other=slot===1?2:1;
+  for(var i=0;i<4;i++) if(absoluteCell(other, T[other][i])===abs) return T[other][i];
+  return -1;
+}
+function opponentCanReach(slot, abs){            // un pion adverse peut-il capturer 'abs' au prochain tour ?
+  if(abs===null || SAFE.has(abs)) return false;
+  var other=slot===1?2:1;
+  for(var i=0;i<4;i++){
+    var oa=absoluteCell(other, T[other][i]);
+    if(oa===null) continue;
+    var diff=(abs-oa+52)%52;
+    if(diff>=1 && diff<=6) return true;
+  }
+  return false;
+}
+function scoreMove(slot, idx, dice){
+  var from=T[slot][idx], to=from===-1?0:from+dice, s=0;
+  if(to===FINISH) s+=120;                               // faire arriver un pion
+  else if(to>=52) s+=45+(to-52)*4;                      // entrer dans la colonne d'arrivée (protégé)
+  var abs=absoluteCell(slot, to);
+  var capProg=opponentOn(slot, to>=0&&abs!==null?abs:null);
+  if(abs!==null && !SAFE.has(abs) && capProg>=0) s+=70+capProg*1.6;   // capturer (plus le pion est avancé, mieux c'est)
+  if(from===-1) s+=30;                                  // sortir un pion de base (mobilité)
+  if(abs!==null && SAFE.has(abs)) s+=14;                // atterrir sur une case sûre
+  if(opponentCanReach(slot, abs)) s-=22;                // éviter de se faire capturer juste après
+  s+=(to<0?0:to)*0.5;                                   // avancer globalement
+  return s;
+}
+function chooseAIMove(slot, dice, legal){
+  if(legal.length===1) return legal[0];
+  var rnd=AI_RANDOMNESS[DIFFICULTY]||0;
+  if(rnd>0 && Math.random()<rnd) return legal[(Math.random()*legal.length)|0];
+  var best=legal[0], bs=-1e9;
+  for(var k=0;k<legal.length;k++){
+    var sc=scoreMove(slot, legal[k], dice)+Math.random()*0.4;
+    if(sc>bs){ bs=sc; best=legal[k]; }
+  }
+  if(AI_DEBUG) try{ console.log('[IA ludo]', DIFFICULTY, 'dé', dice, '→ pion', best, 'score', bs.toFixed(1)); }catch(e){}
+  return best;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   GÉOMÉTRIE DU PLATEAU (mapping progress → case [ligne,colonne] sur 15x15)
+   Circuit standard cohérent avec les cases sûres du serveur
+   (départs 0/13/26/39, étoiles 8/21/34/47).
+══════════════════════════════════════════════════════════════════════ */
+var PATH=[
+  [6,1],[6,2],[6,3],[6,4],[6,5],
+  [5,6],[4,6],[3,6],[2,6],[1,6],[0,6],
+  [0,7],
+  [0,8],[1,8],[2,8],[3,8],[4,8],[5,8],
+  [6,9],[6,10],[6,11],[6,12],[6,13],[6,14],
+  [7,14],
+  [8,14],[8,13],[8,12],[8,11],[8,10],[8,9],
+  [9,8],[10,8],[11,8],[12,8],[13,8],[14,8],
+  [14,7],
+  [14,6],[13,6],[12,6],[11,6],[10,6],[9,6],
+  [8,5],[8,4],[8,3],[8,2],[8,1],[8,0],
+  [7,0],
+  [6,0]
+];
+var HOME_LANE={ 1:[[13,7],[12,7],[11,7],[10,7],[9,7]], 2:[[7,13],[7,12],[7,11],[7,10],[7,9]] };
+var CENTER=[7,7];
+var YARD_SPOTS={
+  1:[[10.5,1.5],[10.5,3.5],[12.5,1.5],[12.5,3.5]],
+  2:[[10.5,10.5],[10.5,12.5],[12.5,10.5],[12.5,12.5]]
+};
+function cellForProgress(slot, progress){
+  if(progress===-1) return null;
+  if(progress<=51) return PATH[absoluteCell(slot,progress)];
+  if(progress<=56) return HOME_LANE[slot][progress-52];
+  return CENTER;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   ÉTAT
+══════════════════════════════════════════════════════════════════════ */
+var T={ 1:[-1,-1,-1,-1], 2:[-1,-1,-1,-1] };     // progress de chaque pion (référencé par la logique ci-dessus)
+var turn=YOU, dice=null, phase='idle', busy=false, gameOver=false, gameReady=false;
+var sixes={1:0,2:0};
+var tokenEls={1:[],2:[]};
+var cellPxSize=0;
+var resultSent=false;
+var timerStart=null, timerRAF=null, timerActive=false, CIRC=2*Math.PI*24;
+
+/* ══ Sons ══ */
+var soundOn=true, actx=null;
+function beep(f,d,t,v){ if(!soundOn) return; try{ if(!actx) actx=new (window.AudioContext||window.webkitAudioContext)(); var o=actx.createOscillator(),g=actx.createGain(); o.type=t||'sine'; o.frequency.value=f; g.gain.value=v||0.06; o.connect(g); g.connect(actx.destination); o.start(); g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime+(d||0.1)); o.stop(actx.currentTime+(d||0.1)); }catch(e){} }
+function sndHop(){ beep(420,0.05,'sine',0.05); }
+function sndDice(){ beep(200,0.07,'square',0.05); }
+function sndCapture(){ beep(150,0.18,'sawtooth',0.08); }
+function sndHome(){ [523,659,784].forEach(function(f,i){ setTimeout(function(){beep(f,0.14,'triangle',0.08);}, i*90); }); }
+function sndWin(){ [523,659,784,1047].forEach(function(f,i){ setTimeout(function(){beep(f,0.2,'triangle',0.09);}, i*120); }); }
+
+/* ══════════════════════════════════════════════════════════════════════
+   RENDU DU PLATEAU
+══════════════════════════════════════════════════════════════════════ */
+var PATHKEY={}; PATH.forEach(function(rc,i){ PATHKEY[rc[0]+','+rc[1]]=i; });
+var LANEKEY={};
+[[1,'lane1'],[2,'lane2']].forEach(function(p){ HOME_LANE[p[0]].forEach(function(rc){ LANEKEY[rc[0]+','+rc[1]]=p[1]; }); });
+// colonnes d'arrivée inutilisées (haut/gauche) → grisées
+[[7,1],[7,2],[7,3],[7,4],[7,5],[1,7],[2,7],[3,7],[4,7],[5,7]].forEach(function(rc){ if(!LANEKEY[rc[0]+','+rc[1]]) LANEKEY[rc[0]+','+rc[1]]='laneN'; });
+
+function buildBoard(){
+  var board=document.getElementById('board'); board.innerHTML='';
+  for(var r=0;r<15;r++) for(var c=0;c<15;c++){
+    var cell=document.createElement('div'); cell.className='cell';
+    var key=r+','+c;
+    var isCenter=(r>=6&&r<=8&&c>=6&&c<=8);
+    if(LANEKEY[key]){ cell.classList.add(LANEKEY[key]); }
+    else if(isCenter){ cell.classList.add('center'); }
+    else if(PATHKEY[key]!==undefined){
+      var abs=PATHKEY[key];
+      if(abs===39) cell.classList.add('start1');
+      else if(abs===26) cell.classList.add('start2');
+      else if(abs===0||abs===13) cell.classList.add('startN');
+      else if(SAFE.has(abs)) cell.classList.add('star');
+      else cell.classList.add('track');
+    } else {
+      // yards (coins)
+      if(r>=9&&c<=5) cell.classList.add('yard1');
+      else if(r>=9&&c>=9) cell.classList.add('yard2');
+      else cell.classList.add('yardN');
+    }
+    board.appendChild(cell);
+  }
+  // anneaux de base
+  addYardRing(9,0,'you'); addYardRing(9,9,'ai');
+}
+function addYardRing(r0,c0,who){
+  var wrap=document.getElementById('board-wrap');
+  var ring=document.createElement('div'); ring.className='yard-ring';
+  var cs=cellPxSize;
+  ring.style.left=(c0+0.6)*cs+'px'; ring.style.top=(r0+0.6)*cs+'px';
+  ring.style.width=4.8*cs+'px'; ring.style.height=4.8*cs+'px';
+  ring.style.borderColor= who==='you'?'rgba(16,185,129,0.55)':'rgba(239,68,68,0.55)';
+  ring.dataset.ring='1';
+  wrap.appendChild(ring);
+}
+
+function measure(){
+  var board=document.getElementById('board');
+  cellPxSize=board.clientWidth/15;
+}
+function pxFor(rc){ return { x:(rc[1]+0.5)*cellPxSize, y:(rc[0]+0.5)*cellPxSize }; }
+
+function buildTokens(){
+  var layer=document.getElementById('tokens'); layer.innerHTML='';
+  tokenEls={1:[],2:[]};
+  [1,2].forEach(function(slot){
+    for(var i=0;i<4;i++){
+      (function(slot,i){
+        var el=document.createElement('div');
+        el.className='token p'+slot;
+        var sz=cellPxSize*0.7;
+        el.style.width=sz+'px'; el.style.height=sz+'px';
+        el.addEventListener('click', function(){ onTokenTap(slot,i); });
+        layer.appendChild(el);
+        tokenEls[slot][i]=el;
+      })(slot,i);
+    }
+  });
+}
+function tokenAnchor(slot, i){
+  var progress=T[slot][i];
+  var rc = progress===-1 ? YARD_SPOTS[slot][i] : (progress===FINISH ? centerSpot(slot,i) : cellForProgress(slot,progress));
+  return pxFor(rc);
+}
+function centerSpot(slot,i){
+  // petits décalages pour ne pas superposer les pions arrivés
+  var dx=(slot===1?-0.35:0.35), dy=(i-1.5)*0.28;
+  return [CENTER[0]+dy, CENTER[1]+dx];
+}
+function placeToken(slot,i){
+  var el=tokenEls[slot][i]; if(!el) return;
+  var a=tokenAnchor(slot,i);
+  var sz=cellPxSize*0.7;
+  el.style.width=sz+'px'; el.style.height=sz+'px';
+  var left=a.x-sz/2, top=a.y-sz/2;
+  el.style.left=left+'px'; el.style.top=top+'px';
+  el.style.setProperty('--pos','translate(0,0)');
+}
+function placeAllTokens(){ [1,2].forEach(function(s){ for(var i=0;i<4;i++) placeToken(s,i); }); }
+
+function renderStatic(){
+  measure();
+  document.querySelectorAll('[data-ring]').forEach(function(n){ n.remove(); });
+  addYardRing(9,0,'you'); addYardRing(9,9,'ai');
+  placeAllTokens();
+  updateHomeCounts();
+}
+function updateHomeCounts(){
+  document.getElementById('home-you').textContent=finishedCount(YOU)+'/4';
+  document.getElementById('home-ai').textContent=finishedCount(AI)+'/4';
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   ANIMATION : déplacement CASE PAR CASE
+══════════════════════════════════════════════════════════════════════ */
+function animateStep(el, rc, cb){
+  var sz=cellPxSize*0.7, a=pxFor(rc);
+  el.style.setProperty('--stepms', STEP_MS+'ms');
+  el.classList.add('hop');
+  el.style.left=(a.x-sz/2)+'px';
+  el.style.top=(a.y-sz/2)+'px';
+  sndHop();
+  setTimeout(function(){ el.classList.remove('hop'); if(cb) cb(); }, STEP_MS);
+}
+function animateTokenPath(slot, idx, fromProgress, toProgress, onDone){
+  var el=tokenEls[slot][idx];
+  var steps=[];
+  // Si le pion sort de base (-1 → 0), on le pose d'abord sur la case de départ.
+  if(fromProgress===-1){ steps.push(0); }
+  else { for(var p=fromProgress+1; p<=toProgress; p++) steps.push(p); }
+  var k=0;
+  function next(){
+    if(k>=steps.length){ if(onDone) onDone(); return; }
+    var pr=steps[k++];
+    var rc = pr<=56 ? cellForProgress(slot,pr) : centerSpot(slot,idx);
+    animateStep(el, rc, function(){ setTimeout(next, STEP_GAP); });
+  }
+  if(fromProgress===-1){
+    // petit "pop" de sortie de base
+    animateStep(el, PATH[absoluteCell(slot,0)], function(){ if(onDone) onDone(); });
+  } else {
+    next();
+  }
+}
+function animateCaptureBack(slot, idx, onDone){
+  var el=tokenEls[slot][idx];
+  el.classList.add('captured-fx');
+  sndCapture();
+  setTimeout(function(){
+    el.classList.remove('captured-fx');
+    placeToken(slot, idx);  // revient à la base (progress déjà = -1)
+    if(onDone) onDone();
+  }, CAPTURE_MS);
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   DÉ
+══════════════════════════════════════════════════════════════════════ */
+var DICE_PIPS={1:[4],2:[2,6],3:[2,4,6],4:[0,2,6,8],5:[0,2,4,6,8],6:[0,2,3,5,6,8]};
+function showDie(v){
+  var pips=document.getElementById('dice').querySelectorAll('.dp');
+  var on=DICE_PIPS[v]||[];
+  for(var i=0;i<9;i++) pips[i].classList.toggle('on', on.indexOf(i)>=0);
+}
+function rollDiceAnim(finalValue, cb){
+  var die=document.getElementById('dice');
+  die.classList.add('rolling'); die.classList.remove('can-roll');
+  var iv=setInterval(function(){ showDie(1+((Math.random()*6)|0)); sndDice(); }, 90);
+  setTimeout(function(){
+    clearInterval(iv); die.classList.remove('rolling');
+    showDie(finalValue);
+    if(cb) cb();
+  }, DICE_ROLL_MS);
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   MINUTEUR (visuel)
+══════════════════════════════════════════════════════════════════════ */
+function startTimer(isYou){
+  stopTimer(); if(gameOver) return;
+  timerActive=true; timerStart=Date.now();
+  var arc=document.getElementById(isYou?'timer-arc-you':'timer-arc-ai');
+  var prof=document.getElementById(isYou?'profile-you':'profile-ai');
+  prof.classList.add('active', isYou?'you-active':'ai-active');
+  (function tick(){
+    if(!timerActive) return;
+    var prog=Math.min((Date.now()-timerStart)/TIMER_DURATION,1);
+    arc.style.strokeDashoffset=CIRC*prog;
+    if(prog>=0.7) prof.classList.add('timer-urgent');
+    if(prog<1) timerRAF=requestAnimationFrame(tick); else timerActive=false;
+  })();
+}
+function stopTimer(){
+  timerActive=false; if(timerRAF) cancelAnimationFrame(timerRAF);
+  document.getElementById('timer-arc-you').style.strokeDashoffset=CIRC;
+  document.getElementById('timer-arc-ai').style.strokeDashoffset=CIRC;
+  document.getElementById('profile-you').className='profile';
+  document.getElementById('profile-ai').className='profile';
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   ▓▓▓ LOGIQUE PORTABLE #3 : DÉROULÉ D'UN TOUR (machine à états) ▓▓▓
+   idle → (roll) → move → anim → (tour suivant / tour supplémentaire)
+══════════════════════════════════════════════════════════════════════ */
+function startTurn(player){
+  if(gameOver) return;
+  turn=player; dice=null; phase='roll';
+  clearMovable();
+  var die=document.getElementById('dice');
+  if(player===YOU){
+    setStatus('À vous — lancez le dé','you');
+    document.getElementById('dice-hint').textContent='Touchez le dé';
+    die.classList.add('can-roll');
+    startTimer(true);
+  } else {
+    setStatus('Tour de '+document.getElementById('name-ai').textContent,'ai');
+    document.getElementById('dice-hint').textContent='L\'IA réfléchit…';
+    die.classList.remove('can-roll');
+    startTimer(false);
+    setTimeout(function(){ if(!gameOver && turn===AI && phase==='roll') doRoll(AI); }, AI_THINK_MS);
+  }
+}
+
+function doRoll(player){
+  if(gameOver || phase!=='roll' || turn!==player) return;
+  phase='rolling'; busy=true;
+  document.getElementById('dice').classList.remove('can-roll');
+  stopTimer();
+  var value=1+((Math.random()*6)|0);      // (côté multijoueur, la valeur vient du serveur)
+  dice=value;
+  sixes[player]=value===6?sixes[player]+1:0;
+
+  rollDiceAnim(value, function(){
+    // Triple 6 → tour perdu
+    if(sixes[player]>=3){
+      sixes[player]=0;
+      showFlash('Trois 6 de suite — tour perdu !');
+      busy=false;
+      setTimeout(function(){ startTurn(player===YOU?AI:YOU); }, HANDOFF_MS);
+      return;
+    }
+    var legal=legalMoves(player, value);
+    if(legal.length===0){
+      showFlash((player===YOU?'Vous':'L\'IA')+' : aucun coup possible avec le '+value);
+      busy=false;
+      // Un 6 sans coup jouable rejoue quand même (comme le serveur).
+      var same=(value===6);
+      setTimeout(function(){ startTurn(same?player:(player===YOU?AI:YOU)); }, HANDOFF_MS);
+      return;
+    }
+    phase='move';
+    if(player===YOU){
+      setStatus('Dé : '+value+' — déplacez un pion','you');
+      document.getElementById('dice-hint').textContent='Choisissez un pion';
+      markMovable(YOU, legal);
+      busy=false;
+    } else {
+      setStatus('Dé : '+value,'ai');
+      var idx=chooseAIMove(AI, value, legal);
+      setTimeout(function(){ if(!gameOver) doMove(AI, idx); }, AI_MOVE_MS);
+    }
+  });
+}
+
+function doMove(player, idx){
+  if(gameOver || phase!=='move' || turn!==player) return;
+  if(legalMoves(player, dice).indexOf(idx)<0) return;
+  phase='anim'; busy=true;
+  clearMovable();
+  var from=T[player][idx];
+  var move=applyMove(player, idx, dice);   // met à jour l'état (progress + captures)
+
+  animateTokenPath(player, idx, from, move.to, function(){
+    updateHomeCounts();
+    // captures : renvoyer les pions adverses à la base (animé)
+    var other=player===1?2:1;
+    var pending=move.captured.length;
+    function afterCaptures(){
+      if(move.finished) sndHome();
+      // victoire ?
+      if(allFinished(player)){ setTimeout(function(){ endGame(player); }, 400); return; }
+      var extra = move.dice===6 || move.captured.length>0 || move.finished;
+      if(move.captured.length>0) showFlash((player===YOU?'Vous capturez ! ':'L\'IA capture ! ')+'Rejoue.');
+      else if(move.finished) showFlash('Pion arrivé ! Rejoue.');
+      busy=false;
+      setTimeout(function(){ startTurn(extra?player:other); }, HANDOFF_MS);
+    }
+    if(pending===0){ afterCaptures(); return; }
+    move.captured.forEach(function(ci){
+      animateCaptureBack(other, ci, function(){ if(--pending===0) afterCaptures(); });
+    });
+  });
+}
+
+/* Interaction humaine */
+function markMovable(slot, legal){
+  clearMovable();
+  legal.forEach(function(i){ tokenEls[slot][i].classList.add('movable'); });
+}
+function clearMovable(){ [1,2].forEach(function(s){ for(var i=0;i<4;i++) tokenEls[s][i].classList.remove('movable'); }); }
+function onTokenTap(slot, i){
+  if(gameOver || busy || turn!==YOU || slot!==YOU || phase!=='move') return;
+  if(legalMoves(YOU, dice).indexOf(i)<0){ showFlash('Ce pion ne peut pas jouer ce dé'); return; }
+  doMove(YOU, i);
+}
+document.getElementById('dice').addEventListener('click', function(){
+  if(gameOver || busy || turn!==YOU || phase!=='roll') return;
+  doRoll(YOU);
+});
+
+/* ══════════════════════════════════════════════════════════════════════
+   FIN DE PARTIE / UI
+══════════════════════════════════════════════════════════════════════ */
+function setStatus(text, cls){ var s=document.getElementById('status'); s.className='status-strip '+(cls||'neutral'); s.textContent=text; }
+
+function endGame(winner){
+  if(gameOver) return;
+  gameOver=true; busy=false; phase='over'; gameReady=false;
+  stopTimer(); clearMovable();
+  document.getElementById('dice').classList.remove('can-roll');
+  var youWon=winner===YOU;
+  if(youWon){ sndWin(); createConfetti(); } else sndLose();
+  setStatus(youWon?'Vous avez gagné 🎉':'Partie perdue', youWon?'you':'ai');
+  showToast(youWon?'🏆':'🤖',
+    youWon?'VICTOIRE !':'L\'IA gagne',
+    youWon?'Vos 4 pions sont arrivés au centre.':'L\'IA a rentré ses 4 pions.',
+    3800, function(){
+      sendResult(youWon?'win':'loss');
+      document.getElementById('replay-btn').classList.add('show');
+    });
+}
+function sndLose(){ [392,330,262].forEach(function(f,i){ setTimeout(function(){beep(f,0.22,'sine',0.08);}, i*150); }); }
+
+function sendResult(outcome){
+  if(resultSent) return; resultSent=true;
+  var msg={type:'mindspille', source:'ludo-ai', event:'practice_over', game:'ludo', result:outcome, reason:'normal', difficulty:DIFFICULTY};
+  try{ window.parent.postMessage(msg,'*'); }catch(e){}
+}
+
+/* Toast / flash / confettis */
+function showToast(emoji,title,sub,delay,cb){
+  var el=document.getElementById('toast');
+  document.getElementById('toast-emoji').textContent=emoji;
+  document.getElementById('toast-title').textContent=title;
+  document.getElementById('toast-sub').textContent=sub;
+  el.style.cssText='display:block;opacity:0;transform:translate(-50%,-50%) scale(0.8);transition:none;';
+  setTimeout(function(){ el.style.transition='all 0.35s cubic-bezier(0.175,0.885,0.32,1.275)'; el.style.opacity='1'; el.style.transform='translate(-50%,-50%) scale(1)'; },20);
+  setTimeout(function(){ el.style.opacity='0'; el.style.transform='translate(-50%,-50%) scale(0.85)'; setTimeout(function(){ el.style.display='none'; if(cb) cb(); },300); }, delay);
+}
+var flashT;
+function showFlash(msg){ var el=document.getElementById('flash'); el.textContent=msg; el.classList.add('show'); clearTimeout(flashT); flashT=setTimeout(function(){ el.classList.remove('show'); },1700); }
+
+var cc=document.getElementById('confetti-canvas'), cx=cc.getContext('2d'), cParts=[], cActive=false;
+function sizeConfetti(){ cc.width=cc.offsetWidth; cc.height=cc.offsetHeight; }
+function createConfetti(){
+  sizeConfetti();
+  var cols=['#fbbf24','#f59e0b','#ffffff','#10b981','#818cf8','#c084fc','#ef4444'], shapes=['circle','square','triangle'];
+  for(var i=0;i<170;i++) cParts.push({x:cc.width/2,y:cc.height*0.35,vx:(Math.random()-.5)*22,vy:(Math.random()-.5)*22-6,color:cols[(Math.random()*cols.length)|0],shape:shapes[(Math.random()*shapes.length)|0],size:Math.random()*10+5,rot:Math.random()*360,rs:(Math.random()-.5)*12,g:0.32,drag:0.985,life:1});
+  cActive=true;
+}
+(function loop(){ requestAnimationFrame(loop);
+  if(!cActive) return; cx.clearRect(0,0,cc.width,cc.height); var any=false;
+  for(var i=cParts.length-1;i>=0;i--){ var p=cParts[i]; p.x+=p.vx;p.y+=p.vy;p.vy+=p.g;p.vx*=p.drag;p.vy*=p.drag;p.rot+=p.rs;p.life-=0.004;
+    if(p.life>0&&p.y<cc.height+60){ any=true; cx.save(); cx.translate(p.x,p.y); cx.rotate(p.rot*Math.PI/180); cx.globalAlpha=Math.max(0,p.life); cx.fillStyle=p.color;
+      if(p.shape==='circle'){ cx.beginPath(); cx.arc(0,0,p.size/2,0,Math.PI*2); cx.fill(); }
+      else if(p.shape==='square'){ cx.fillRect(-p.size/2,-p.size/2,p.size,p.size); }
+      else { cx.beginPath(); cx.moveTo(0,-p.size/2); cx.lineTo(p.size/2,p.size/2); cx.lineTo(-p.size/2,p.size/2); cx.closePath(); cx.fill(); }
+      cx.restore(); } }
+  if(!any){ cActive=false; cParts=[]; cx.clearRect(0,0,cc.width,cc.height); }
+})();
+
+/* ══════════════════════════════════════════════════════════════════════
+   DÉMARRAGE / NOUVELLE PARTIE
+══════════════════════════════════════════════════════════════════════ */
+function newGame(){
+  gameOver=false; busy=false; gameReady=false; resultSent=false; phase='idle';
+  T={1:[-1,-1,-1,-1], 2:[-1,-1,-1,-1]}; sixes={1:0,2:0}; dice=null;
+  document.getElementById('replay-btn').classList.remove('show');
+  document.getElementById('name-you').textContent=MY_NAME;
+  var diffLbl={easy:'Facile',medium:'Moyen',hard:'Difficile',expert:'Expert'}[DIFFICULTY];
+  document.getElementById('bot-diff').textContent='NIVEAU '+diffLbl.toUpperCase();
+  measure(); buildBoard(); buildTokens(); renderStatic(); showDie(6);
+  stopTimer();
+  hideLoading();
+  showToast('🎲','Ludo','Rentrez vos 4 pions au centre.\nSortie de base sur un 6.\nNiveau IA : '+diffLbl, 2200, function(){
+    gameReady=true;
+    // Vous commencez (en multijoueur, le serveur décide qui commence).
+    startTurn(YOU);
+  });
+}
+function hideLoading(){ var l=document.getElementById('loading'); if(l){ l.style.opacity='0'; setTimeout(function(){ l.style.display='none'; },500); } }
+
+document.getElementById('btn-sound').addEventListener('click', function(){ soundOn=!soundOn; this.textContent=soundOn?'🔊':'🔇'; if(soundOn) beep(440,0.08,'sine',0.05); });
+document.getElementById('replay-btn').addEventListener('click', function(){
+  this.classList.remove('show');
+  var l=document.getElementById('loading'); l.style.display='flex'; l.style.opacity='1'; l.querySelector('p').textContent='NOUVELLE PARTIE...';
+  setTimeout(newGame, 400);
+});
+
+var resizeT;
+window.addEventListener('resize', function(){
+  clearTimeout(resizeT);
+  resizeT=setTimeout(function(){ sizeConfetti(); renderStatic(); }, 120);
+});
+
+/* BOOT */
+if(BET_AMOUNT>0){ var bb=document.getElementById('betBadge'); bb.textContent='Mise : '+BET_AMOUNT+' '+CURRENCY; bb.style.display='block'; }
+function boot(){ sizeConfetti(); newGame(); }
+if(document.readyState==='complete'||document.readyState==='interactive') setTimeout(boot,60);
+else document.addEventListener('DOMContentLoaded', boot);
+
+})();
+</script>
+</body>
+</html>
