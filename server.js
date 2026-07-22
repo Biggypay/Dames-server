@@ -144,6 +144,7 @@ const quoriRooms    = new Map();
 const penaltyRooms  = new Map();
 const chifoumiRooms = new Map();
 const echecsRooms   = new Map();
+const ludoRooms      = new Map();
 
 // ══════════════════════════════════════════════════════════
 //  SÉCURITÉ — limiteur de débit, validation, anti-fraude
@@ -232,8 +233,8 @@ function bindDatabaseGame(room, gameId) {
   return true;
 }
 
-const DB_GAME_TYPES = { dames: 'checkers', tictactoe: 'tictactoe', quoridor: 'quoridor', penalty: 'penalty_shootout', chifoumi: 'rock_paper_scissors', echecs: 'chess' };
-const ROOM_MAPS = { dames: damesRooms, tictactoe: tttRooms, quoridor: quoriRooms, penalty: penaltyRooms, chifoumi: chifoumiRooms, echecs: echecsRooms };
+const DB_GAME_TYPES = { dames: 'checkers', tictactoe: 'tictactoe', quoridor: 'quoridor', penalty: 'penalty_shootout', chifoumi: 'rock_paper_scissors', echecs: 'chess', ludo: 'ludo' };
+const ROOM_MAPS = { dames: damesRooms, tictactoe: tttRooms, quoridor: quoriRooms, penalty: penaltyRooms, chifoumi: chifoumiRooms, echecs: echecsRooms, ludo: ludoRooms };
 const ROOM_PERSIST_INTERVAL = 3000;
 const ROOM_RETENTION_MS = 10 * 60 * 1000;
 const SETTLEMENT_RETRY_MAX_DELAY_MS = 60 * 1000;
@@ -264,7 +265,7 @@ async function callServerStateRpc(name, payload) {
 }
 
 function serializableRoomState(room) {
-  const ignored = new Set(['turnTimer', 'graceTimer', 'disconnectTimer', 'settlementPromise', 'settlementRetryTimer', 'persistTimer', 'cleanupTimer']);
+  const ignored = new Set(['turnTimer', 'graceTimer', 'revealTimer', 'disconnectTimer', 'settlementPromise', 'settlementRetryTimer', 'persistTimer', 'cleanupTimer']);
   const state = JSON.parse(JSON.stringify(room, (key, value) => {
     if (ignored.has(key)) return undefined;
     if (value instanceof Set) return [...value];
@@ -362,7 +363,8 @@ function hydratePersistedRoom(record) {
     player.socketId = null;
     player.userId = null;
   }
-  room.turnTimer = null; room.graceTimer = null; room.disconnectTimer = null;
+  room.turnTimer = null; room.graceTimer = null; room.revealTimer = null; room.disconnectTimer = null;
+  if (record.game_type === 'chifoumi') room.revealPending = false;
   room.settlementPromise = null; room.settlementRetryTimer = null; room.cleanupTimer = null; room.reconnectDeadline = null;
   room.mutualQuitRequests = new Set(Array.isArray(room.mutualQuitRequests) ? room.mutualQuitRequests : []);
   if (room.status !== 'finished') {
@@ -1270,16 +1272,19 @@ function resolvePenaltyRound(proom, roomId) {
 // ── Chifoumi (15s + 60s Grace) ────────────────────────────
 const CHIFOUMI_TURN_DURATION  = 15 * 1000;
 const CHIFOUMI_GRACE_DURATION = 60 * 1000;
+const CHIFOUMI_REVEAL_DURATION = 5 * 1000;
 
 function clearChifoumiTurnTimers(croom) {
   if (croom.turnTimer)  { clearTimeout(croom.turnTimer);  croom.turnTimer  = null; }
   if (croom.graceTimer) { clearTimeout(croom.graceTimer); croom.graceTimer = null; }
+  if (croom.revealTimer) { clearTimeout(croom.revealTimer); croom.revealTimer = null; }
+  croom.revealPending = false;
   croom.turnStartTime = null; croom.graceStartTime = null;
 }
 
 function startChifoumiTurnTimer(croom, roomId) {
+  if (croom.status === 'finished' || croom.revealPending) return;
   clearChifoumiTurnTimers(croom);
-  if (croom.status === 'finished') return;
   const now = Date.now();
   croom.turnStartTime = now; croom.graceStartTime = null;
 
@@ -1356,6 +1361,188 @@ function resolveChifoumiRound(croom, roomId) {
   croom.awaitingNextRound = true;
 }
 
+function scheduleChifoumiReveal(croom, roomId) {
+  if (croom.status !== 'playing' || croom.revealPending) return;
+  if (croom.choices[1] === undefined || croom.choices[2] === undefined) return;
+  if (croom.turnTimer) { clearTimeout(croom.turnTimer); croom.turnTimer = null; }
+  if (croom.graceTimer) { clearTimeout(croom.graceTimer); croom.graceTimer = null; }
+  croom.turnStartTime = null;
+  croom.graceStartTime = null;
+  croom.revealPending = true;
+  const startTime = Date.now();
+  croom.revealStartTime = startTime;
+  persistRoomSoon('chifoumi', croom);
+  io.to(roomId).emit('chifoumi_reveal_countdown', {
+    serverTime: startTime,
+    startTime,
+    duration: CHIFOUMI_REVEAL_DURATION
+  });
+  croom.revealTimer = setTimeout(() => {
+    croom.revealTimer = null;
+    croom.revealPending = false;
+    croom.revealStartTime = null;
+    resolveChifoumiRound(croom, roomId);
+  }, CHIFOUMI_REVEAL_DURATION);
+  if (croom.revealTimer.unref) croom.revealTimer.unref();
+}
+
+// Ludo 2 joueurs : le dé, les coups légaux et la victoire sont décidés
+// uniquement par le serveur. Le navigateur ne peut jamais choisir un résultat.
+const LUDO_TURN_DURATION = 30 * 1000;
+const LUDO_GRACE_DURATION = 60 * 1000;
+const LUDO_FINISH = 57;
+const LUDO_START_OFFSET = { 1: 0, 2: 26 };
+const LUDO_SAFE_CELLS = new Set([0, 8, 13, 21, 26, 34, 39, 47]);
+
+function createLudoState() {
+  return {
+    tokens: { 1: [-1, -1, -1, -1], 2: [-1, -1, -1, -1] },
+    currentPlayer: 1,
+    dice: null,
+    phase: 'roll',
+    legalMoves: [],
+    consecutiveSixes: { 1: 0, 2: 0 },
+    revision: 0
+  };
+}
+
+function ensureLudoState(room) {
+  if (!room.gameState || !room.gameState.tokens) room.gameState = createLudoState();
+  for (const slot of [1, 2]) {
+    if (!Array.isArray(room.gameState.tokens[slot]) || room.gameState.tokens[slot].length !== 4) {
+      room.gameState.tokens[slot] = [-1, -1, -1, -1];
+    }
+  }
+  room.gameState.consecutiveSixes = room.gameState.consecutiveSixes || { 1: 0, 2: 0 };
+  room.gameState.legalMoves = Array.isArray(room.gameState.legalMoves) ? room.gameState.legalMoves : [];
+  return room.gameState;
+}
+
+function ludoAbsoluteCell(slot, progress) {
+  return progress >= 0 && progress <= 51 ? (LUDO_START_OFFSET[slot] + progress) % 52 : null;
+}
+
+function ludoOpponentBlockade(room, slot, targetProgress) {
+  const target = ludoAbsoluteCell(slot, targetProgress);
+  if (target === null || LUDO_SAFE_CELLS.has(target)) return false;
+  const other = slot === 1 ? 2 : 1;
+  return ensureLudoState(room).tokens[other]
+    .filter(progress => ludoAbsoluteCell(other, progress) === target).length >= 2;
+}
+
+function legalLudoMoves(room, slot, dice) {
+  if (!validPlayerSlot(slot) || !Number.isInteger(dice) || dice < 1 || dice > 6) return [];
+  const tokens = ensureLudoState(room).tokens[slot];
+  const legal = [];
+  for (let index = 0; index < tokens.length; index++) {
+    const progress = tokens[index];
+    let target = null;
+    if (progress === -1) {
+      if (dice === 6) target = 0;
+    } else if (Number.isInteger(progress) && progress >= 0 && progress < LUDO_FINISH && progress + dice <= LUDO_FINISH) {
+      target = progress + dice;
+    }
+    if (target === null || ludoOpponentBlockade(room, slot, target)) continue;
+    legal.push(index);
+  }
+  return legal;
+}
+
+function ludoPublicState(room) {
+  const state = ensureLudoState(room);
+  return {
+    tokens: { 1: [...state.tokens[1]], 2: [...state.tokens[2]] },
+    currentPlayer: state.currentPlayer,
+    dice: state.dice,
+    phase: state.phase,
+    legalMoves: [...state.legalMoves],
+    consecutiveSixes: Number(state.consecutiveSixes[state.currentPlayer] || 0),
+    revision: Number(state.revision || 0),
+    serverTime: Date.now(),
+    turnStartedAt: room.turnStartTime || null,
+    graceStartedAt: room.graceStartTime || null,
+    turnDuration: LUDO_TURN_DURATION,
+    graceDuration: LUDO_GRACE_DURATION
+  };
+}
+
+function emitLudoState(room, roomId, action = null) {
+  io.to(roomId).emit('ludo_state', { room: roomId, state: ludoPublicState(room), action });
+}
+
+function clearLudoTurnTimers(room) {
+  if (room.turnTimer) { clearTimeout(room.turnTimer); room.turnTimer = null; }
+  if (room.graceTimer) { clearTimeout(room.graceTimer); room.graceTimer = null; }
+  room.turnStartTime = null;
+  room.graceStartTime = null;
+}
+
+function startLudoTurnTimer(room, roomId) {
+  clearLudoTurnTimers(room);
+  if (room.status !== 'playing') return;
+  const state = ensureLudoState(room);
+  room.turnStartTime = Date.now();
+  io.to(roomId).emit('ludo_turn_start', {
+    player: state.currentPlayer,
+    serverTime: room.turnStartTime,
+    startTime: room.turnStartTime,
+    duration: LUDO_TURN_DURATION
+  });
+  persistRoomSoon('ludo', room);
+  room.turnTimer = setTimeout(() => {
+    room.turnTimer = null;
+    if (room.status !== 'playing') return;
+    room.graceStartTime = Date.now();
+    io.to(roomId).emit('ludo_turn_warning', {
+      player: state.currentPlayer,
+      serverTime: room.graceStartTime,
+      startTime: room.graceStartTime,
+      duration: LUDO_GRACE_DURATION
+    });
+    room.graceTimer = setTimeout(() => {
+      room.graceTimer = null;
+      if (room.status !== 'playing') return;
+      notifyLudoRoomOver(room, roomId, state.currentPlayer === 1 ? 2 : 1, 'timeout');
+    }, LUDO_GRACE_DURATION);
+    if (room.graceTimer.unref) room.graceTimer.unref();
+  }, LUDO_TURN_DURATION);
+  if (room.turnTimer.unref) room.turnTimer.unref();
+}
+
+function beginNextLudoTurn(room, roomId, samePlayer = false, action = null) {
+  if (room.status !== 'playing') return;
+  const state = ensureLudoState(room);
+  if (!samePlayer) state.currentPlayer = state.currentPlayer === 1 ? 2 : 1;
+  state.dice = null;
+  state.phase = 'roll';
+  state.legalMoves = [];
+  state.revision = Number(state.revision || 0) + 1;
+  persistRoomSoon('ludo', room);
+  emitLudoState(room, roomId, action);
+  startLudoTurnTimer(room, roomId);
+}
+
+function applyLudoMove(room, slot, tokenIndex) {
+  const state = ensureLudoState(room);
+  if (!state.legalMoves.includes(tokenIndex)) return null;
+  const dice = state.dice;
+  const from = state.tokens[slot][tokenIndex];
+  const to = from === -1 ? 0 : from + dice;
+  state.tokens[slot][tokenIndex] = to;
+  const captured = [];
+  const absolute = ludoAbsoluteCell(slot, to);
+  if (absolute !== null && !LUDO_SAFE_CELLS.has(absolute)) {
+    const other = slot === 1 ? 2 : 1;
+    state.tokens[other].forEach((progress, index) => {
+      if (ludoAbsoluteCell(other, progress) === absolute) {
+        state.tokens[other][index] = -1;
+        captured.push(index);
+      }
+    });
+  }
+  return { player: slot, tokenIndex, from, to, dice, captured, finished: to === LUDO_FINISH };
+}
+
 function requireNonProductionLegacyGame(req, res, next) {
   if (process.env.NODE_ENV === 'production') {
     return res.status(410).json({ error: 'Cette ancienne API de jeu est désactivée. Utilisez le lobby sécurisé.' });
@@ -1370,6 +1557,7 @@ function clearTimersForGame(gameName, room) {
   else if (gameName === 'penalty') clearPenaltyTurnTimers(room);
   else if (gameName === 'chifoumi') clearChifoumiTurnTimers(room);
   else if (gameName === 'echecs') clearEchecsTurnTimers(room);
+  else if (gameName === 'ludo') clearLudoTurnTimers(room);
 }
 
 function finishBothDisconnected(room, gameName, roomId) {
@@ -1582,6 +1770,41 @@ function notifyChifoumiRoomOver(room, roomId, winnerSlot, reason = 'normal') {
   io.to(roomId).emit('game:result', { postMessage: base });
 }
 
+function notifyLudoRoomOver(room, roomId, winnerSlot, reason = 'normal') {
+  if (room.status === 'finished') return;
+  room.status = 'finished';
+  clearLudoTurnTimers(room);
+  if (room.disconnectTimer) { clearTimeout(room.disconnectTimer); room.disconnectTimer = null; }
+  const { bet, totalPot, commission, netGain } = calcFinancial(room.betAmount);
+  const p1 = room.players[1], p2 = room.players[2];
+  void settleRoomInSupabase(room, 'ludo', winnerSlot, reason);
+  const base = {
+    type: 'game_over', game: 'ludo', room: roomId,
+    winner: winnerSlot === 1 ? 'player1' : winnerSlot === 2 ? 'player2' : 'draw',
+    winnerSlot,
+    winnerSupabaseId: winnerSlot ? room.players[winnerSlot]?.supabaseId : null,
+    loserSupabaseId: winnerSlot ? room.players[winnerSlot === 1 ? 2 : 1]?.supabaseId : null,
+    p1Id: p1?.supabaseId, p2Id: p2?.supabaseId,
+    betAmount: bet, totalPot,
+    commission: winnerSlot ? commission : 0,
+    netGain: winnerSlot ? netGain : bet,
+    currency: room.currency || 'HTG',
+    reason: winnerSlot ? reason : 'draw',
+    finalState: ludoPublicState(room)
+  };
+  io.to(roomId).emit('ludo_game_over', base);
+  if (winnerSlot === 0) {
+    if (p1?.socketId) { io.to(p1.socketId).emit('game:over', { ...base, result: 'draw', myResult: 0 }); io.to(p1.socketId).emit('game:result', { postMessage: { ...base, result: 'draw', myResult: 0 } }); }
+    if (p2?.socketId) { io.to(p2.socketId).emit('game:over', { ...base, result: 'draw', myResult: 0 }); io.to(p2.socketId).emit('game:result', { postMessage: { ...base, result: 'draw', myResult: 0 } }); }
+  } else {
+    const winP = winnerSlot === 1 ? p1 : p2;
+    const losP = winnerSlot === 1 ? p2 : p1;
+    if (winP?.socketId) { io.to(winP.socketId).emit('game:over', { ...base, result: 'win', myResult: +netGain }); io.to(winP.socketId).emit('game:result', { postMessage: { ...base, result: 'win', myResult: +netGain } }); }
+    if (losP?.socketId) { io.to(losP.socketId).emit('game:over', { ...base, result: 'loss', myResult: -bet }); io.to(losP.socketId).emit('game:result', { postMessage: { ...base, result: 'loss', myResult: -bet } }); }
+  }
+  io.to(roomId).emit('game:result', { postMessage: base });
+}
+
 // A voluntary resignation is different from a mutual quit: one authenticated
 // participant gives up and the other participant wins. Keep this operation on
 // the authoritative game server so the room outcome and escrow are settled by
@@ -1593,7 +1816,8 @@ function getRoomFinisher(gameName) {
     quoridor: notifyQuoriRoomOver,
     penalty: notifyPenaltyRoomOver,
     chifoumi: notifyChifoumiRoomOver,
-    echecs: notifyEchecsRoomOver
+    echecs: notifyEchecsRoomOver,
+    ludo: notifyLudoRoomOver
   }[gameName] || null;
 }
 
@@ -1691,7 +1915,7 @@ app.get('/health', (req, res) => {
     games: games.size, damesRooms: damesRooms.size,
     tttRooms: tttRooms.size, quoriRooms: quoriRooms.size,
     penaltyRooms: penaltyRooms.size, chifoumiRooms: chifoumiRooms.size,
-    echecsRooms: echecsRooms.size,
+    echecsRooms: echecsRooms.size, ludoRooms: ludoRooms.size,
     queuedPlayers: [...queue.values()].reduce((total, players) => total + players.length, 0)
   });
 });
@@ -2639,7 +2863,7 @@ io.on('connection', (socket) => {
     if (!databaseCheck.ok) return rejectSocket(socket, databaseCheck.message);
     let croom = chifoumiRooms.get(room);
     if (!croom) {
-      croom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, currentRound: 1, scores: [0, 0], choices: {}, history: [], turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null };
+      croom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, currentRound: 1, scores: [0, 0], choices: {}, history: [], turnTimer: null, graceTimer: null, revealTimer: null, revealPending: false, revealStartTime: null, turnStartTime: null, graceStartTime: null };
       chifoumiRooms.set(room, croom);
     }
     if (!bindDatabaseGame(croom, gameId)) return rejectSocket(socket, 'Cette room est déjà liée à une autre partie.');
@@ -2652,7 +2876,8 @@ io.on('connection', (socket) => {
       const bothBack = p1?.connected && p2?.connected;
       if (bothBack && croom.disconnectTimer) {
         clearTimeout(croom.disconnectTimer); croom.disconnectTimer = null; croom.reconnectDeadline = null; croom.status = 'playing';
-        startChifoumiTurnTimer(croom, room);
+        if (croom.choices[1] !== undefined && croom.choices[2] !== undefined) scheduleChifoumiReveal(croom, room);
+        else startChifoumiTurnTimer(croom, room);
         io.to(room).emit('chifoumi_game_resumed', { message: 'Les deux joueurs sont de retour !' });
       } else if (croom.disconnectTimer) {
         setTimeout(() => socket.emit('game:reconnect_deadline', { game: 'chifoumi', serverTime: Date.now(), reconnectDeadline: croom.reconnectDeadline }), 0);
@@ -2674,7 +2899,18 @@ io.on('connection', (socket) => {
       socket.to(room).emit('chifoumi_player_status', { slot: player, connected: true, name });
       socket.to(room).emit('player:reconnected', { message: `${name} est de retour !` });
       const opponentName = player === 1 ? (croom.players[2]?.name || 'Adversaire') : (croom.players[1]?.name || 'Adversaire');
-      socket.emit('chifoumi_start', { room, yourSlot: player, opponentName, bet: croom.betAmount, currency: croom.currency, reconnected: true, paused: croom.status === 'paused', gameState: { scores: croom.scores, currentRound: croom.currentRound, history: croom.history } });
+      socket.emit('chifoumi_start', {
+        room, yourSlot: player, opponentName, bet: croom.betAmount,
+        currency: croom.currency, reconnected: true, paused: croom.status === 'paused',
+        gameState: {
+          scores: croom.scores,
+          currentRound: croom.currentRound,
+          history: croom.history,
+          currentChoice: croom.choices[player] ?? null,
+          opponentHasChosen: croom.choices[player === 1 ? 2 : 1] !== undefined,
+          revealPending: croom.revealPending === true
+        }
+      });
       
       if (croom.status === 'playing') {
         const now = Date.now();
@@ -2690,14 +2926,14 @@ io.on('connection', (socket) => {
       persistRoomSoon('chifoumi', croom);
       io.to(p1.socketId).emit('chifoumi_start', { room, yourSlot: 1, opponentName: p2.name, bet: croom.betAmount, currency: croom.currency, reconnected: false });
       io.to(p2.socketId).emit('chifoumi_start', { room, yourSlot: 2, opponentName: p1.name, bet: croom.betAmount, currency: croom.currency, reconnected: false });
-      setTimeout(() => { if (croom.status === 'playing') startChifoumiTurnTimer(croom, room); }, 3000);
+      setTimeout(() => { if (croom.status === 'playing' && !croom.revealPending) startChifoumiTurnTimer(croom, room); }, 3000);
     }
   });
 
   socket.on('chifoumi_choice', ({ room, player, choice }) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return;
     const croom = chifoumiRooms.get(room);
-    if (!croom || croom.status !== 'playing' || croom.players[player]?.socketId !== socket.id) return;
+    if (!croom || croom.status !== 'playing' || croom.revealPending || croom.players[player]?.socketId !== socket.id) return;
     if (!['pierre', 'feuille', 'ciseaux'].includes(choice) || croom.choices[player] !== undefined) return;
     croom.choices[player] = choice;
     persistRoomSoon('chifoumi', croom);
@@ -2705,7 +2941,7 @@ io.on('connection', (socket) => {
     
     // Si les deux ont joué, on n'attend plus la période de grâce
     if (croom.choices[1] !== undefined && croom.choices[2] !== undefined) {
-        resolveChifoumiRound(croom, room);
+        scheduleChifoumiReveal(croom, room);
     }
   });
 
@@ -2715,6 +2951,8 @@ io.on('connection', (socket) => {
       croom.currentRound = round;
       croom.choices = {};
       croom.awaitingNextRound = false;
+      croom.revealPending = false;
+      croom.revealStartTime = null;
       persistRoomSoon('chifoumi', croom);
       startChifoumiTurnTimer(croom, room);
     }
@@ -2732,6 +2970,162 @@ io.on('connection', (socket) => {
     if (safeReason(data.reason) !== 'normal' && safeReason(data.reason) !== 'draw') return;
   });
 
+  // LUDO MULTIJOUEUR - état et règles autoritatifs côté serveur.
+  socket.on('ludo_join', async ({ room, player, supabaseId, name, bet, currency, gameId }) => {
+    if (!validRoom(room) || !validPlayerSlot(player)) return rejectSocket(socket, 'Room ou joueur Ludo invalide.');
+    if (isUuid(gameId) && room !== gameId) return rejectSocket(socket, 'La room Ludo ne correspond pas à cette partie.');
+    const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'ludo', player, bet);
+    if (!databaseCheck.ok) return rejectSocket(socket, databaseCheck.message);
+    let lroom = ludoRooms.get(room);
+    if (!lroom) {
+      lroom = {
+        id: room, players: {}, status: 'waiting',
+        betAmount: Number(bet) || 0, currency: currency || 'HTG',
+        gameState: createLudoState(), disconnectTimer: null,
+        turnTimer: null, graceTimer: null,
+        turnStartTime: null, graceStartTime: null
+      };
+      ludoRooms.set(room, lroom);
+    }
+    ensureLudoState(lroom);
+    if (!bindDatabaseGame(lroom, gameId)) return rejectSocket(socket, 'Cette room Ludo est déjà liée à une autre partie.');
+    if (!joinRoomAsAuthenticatedPlayer(socket, lroom, room, player, supabaseId, name)) return;
+    if (bet && !lroom.betAmount) lroom.betAmount = Number(bet) || 0;
+    persistRoomSoon('ludo', lroom);
+    socket.emit('ludo_joined', { room, player, waitingForOpponent: !(lroom.players[1] && lroom.players[2]) });
+
+    if (lroom.status === 'playing' || lroom.status === 'paused') {
+      const bothBack = lroom.players[1]?.connected && lroom.players[2]?.connected;
+      if (bothBack && lroom.disconnectTimer) {
+        clearTimeout(lroom.disconnectTimer);
+        lroom.disconnectTimer = null;
+        lroom.reconnectDeadline = null;
+        lroom.status = 'playing';
+        io.to(room).emit('ludo_game_resumed', { message: 'Les deux joueurs sont de retour.' });
+        emitLudoState(lroom, room, { type: 'resume' });
+        startLudoTurnTimer(lroom, room);
+      } else if (lroom.disconnectTimer) {
+        setTimeout(() => socket.emit('game:reconnect_deadline', {
+          game: 'ludo', serverTime: Date.now(), reconnectDeadline: lroom.reconnectDeadline
+        }), 0);
+      }
+      const opponentName = player === 1 ? (lroom.players[2]?.name || 'Adversaire') : (lroom.players[1]?.name || 'Adversaire');
+      socket.to(room).emit('ludo_player_status', { slot: player, connected: true, name: safeName(name) });
+      socket.emit('ludo_start', {
+        room, yourSlot: player, opponentName,
+        bet: lroom.betAmount, currency: lroom.currency,
+        reconnected: true, paused: lroom.status === 'paused',
+        state: ludoPublicState(lroom),
+        rules: { exitOnSix: true, extraTurnOnSix: true, extraTurnOnCapture: true, tripleSixLosesTurn: true, exactFinish: true }
+      });
+      return;
+    }
+
+    if (lroom.players[1] && lroom.players[2] && lroom.status === 'waiting') {
+      lroom.status = 'playing';
+      lroom.startedAt = Date.now();
+      persistRoomSoon('ludo', lroom);
+      const p1 = lroom.players[1], p2 = lroom.players[2];
+      const common = {
+        room, bet: lroom.betAmount, currency: lroom.currency, reconnected: false,
+        state: ludoPublicState(lroom),
+        rules: { exitOnSix: true, extraTurnOnSix: true, extraTurnOnCapture: true, tripleSixLosesTurn: true, exactFinish: true }
+      };
+      io.to(p1.socketId).emit('ludo_start', { ...common, yourSlot: 1, opponentName: p2.name });
+      io.to(p2.socketId).emit('ludo_start', { ...common, yourSlot: 2, opponentName: p1.name });
+      emitLudoState(lroom, room, { type: 'start' });
+      const timer = setTimeout(() => { if (lroom.status === 'playing') startLudoTurnTimer(lroom, room); }, 1200);
+      if (timer.unref) timer.unref();
+    }
+  });
+
+  socket.on('ludo_get_state', ({ room } = {}) => {
+    if (!validRoom(room) || !socketAllow(socket.id, 'ludo-sync', 20, 10000)) return;
+    const lroom = ludoRooms.get(room);
+    if (!lroom || !socketIsPlayer(lroom, socket.id)) return;
+    socket.emit('ludo_state', { room, state: ludoPublicState(lroom), action: { type: 'sync' } });
+  });
+
+  socket.on('ludo_roll', ({ room, player } = {}) => {
+    if (!validRoom(room) || !validPlayerSlot(player) || !socketAllow(socket.id, 'ludo-roll', 8, 5000)) return;
+    const lroom = ludoRooms.get(room);
+    if (!lroom || lroom.status !== 'playing' || lroom.players[player]?.socketId !== socket.id) return;
+    const state = ensureLudoState(lroom);
+    if (state.currentPlayer !== player || state.phase !== 'roll' || state.dice !== null) {
+      return rejectSocket(socket, 'Ce lancer de dé Ludo est invalide.');
+    }
+    const dice = crypto.randomInt(1, 7);
+    state.dice = dice;
+    state.consecutiveSixes[player] = dice === 6 ? Number(state.consecutiveSixes[player] || 0) + 1 : 0;
+    state.revision = Number(state.revision || 0) + 1;
+
+    if (state.consecutiveSixes[player] >= 3) {
+      clearLudoTurnTimers(lroom);
+      state.consecutiveSixes[player] = 0;
+      state.phase = 'locked';
+      state.legalMoves = [];
+      persistRoomSoon('ludo', lroom);
+      emitLudoState(lroom, room, { type: 'triple_six', player, dice });
+      const timer = setTimeout(() => {
+        if (lroom.status === 'playing' && state.currentPlayer === player && state.phase === 'locked') {
+          beginNextLudoTurn(lroom, room, false, { type: 'turn_passed', reason: 'triple_six' });
+        }
+      }, 900);
+      if (timer.unref) timer.unref();
+      return;
+    }
+
+    state.legalMoves = legalLudoMoves(lroom, player, dice);
+    state.phase = state.legalMoves.length ? 'move' : 'locked';
+    persistRoomSoon('ludo', lroom);
+    emitLudoState(lroom, room, { type: 'roll', player, dice });
+    if (!state.legalMoves.length) {
+      clearLudoTurnTimers(lroom);
+      const timer = setTimeout(() => {
+        if (lroom.status === 'playing' && state.currentPlayer === player && state.phase === 'locked') {
+          beginNextLudoTurn(lroom, room, dice === 6, { type: 'no_legal_move', player, dice });
+        }
+      }, 900);
+      if (timer.unref) timer.unref();
+    }
+  });
+
+  socket.on('ludo_move', ({ room, player, tokenIndex } = {}) => {
+    if (!validRoom(room) || !validPlayerSlot(player) || !Number.isInteger(tokenIndex) || tokenIndex < 0 || tokenIndex > 3) return;
+    if (!socketAllow(socket.id, 'ludo-move', 12, 5000)) return;
+    const lroom = ludoRooms.get(room);
+    if (!lroom || lroom.status !== 'playing' || lroom.players[player]?.socketId !== socket.id) return;
+    const state = ensureLudoState(lroom);
+    if (state.currentPlayer !== player || state.phase !== 'move') return rejectSocket(socket, 'Ce mouvement Ludo est invalide.');
+    const move = applyLudoMove(lroom, player, tokenIndex);
+    if (!move) return rejectSocket(socket, 'Ce pion ne peut pas avancer avec ce dé.');
+    clearLudoTurnTimers(lroom);
+    state.phase = 'locked';
+    state.legalMoves = [];
+    state.revision = Number(state.revision || 0) + 1;
+    persistRoomSoon('ludo', lroom);
+    emitLudoState(lroom, room, { type: 'move', ...move });
+    if (state.tokens[player].every(progress => progress === LUDO_FINISH)) {
+      const timer = setTimeout(() => {
+        if (lroom.status === 'playing') notifyLudoRoomOver(lroom, room, player, 'normal');
+      }, 650);
+      if (timer.unref) timer.unref();
+      return;
+    }
+    const extraTurn = move.dice === 6 || move.captured.length > 0 || move.finished;
+    if (move.dice !== 6) state.consecutiveSixes[player] = 0;
+    const timer = setTimeout(() => {
+      if (lroom.status === 'playing' && state.currentPlayer === player && state.phase === 'locked') {
+        beginNextLudoTurn(lroom, room, extraTurn, { type: extraTurn ? 'extra_turn' : 'next_turn', player });
+      }
+    }, 650);
+    if (timer.unref) timer.unref();
+  });
+
+  socket.on('ludo_result', () => {
+    // Intentionnellement ignoré : seul le moteur serveur termine la partie.
+  });
+
   // A mutual quit requires confirmation from BOTH authenticated sockets. A
   // single browser can request it, but cannot turn its own request into a
   // refund or a wallet operation.
@@ -2743,7 +3137,8 @@ io.on('connection', (socket) => {
       quoridor: [quoriRooms, notifyQuoriRoomOver],
       penalty: [penaltyRooms, notifyPenaltyRoomOver],
       chifoumi: [chifoumiRooms, notifyChifoumiRoomOver],
-      echecs: [echecsRooms, notifyEchecsRoomOver]
+      echecs: [echecsRooms, notifyEchecsRoomOver],
+      ludo: [ludoRooms, notifyLudoRoomOver]
     };
     const entry = entries[game];
     if (!entry) return;
@@ -2891,7 +3286,6 @@ io.on('connection', (socket) => {
       const dcName = croom.players[disconnectedSlot]?.name || `Joueur ${disconnectedSlot}`;
       socket.to(roomId).emit('chifoumi_player_status', { slot: disconnectedSlot, connected: false, name: dcName });
       socket.to(roomId).emit('chifoumi_opponent_disconnected', { slot: disconnectedSlot, message: `${dcName} s'est déconnecté.` });
-      croom.choices = {};
       clearChifoumiTurnTimers(croom);
       pauseAndWatch({
         room: croom, roomId, gameName: 'chifoumi',
@@ -2915,6 +3309,31 @@ io.on('connection', (socket) => {
       eroom.pausedTurnPlayer = eroom.turnPlayer || (eroom.currentPlayer + 1) || 1;
       clearEchecsTurnTimers(eroom);
       pauseAndWatch({ room: eroom, roomId, gameName: 'echecs', getP1: () => eroom.players[1], getP2: () => eroom.players[2], winFn: (winnerIsP1) => notifyEchecsRoomOver(eroom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startEchecsTurnTimer(eroom, roomId, eroom.pausedTurnPlayer || 1) });
+      break;
+    }
+
+    // Ludo Multijoueur
+    for (const [roomId, lroom] of ludoRooms.entries()) {
+      if (lroom.status !== 'playing' && lroom.status !== 'paused') continue;
+      let disconnectedSlot = null;
+      for (const [slot, player] of Object.entries(lroom.players)) {
+        if (player.socketId === socket.id) { disconnectedSlot = Number(slot); break; }
+      }
+      if (!disconnectedSlot) continue;
+      lroom.players[disconnectedSlot].connected = false;
+      clearLudoTurnTimers(lroom);
+      const disconnectedName = lroom.players[disconnectedSlot]?.name || `Joueur ${disconnectedSlot}`;
+      socket.to(roomId).emit('ludo_player_status', { slot: disconnectedSlot, connected: false, name: disconnectedName });
+      socket.to(roomId).emit('ludo_opponent_disconnected', { slot: disconnectedSlot, message: `${disconnectedName} s'est déconnecté.` });
+      pauseAndWatch({
+        room: lroom,
+        roomId,
+        gameName: 'ludo',
+        getP1: () => lroom.players[1],
+        getP2: () => lroom.players[2],
+        winFn: winnerIsP1 => notifyLudoRoomOver(lroom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'),
+        onResume: () => startLudoTurnTimer(lroom, roomId)
+      });
       break;
     }
   });

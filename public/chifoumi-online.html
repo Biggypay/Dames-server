@@ -558,7 +558,13 @@ if (!ROOM_ID && P1_ID && P2_ID) {
 }
 if (!ROOM_ID) { ROOM_ID = P.get('gameId') || P.get('matchId') || ''; }
 var GAME_ID = P.get('gameId') || P.get('matchId') || '';
-window.addEventListener('message', function(e) { if (e.data && e.data.type === 'client:mutual_quit' && socket && socket.connected) socket.emit('game_mutual_quit', { room: ROOM_ID, game: 'chifoumi', player: MY_SLOT }); });
+window.addEventListener('message', function(e) {
+  if (e.source !== window.parent) return;
+  if (parentOrigin && parentOrigin !== '*' && e.origin !== parentOrigin) return;
+  if (e.data && e.data.type === 'client:mutual_quit' && socket && socket.connected) {
+    socket.emit('game_mutual_quit', { room: ROOM_ID, game: 'chifoumi', player: MY_SLOT });
+  }
+});
 
 var MY_SUPABASE_ID = MY_SLOT === 1 ? P1_ID : P2_ID;
 var OP_SUPABASE_ID = MY_SLOT === 1 ? P2_ID : P1_ID;
@@ -589,10 +595,16 @@ var roundHistory = [], roundResults = [];
 var timerStart = null, timerRAF = null, timerActive = false;
 var graceRAF = null, graceActive = false;
 var pendingTimerData = null;
+var pendingRevealData = null;
 
 var forfeitTimer = null, forfeitCountdown = 0;
 var revealInterval = null;
 var socket = null;
+var parentOrigin = '*';
+try { if (document.referrer) parentOrigin = new URL(document.referrer).origin; } catch(e) {}
+function postToParent(payload) {
+  try { window.parent.postMessage(payload, parentOrigin); } catch(e) {}
+}
 
 /* ══════════════════════════════════════════
    DOM ELEMENTS
@@ -758,6 +770,23 @@ function initSocket() {
         rebuildProgressDots();
         showToast('📶','Partie restaurée','Reprise là où vous étiez !', 2400, function() {
           gameReady = true; startRound();
+          if (gs.currentChoice && choices.indexOf(gs.currentChoice) !== -1) {
+            playerChoice = gs.currentChoice;
+            playerLocked = true;
+            playerEmojiEl.textContent = emojis[playerChoice];
+            playerLabelEl.textContent = playerChoice.charAt(0).toUpperCase() + playerChoice.slice(1);
+            choiceBtns.forEach(function(btn) { btn.classList.add('disabled', 'locked'); });
+          }
+          if (gs.opponentHasChosen) {
+            opponentChoice = true;
+            aiLabelEl.textContent = 'Choix fait';
+            aiCard.classList.remove('waiting');
+            aiCard.classList.add('hidden-choice');
+          }
+          if (pendingRevealData) {
+            startRevealCountdown(pendingRevealData);
+            pendingRevealData = null;
+          }
           applyPendingTimer();
         });
       } catch(e) { startNewGame(); }
@@ -812,9 +841,20 @@ function initSocket() {
     aiCard.classList.add('hidden-choice', 'ai-active');
     profileAi.classList.remove('timer-urgent');
 
-    if (playerLocked) {
-      startRevealCountdown();
-    }
+  });
+
+  /* Le serveur démarre seul les 5 secondes de suspense. */
+  socket.on('chifoumi_reveal_countdown', function(data) {
+    if (gameOver || !data) return;
+    postToParent({
+      type: 'chifoumi_reveal_countdown',
+      event: 'chifoumi_reveal_countdown',
+      serverTime: data.serverTime,
+      startTime: data.startTime,
+      duration: data.duration
+    });
+    if (!gameReady) { pendingRevealData = data; return; }
+    startRevealCountdown(data);
   });
 
   /* ── Révélation de sécurité ── */
@@ -824,6 +864,7 @@ function initSocket() {
     if (!opponentChoice || opponentChoice === true) opponentChoice = data.opChoice;
     stopRevealCountdown();
     stopTimersVisuals();
+    postToParent({ type: 'chifoumi_reveal', event: 'chifoumi_reveal' });
     revealBoth();
   });
 
@@ -1011,9 +1052,7 @@ function playerMakesChoice(choice) {
     socket.emit('chifoumi_choice', { room: ROOM_ID, player: MY_SLOT, choice: choice });
   }
 
-  if (opponentChoice) {
-    startRevealCountdown();
-  } else {
+  if (!opponentChoice) {
     aiEmojiEl.textContent  = '🤔';
     aiLabelEl.textContent  = 'Réflexion...';
     aiCard.classList.add('shake');
@@ -1024,9 +1063,16 @@ function playerMakesChoice(choice) {
 /* ══════════════════════════════════════════
    REVEAL COUNTDOWN
 ══════════════════════════════════════════ */
-function startRevealCountdown() {
+function startRevealCountdown(data) {
   stopTimersVisuals(); stopGraceTimer();
-  var seconds = REVEAL_TIME;
+  if (revealInterval) { clearInterval(revealInterval); revealInterval = null; }
+  var serverTime = Number(data && data.serverTime);
+  var startTime = Number(data && data.startTime);
+  var duration = Number(data && data.duration) || REVEAL_TIME * 1000;
+  var clientNow = Date.now();
+  var offset = Number.isFinite(serverTime) ? serverTime - clientNow : 0;
+  var deadline = Number.isFinite(startTime) ? startTime + duration - offset : clientNow + duration;
+  var seconds = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
   timerCenterWrap.classList.add('visible');
   timerCenter.textContent = seconds;
   timerCenterArc.style.strokeDashoffset = CIRC * (1 - seconds / REVEAL_TIME);
@@ -1038,15 +1084,12 @@ function startRevealCountdown() {
   aiCard.classList.add('hidden-choice');
 
   revealInterval = setInterval(function() {
-    seconds--;
-    timerCenter.textContent = seconds;
-    timerCenterArc.style.strokeDashoffset = CIRC * (1 - seconds / REVEAL_TIME);
+    var remaining = Math.max(0, deadline - Date.now());
+    seconds = Math.max(0, Math.ceil(remaining / 1000));
+    timerCenter.textContent = seconds > 0 ? seconds : '...';
+    timerCenterArc.style.strokeDashoffset = CIRC * (1 - Math.min(1, remaining / duration));
     if (seconds <= 2) timerCenterArc.style.stroke = '#ef4444';
-    if (seconds <= 0) {
-      clearInterval(revealInterval); revealInterval = null;
-      revealBoth();
-    }
-  }, 1000);
+  }, 100);
 }
 
 function stopRevealCountdown() {
