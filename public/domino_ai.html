@@ -1,0 +1,980 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Domino — Entraînement IA | Mindspille</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=Inter:wght@300;400;600;700&display=swap');
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%,#312e81 50%,#1e1b4b 100%);width:100vw;height:100vh;overflow:hidden;display:flex;flex-direction:column;color:#fff}
+
+/* ══ BARRE DU HAUT (identique aux Dames) ══ */
+#top{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;padding:15px 14px 8px;background:transparent;z-index:20;gap:8px}
+.profile{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:72px;opacity:0.5;transition:opacity 0.3s}
+.profile.active{opacity:1}
+.profile-timer-wrap{position:relative;width:58px;height:58px;transition:filter 0.3s}
+.profile.active.human-active .profile-timer-wrap{filter:drop-shadow(0 0 10px rgba(255,255,255,0.6))}
+.profile.active.ai-active .profile-timer-wrap{filter:drop-shadow(0 0 10px rgba(231,76,60,0.6))}
+.profile-timer-wrap svg{position:absolute;inset:0;width:100%;height:100%;transform:rotate(-90deg)}
+.timer-track{fill:none;stroke:rgba(255,255,255,0.08);stroke-width:4}
+.timer-arc{fill:none;stroke-width:4;stroke-linecap:round;stroke-dasharray:163.4;stroke-dashoffset:163.4;transition:stroke 0.3s}
+.profile-avatar{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;border-radius:50%;-webkit-border-radius:50%;background-clip:padding-box;background:rgba(255,255,255,0.05);border:2px solid rgba(255,255,255,0.12);transition:border-color 0.3s,background 0.3s}
+.profile.active .profile-avatar{border-color:rgba(255,255,255,0.5);background:rgba(255,255,255,0.10)}
+/* Avatar domino miniature */
+.av-domino{width:30px;height:16px;border-radius:3px;background:linear-gradient(135deg,#faf6ea,#e6ddc4);border:1px solid rgba(0,0,0,0.25);position:relative;display:flex;box-shadow:inset 0 1px 2px rgba(255,255,255,0.7),0 1px 2px rgba(0,0,0,0.3)}
+.av-domino::before{content:'';position:absolute;top:2px;bottom:2px;left:50%;width:1px;background:rgba(0,0,0,0.28);transform:translateX(-50%)}
+.av-domino i{flex:1;position:relative}
+.av-domino i::before,.av-domino i::after{content:'';position:absolute;width:3px;height:3px;border-radius:50%;background:#1e293b}
+.av-domino i:first-child::before{top:3px;left:4px}
+.av-domino i:first-child::after{bottom:3px;right:4px}
+.av-domino i:last-child::before{top:50%;left:50%;transform:translate(-50%,-50%);background:#b91c1c}
+.av-domino i:last-child::after{display:none}
+.av-red-t{filter:hue-rotate(-25deg) saturate(1.4) brightness(0.98)}
+.profile-name{font-family:'Cinzel',serif;font-size:9px;letter-spacing:1.5px;color:rgba(255,255,255,0.45);text-transform:uppercase;transition:color 0.3s;max-width:72px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center}
+.profile.active .profile-name{color:rgba(255,255,255,0.9)}
+.tiles-left{font-family:'Cinzel',serif;font-size:10px;font-weight:700;color:rgba(255,255,255,0.55);min-height:13px;letter-spacing:0.5px}
+.tiles-left b{color:#fbbf24}
+
+.top-center{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px}
+.score-row{display:flex;gap:8px;align-items:center}
+.snum{font-family:'Cinzel',serif;font-size:20px;font-weight:700}
+.sw{color:#ffffff}.sr{color:#f87171}.ssep{color:rgba(255,255,255,.3);font-size:13px}
+.manche-lbl{font-size:9px;color:rgba(255,255,255,.35);letter-spacing:1px}
+.bet-badge{font-size:9px;background:rgba(251,191,36,0.15);border:1px solid rgba(251,191,36,0.4);border-radius:99px;padding:2px 8px;color:#fbbf24;font-weight:600;letter-spacing:0.5px;margin-top:2px}
+.timer-urgent .timer-arc{animation:urgentPulse 0.5s infinite alternate}
+@keyframes urgentPulse{from{opacity:1}to{opacity:0.4}}
+
+/* ══ ZONE DE JEU ══ */
+#wrap{flex:1 1 auto;position:relative;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+
+/* Main adverse (dominos face cachée) */
+#ai-hand{flex:0 0 auto;display:flex;justify-content:center;align-items:center;gap:3px;padding:6px 10px 2px;min-height:52px;flex-wrap:nowrap;overflow:hidden}
+
+/* Bandeau de statut */
+#turn-strip{flex:0 0 auto;margin:4px auto 2px;max-width:88%;text-align:center;padding:6px 18px;font-family:'Cinzel',serif;font-size:11px;font-weight:600;letter-spacing:1.5px;border-radius:99px;border:1px solid transparent;transition:all .35s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#turn-strip.mine{background:rgba(251,191,36,0.10);border-color:rgba(251,191,36,0.35);color:#fbe08a;animation:glow-pulse 2.2s ease-in-out infinite}
+#turn-strip.theirs{background:rgba(255,255,255,0.04);border-color:rgba(255,255,255,0.06);color:rgba(255,255,255,0.4)}
+#turn-strip.draw-hint{background:rgba(56,189,248,0.12);border-color:rgba(56,189,248,0.5);color:#7dd3fc}
+@keyframes glow-pulse{0%,100%{box-shadow:0 0 0 rgba(251,191,36,0)}50%{box-shadow:0 0 16px rgba(251,191,36,0.18)}}
+
+/* La table (feutre indigo) */
+#table{flex:1 1 auto;position:relative;margin:4px 8px;border-radius:16px;min-height:0;
+  background:radial-gradient(ellipse 120% 80% at 50% 40%,rgba(99,102,241,0.12),rgba(15,13,45,0.55) 70%),linear-gradient(160deg,rgba(20,18,55,0.7),rgba(10,8,32,0.85));
+  border:1px solid rgba(251,191,36,0.14);box-shadow:inset 0 0 34px rgba(0,0,0,0.55),0 6px 20px rgba(0,0,0,0.35);overflow:hidden}
+#chain-scroll{position:absolute;inset:0;overflow-x:auto;overflow-y:hidden;display:flex;align-items:center;scrollbar-width:none;padding:0 18px}
+#chain-scroll::-webkit-scrollbar{display:none}
+#chain{display:flex;align-items:center;gap:2px;margin:auto}
+#empty-hint{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:rgba(255,255,255,0.28);font-family:'Cinzel',serif;font-size:12px;letter-spacing:2px;text-align:center;pointer-events:none;white-space:nowrap}
+
+/* Pioche */
+#boneyard{position:absolute;top:8px;right:8px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:default;z-index:6;transition:transform .2s}
+#boneyard .stack{position:relative;width:30px;height:44px}
+#boneyard .stack .back-mini{position:absolute;width:30px;height:44px;border-radius:5px}
+#boneyard .cnt{font-family:'Cinzel',serif;font-size:10px;font-weight:700;color:rgba(255,255,255,0.6)}
+#boneyard.can-draw{cursor:pointer;animation:drawPulse 1s ease-in-out infinite}
+#boneyard.can-draw .cnt{color:#7dd3fc}
+@keyframes drawPulse{0%,100%{transform:scale(1);filter:drop-shadow(0 0 0 rgba(56,189,248,0))}50%{transform:scale(1.08);filter:drop-shadow(0 0 10px rgba(56,189,248,0.6))}}
+
+/* Ma main */
+#my-hand{flex:0 0 auto;display:flex;justify-content:center;align-items:flex-end;gap:5px;padding:8px 10px 10px;min-height:96px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+#my-hand::-webkit-scrollbar{display:none}
+
+/* ══ DOMINO (rendu CSS) ══ */
+.domino{--dw:34px;font-size:var(--dw);display:flex;background:linear-gradient(150deg,#fdfaf0 0%,#f3ecd8 55%,#e4d9bd 100%);border-radius:0.18em;box-shadow:0 0.06em 0.14em rgba(0,0,0,0.45),inset 0 0.03em 0.05em rgba(255,255,255,0.9),inset 0 -0.03em 0.06em rgba(0,0,0,0.12);border:1px solid rgba(120,100,60,0.35);flex-shrink:0;position:relative}
+.domino.horz{flex-direction:row;width:calc(var(--dw)*2);height:var(--dw)}
+.domino.vert{flex-direction:column;width:var(--dw);height:calc(var(--dw)*2)}
+.domino .half{flex:1;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr);place-items:center;padding:0.12em;position:relative}
+.domino.horz .half:first-child{border-right:1px solid rgba(90,72,40,0.4)}
+.domino.vert .half:first-child{border-bottom:1px solid rgba(90,72,40,0.4)}
+.domino .pip{width:0.19em;height:0.19em;border-radius:50%;background:currentColor;box-shadow:0 0.01em 0.02em rgba(0,0,0,0.35),inset 0 -0.02em 0.02em rgba(0,0,0,0.25);visibility:hidden}
+.domino .pip.on{visibility:visible}
+.pc0{color:#0f766e}.pc1{color:#1d4ed8}.pc2{color:#15803d}.pc3{color:#b91c1c}.pc4{color:#6d28d9}.pc5{color:#c2410c}.pc6{color:#0e7490}
+/* Face cachée */
+.domino.back{background:linear-gradient(150deg,#3730a3,#1e1b4b 60%,#12102e);border:1px solid rgba(251,191,36,0.28)}
+.domino.back::after{content:'';position:absolute;inset:14%;border-radius:0.1em;border:1px solid rgba(251,191,36,0.35);background:radial-gradient(circle at 50% 50%,rgba(251,191,36,0.22),transparent 62%)}
+.domino.back .half{visibility:hidden}
+
+/* Main : cartes cliquables */
+#my-hand .domino{--dw:38px;cursor:pointer;transition:transform .16s ease,box-shadow .16s ease,filter .16s;will-change:transform}
+#my-hand .domino.playable{box-shadow:0 0.1em 0.2em rgba(0,0,0,0.45),0 0 0 2px rgba(251,191,36,0.75),0 0 14px rgba(251,191,36,0.35);animation:tilePulse 1.6s ease-in-out infinite}
+#my-hand .domino.playable:hover{transform:translateY(-8px)}
+#my-hand .domino.dead{filter:grayscale(0.55) brightness(0.72);cursor:default}
+#my-hand .domino.picked{transform:translateY(-14px) scale(1.06);box-shadow:0 0.3em 0.5em rgba(0,0,0,0.5),0 0 0 2px #fbbf24,0 0 20px rgba(251,191,36,0.6);z-index:5}
+@keyframes tilePulse{0%,100%{box-shadow:0 0.1em 0.2em rgba(0,0,0,0.45),0 0 0 2px rgba(251,191,36,0.6),0 0 10px rgba(251,191,36,0.2)}50%{box-shadow:0 0.1em 0.2em rgba(0,0,0,0.45),0 0 0 2px rgba(251,191,36,0.95),0 0 18px rgba(251,191,36,0.5)}}
+
+/* Extrémités jouables sur la table */
+.domino.end-open{position:relative}
+.domino.end-open::before{content:'';position:absolute;inset:-3px;border-radius:0.3em;border:2px solid rgba(251,191,36,0.7);animation:endGlow 1.3s ease-in-out infinite;pointer-events:none}
+@keyframes endGlow{0%,100%{opacity:0.35}50%{opacity:1}}
+/* Dernier coup posé */
+@keyframes tileLand{0%{transform:scale(0.3);opacity:0}60%{transform:scale(1.12)}100%{transform:scale(1);opacity:1}}
+.domino.land{animation:tileLand .32s cubic-bezier(0.175,0.885,0.32,1.275)}
+
+/* Sélecteur de côté (quand un domino va des 2 côtés) */
+#side-chooser{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:none;z-index:60;background:linear-gradient(135deg,rgba(30,27,75,.97),rgba(49,46,129,.97));border:1.5px solid rgba(251,191,36,.55);border-radius:16px;padding:16px 18px;text-align:center;box-shadow:0 15px 45px rgba(0,0,0,.6)}
+#side-chooser.show{display:block;animation:popIn .25s}
+@keyframes popIn{from{opacity:0;transform:translate(-50%,-50%) scale(.85)}to{opacity:1;transform:translate(-50%,-50%) scale(1)}}
+#side-chooser .sc-title{font-size:11px;color:rgba(255,255,255,.7);letter-spacing:1px;margin-bottom:10px}
+#side-chooser .sc-btns{display:flex;gap:10px}
+.sc-btn{background:rgba(251,191,36,0.14);border:1px solid rgba(251,191,36,0.5);color:#fbe08a;border-radius:12px;padding:10px 16px;font-family:'Cinzel',serif;font-size:13px;font-weight:700;cursor:pointer;transition:all .15s;min-width:88px}
+.sc-btn:active{transform:scale(.94);background:rgba(251,191,36,0.28)}
+#side-chooser .sc-cancel{margin-top:10px;font-size:10px;color:rgba(255,255,255,.4);cursor:pointer;letter-spacing:1px}
+
+/* ══ CHARGEMENT ══ */
+#loading{position:absolute;inset:0;background:linear-gradient(135deg,#1e1b4b 0%,#312e81 100%);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:100;transition:opacity .6s}
+.spin{width:52px;height:52px;border:4px solid rgba(255,255,255,.08);border-top-color:#fbbf24;border-radius:50%;animation:sp 1s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+#loading p{color:rgba(255,255,255,.55);margin-top:16px;font-size:11px;letter-spacing:4px;font-family:'Cinzel',serif;text-align:center;padding:0 16px}
+
+/* ══ TOAST ══ */
+#toast{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:linear-gradient(135deg,rgba(30,27,75,.97),rgba(49,46,129,.97));border:1.5px solid rgba(251,191,36,.6);border-radius:20px;padding:26px 30px;text-align:center;pointer-events:none;z-index:140;display:none;box-shadow:0 15px 50px rgba(0,0,0,.6);min-width:230px}
+#toast-emoji{font-size:46px;margin-bottom:8px;display:flex;align-items:center;justify-content:center;min-height:52px}
+#toast-title{font-family:'Cinzel',serif;color:#fbbf24;font-size:21px;font-weight:700;margin-bottom:6px}
+#toast-sub{font-size:12px;color:rgba(255,255,255,.62);letter-spacing:0.5px;white-space:pre-line;line-height:1.5}
+
+#confetti-canvas{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:55}
+
+/* Petit toast d'info (bas) */
+#flash{position:absolute;bottom:14px;left:50%;transform:translateX(-50%) translateY(60px);background:rgba(30,27,75,0.95);border:1px solid rgba(251,191,36,0.5);color:#fbe08a;padding:9px 22px;border-radius:99px;font-size:12px;font-family:'Cinzel',serif;letter-spacing:1px;transition:transform .3s ease;z-index:70;pointer-events:none;white-space:nowrap;box-shadow:0 6px 20px rgba(0,0,0,0.4)}
+#flash.show{transform:translateX(-50%) translateY(0)}
+
+/* Bouton Rejouer */
+#replay-btn{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);z-index:80;display:none;background:linear-gradient(135deg,#ec4899,#f472b6);color:#fff;border:none;border-radius:99px;padding:12px 30px;font-family:'Cinzel',serif;font-size:14px;font-weight:700;letter-spacing:0.5px;cursor:pointer;box-shadow:0 8px 26px rgba(236,72,153,0.5)}
+#replay-btn.show{display:block;animation:replayUp 0.35s}
+@keyframes replayUp{from{opacity:0;transform:translate(-50%,12px)}to{opacity:1;transform:translate(-50%,0)}}
+#replay-btn:active{transform:translateX(-50%) scale(0.95)}
+
+/* ══ BARRE DU BAS ══ */
+#bot{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 14px;background:rgba(255,255,255,0.08);backdrop-filter:blur(12px);border-top:1px solid rgba(255,255,255,0.15);z-index:20}
+.btn{background:rgba(255,255,255,0.10);color:#fff;border:1px solid rgba(255,255,255,0.28);border-radius:99px;padding:7px 15px;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;font-family:'Inter',sans-serif}
+.btn:active{transform:scale(0.95);background:rgba(255,255,255,0.22)}
+.btn:disabled{opacity:0.4;cursor:default}
+#act-btn{background:linear-gradient(135deg,#fbbf24,#f59e0b);border-color:transparent;color:#3b2f0a;font-family:'Cinzel',serif;font-weight:700;letter-spacing:0.5px;box-shadow:0 4px 16px rgba(251,191,36,0.4);display:none}
+#act-btn.show{display:block;animation:actPop .3s}
+@keyframes actPop{from{transform:scale(.8);opacity:0}to{transform:scale(1);opacity:1}}
+.bot-info{font-size:10px;color:rgba(255,255,255,0.4);letter-spacing:1px;font-family:'Cinzel',serif}
+
+/* Flyer (domino en vol) */
+.flyer{position:fixed;z-index:999;pointer-events:none;transition:left .3s cubic-bezier(.4,0,.2,1),top .3s cubic-bezier(.4,0,.2,1),transform .3s}
+</style>
+</head>
+<body>
+<div id="top">
+  <div class="profile" id="profile-human">
+    <div class="profile-timer-wrap">
+      <svg viewBox="0 0 58 58"><circle class="timer-track" cx="29" cy="29" r="26"/><circle class="timer-arc" id="timer-arc-human" cx="29" cy="29" r="26" stroke="#ffffff"/></svg>
+      <div class="profile-avatar"><div class="av-domino"><i></i><i></i></div></div>
+    </div>
+    <div class="profile-name" id="name-human">Vous</div>
+    <div class="tiles-left" id="tiles-human"></div>
+  </div>
+  <div class="top-center">
+    <div class="score-row"><span class="snum sw" id="score-w">0</span><span class="ssep">—</span><span class="snum sr" id="score-r">0</span></div>
+    <span class="manche-lbl" id="round-lbl">Entraînement · IA</span>
+    <div class="bet-badge" id="betBadge" style="display:none;"></div>
+  </div>
+  <div class="profile" id="profile-ai">
+    <div class="profile-timer-wrap">
+      <svg viewBox="0 0 58 58"><circle class="timer-track" cx="29" cy="29" r="26"/><circle class="timer-arc" id="timer-arc-ai" cx="29" cy="29" r="26" stroke="#e74c3c"/></svg>
+      <div class="profile-avatar"><div class="av-domino av-red-t"><i></i><i></i></div></div>
+    </div>
+    <div class="profile-name" id="name-ai">IA</div>
+    <div class="tiles-left" id="tiles-ai"></div>
+  </div>
+</div>
+
+<div id="wrap">
+  <div id="ai-hand"></div>
+  <div id="turn-strip" class="theirs">—</div>
+  <div id="table">
+    <div id="chain-scroll"><div id="chain"></div></div>
+    <div id="empty-hint">POSEZ LE PREMIER DOMINO</div>
+    <div id="boneyard"><div class="stack" id="bone-stack"></div><div class="cnt" id="bone-cnt">14</div></div>
+  </div>
+  <div id="my-hand"></div>
+
+  <div id="side-chooser">
+    <div class="sc-title">Quel côté ?</div>
+    <div class="sc-btns">
+      <button class="sc-btn" id="sc-left">◀ Gauche</button>
+      <button class="sc-btn" id="sc-right">Droite ▶</button>
+    </div>
+    <div class="sc-cancel" id="sc-cancel">Annuler</div>
+  </div>
+
+  <canvas id="confetti-canvas"></canvas>
+  <div id="loading"><div class="spin"></div><p>PRÉPARATION DE LA PARTIE...</p></div>
+  <div id="flash"></div>
+  <div id="toast"><div id="toast-emoji"></div><div id="toast-title"></div><div id="toast-sub"></div></div>
+  <button id="replay-btn">↻ Rejouer</button>
+</div>
+
+<div id="bot">
+  <span class="bot-info" id="bot-diff">NIVEAU</span>
+  <button class="btn" id="act-btn">Passer</button>
+  <button class="btn" id="btn-sound">🔊</button>
+</div>
+
+<script>
+window.onerror=function(msg){var ld=document.getElementById('loading');if(ld){var p=ld.querySelector('p');if(p)p.textContent='ERREUR JS: '+msg;}return false;};
+
+(function(){
+'use strict';
+
+/* ══════════════════════════════════════════
+   PARAMÈTRES (aucun argent, aucun réseau)
+   L'humain (joueur 0) et l'IA (joueur 1).
+══════════════════════════════════════════ */
+var P = new URLSearchParams(window.location.search);
+var DIFFICULTY = (P.get('difficulty') || P.get('level') || 'hard').toLowerCase();
+if(DIFFICULTY==='max'||DIFFICULTY==='extreme') DIFFICULTY='expert';
+if(['easy','medium','hard','expert'].indexOf(DIFFICULTY)<0) DIFFICULTY='hard';
+var AI_DEBUG = !!P.get('debug');
+var MY_NAME = P.get('name') || P.get('username') || 'Vous';
+var CURRENCY = P.get('currency') || 'HTG';
+var BET_AMOUNT = parseInt(P.get('bet')||'0',10) || 0;
+
+var HUMAN=0, AI=1;
+var TIMER_DURATION=30000, CIRC=2*Math.PI*26;
+
+/* ── État de partie ── */
+var hands=[[],[]];            // dominos de chaque joueur : {a,b,id,isDouble}
+var boneyard=[];              // pioche
+var chain=[];                 // ligne posée : {a,b,double} (a=gauche, b=droite)
+var leftEnd=-1, rightEnd=-1;  // valeurs ouvertes aux extrémités
+var currentPlayer=HUMAN;
+var gameOver=false, busy=false, gameReady=false;
+var passCount=0;
+var oppMissing={};            // valeurs sur lesquelles l'humain a passé (pour l'IA)
+var scores=[0,0];             // manches gagnées
+var pickedIdx=-1;             // domino sélectionné dans la main
+var resultSent=false;
+
+/* ── Minuteur (visuel) ── */
+var timerStart=null, timerRAF=null, timerActive=false;
+
+/* ── Sons ── */
+var soundOn=true, audioCtx=null;
+function beep(freq,dur,type,vol){
+  if(!soundOn) return;
+  try{
+    if(!audioCtx) audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+    var o=audioCtx.createOscillator(), g=audioCtx.createGain();
+    o.type=type||'sine'; o.frequency.value=freq;
+    g.gain.value=vol||0.08; o.connect(g); g.connect(audioCtx.destination);
+    o.start(); g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+(dur||0.12));
+    o.stop(audioCtx.currentTime+(dur||0.12));
+  }catch(e){}
+}
+function sndPlace(){ beep(180,0.09,'triangle',0.12); setTimeout(function(){beep(120,0.08,'sine',0.10);},50); }
+function sndDraw(){ beep(320,0.07,'sine',0.06); }
+function sndWin(){ [523,659,784,1047].forEach(function(f,i){ setTimeout(function(){beep(f,0.18,'triangle',0.10);}, i*110); }); }
+function sndLose(){ [392,330,262].forEach(function(f,i){ setTimeout(function(){beep(f,0.22,'sine',0.09);}, i*150); }); }
+
+/* ══════════════════════════════════════════
+   OUTILS DOMINOS
+══════════════════════════════════════════ */
+var PIP={0:[],1:[4],2:[2,6],3:[2,4,6],4:[0,2,6,8],5:[0,2,4,6,8],6:[0,2,3,5,6,8]};
+
+function makeSet(){
+  var set=[],id=0;
+  for(var i=0;i<=6;i++) for(var j=i;j<=6;j++) set.push({a:i,b:j,id:id++,isDouble:i===j});
+  return set;
+}
+function pips(t){ return t.a+t.b; }
+function handPips(h){ var s=0; for(var i=0;i<h.length;i++) s+=pips(h[i]); return s; }
+function shuffle(arr){
+  for(var i=arr.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=arr[i]; arr[i]=arr[j]; arr[j]=t; }
+  return arr;
+}
+function tileFits(t,val){ return t.a===val||t.b===val; }
+function canPlayTile(t){
+  if(chain.length===0) return true;
+  return tileFits(t,leftEnd)||tileFits(t,rightEnd);
+}
+function endsFor(t){
+  if(chain.length===0) return {first:true,left:true,right:true};
+  return {first:false, left:tileFits(t,leftEnd), right:tileFits(t,rightEnd)};
+}
+function hasPlayable(h){ for(var i=0;i<h.length;i++) if(canPlayTile(h[i])) return true; return false; }
+
+/* Construit un élément DOM domino. orient: 'horz'|'vert'. faceDown: bool. */
+function buildDomino(t,orient,faceDown,dw){
+  var el=document.createElement('div');
+  el.className='domino '+orient+(faceDown?' back':'');
+  if(dw) el.style.setProperty('--dw',dw);
+  if(faceDown){ el.appendChild(document.createElement('div')); el.appendChild(document.createElement('div')); return el; }
+  el.appendChild(buildHalf(t.a));
+  el.appendChild(buildHalf(t.b));
+  return el;
+}
+function buildHalf(n){
+  var h=document.createElement('div');
+  h.className='half pc'+n;
+  var on=PIP[n];
+  for(var i=0;i<9;i++){
+    var s=document.createElement('span');
+    s.className='pip'+(on.indexOf(i)>=0?' on':'');
+    h.appendChild(s);
+  }
+  return h;
+}
+
+/* ══════════════════════════════════════════
+   MINUTEUR VISUEL
+══════════════════════════════════════════ */
+function startTimer(isHuman){
+  stopTimer();
+  if(gameOver) return;
+  timerActive=true; timerStart=Date.now();
+  var arc=document.getElementById(isHuman?'timer-arc-human':'timer-arc-ai');
+  var prof=document.getElementById(isHuman?'profile-human':'profile-ai');
+  prof.classList.add('active', isHuman?'human-active':'ai-active');
+  (function tick(){
+    if(!timerActive) return;
+    var prog=Math.min((Date.now()-timerStart)/TIMER_DURATION,1);
+    arc.style.strokeDashoffset=CIRC*prog;
+    if(prog>=0.7) prof.classList.add('timer-urgent');
+    if(prog<1) timerRAF=requestAnimationFrame(tick); else timerActive=false;
+  })();
+}
+function stopTimer(){
+  timerActive=false; if(timerRAF) cancelAnimationFrame(timerRAF);
+  document.getElementById('timer-arc-human').style.strokeDashoffset=CIRC;
+  document.getElementById('timer-arc-ai').style.strokeDashoffset=CIRC;
+  document.getElementById('profile-human').className='profile';
+  document.getElementById('profile-ai').className='profile';
+}
+
+/* ══════════════════════════════════════════
+   RENDU
+══════════════════════════════════════════ */
+function render(){
+  renderAIHand();
+  renderMyHand();
+  renderChain();
+  renderBoneyard();
+  updateTopUI();
+}
+
+function renderAIHand(){
+  var el=document.getElementById('ai-hand'); el.innerHTML='';
+  var n=hands[AI].length;
+  var dw = n>9 ? '20px' : '24px';
+  for(var i=0;i<n;i++){
+    var d=buildDomino(null,'vert',true,dw);
+    if(n>9) d.style.marginLeft = i===0?'0':'-6px';
+    el.appendChild(d);
+  }
+}
+
+function renderMyHand(){
+  var el=document.getElementById('my-hand'); el.innerHTML='';
+  var forced = gameReady && !gameOver && currentPlayer===HUMAN;
+  for(var i=0;i<hands[HUMAN].length;i++){
+    (function(idx){
+      var t=hands[HUMAN][idx];
+      var d=buildDomino(t,'vert',false,'38px');
+      var playable = forced && canPlayTile(t);
+      if(forced){ d.classList.add(playable?'playable':'dead'); }
+      if(idx===pickedIdx) d.classList.add('picked');
+      d.addEventListener('click',function(){ onTileTap(idx); });
+      el.appendChild(d);
+    })(i);
+  }
+}
+
+var lastLandIndex=-1;
+function renderChain(){
+  var el=document.getElementById('chain'); el.innerHTML='';
+  document.getElementById('empty-hint').style.display = chain.length? 'none':'block';
+  for(var i=0;i<chain.length;i++){
+    var c=chain[i];
+    var d=buildDomino(c, c.double?'vert':'horz', false, '30px');
+    el.appendChild(d);
+  }
+  refreshChainEnds();
+}
+// Met en évidence les extrémités jouables (sans reconstruire la ligne).
+function refreshChainEnds(){
+  var el=document.getElementById('chain'), kids=el.children;
+  for(var i=0;i<kids.length;i++) kids[i].classList.remove('end-open');
+  if(gameOver || !gameReady || currentPlayer!==HUMAN || !kids.length) return;
+  if(humanCanUseEnd(leftEnd)) kids[0].classList.add('end-open');
+  if(humanCanUseEnd(rightEnd)) kids[kids.length-1].classList.add('end-open');
+}
+function humanCanUseEnd(val){
+  for(var i=0;i<hands[HUMAN].length;i++) if(tileFits(hands[HUMAN][i],val)) return true;
+  return false;
+}
+
+function renderBoneyard(){
+  var stack=document.getElementById('bone-stack'); stack.innerHTML='';
+  var n=boneyard.length;
+  var show=Math.min(n,4);
+  for(var i=0;i<show;i++){
+    var b=document.createElement('div');
+    b.className='domino back back-mini';
+    b.style.setProperty('--dw','30px');
+    b.style.left=(i*2)+'px'; b.style.top=(i*2)+'px';
+    b.appendChild(document.createElement('div')); b.appendChild(document.createElement('div'));
+    stack.appendChild(b);
+  }
+  document.getElementById('bone-cnt').textContent=n;
+  document.getElementById('boneyard').style.display = n>0 ? 'flex' : 'none';
+}
+
+function updateTopUI(){
+  document.getElementById('tiles-human').innerHTML='<b>'+hands[HUMAN].length+'</b> dominos';
+  document.getElementById('tiles-ai').innerHTML='<b>'+hands[AI].length+'</b> dominos';
+  document.getElementById('name-human').textContent=MY_NAME;
+  document.getElementById('score-w').textContent=scores[HUMAN];
+  document.getElementById('score-r').textContent=scores[AI];
+}
+
+function setStrip(text,cls){
+  var s=document.getElementById('turn-strip');
+  s.className=cls||'theirs'; s.textContent=text;
+}
+
+/* ══════════════════════════════════════════
+   ANIMATION : domino volant
+══════════════════════════════════════════ */
+function flyDomino(fromRect,toRect,buildFn,rotateDeg,onDone){
+  var fly=buildFn();
+  fly.classList.add('flyer');
+  fly.style.left=fromRect.left+'px'; fly.style.top=fromRect.top+'px';
+  fly.style.width=fromRect.width+'px'; fly.style.height=fromRect.height+'px';
+  document.body.appendChild(fly);
+  // Force reflow puis anime
+  fly.getBoundingClientRect();
+  requestAnimationFrame(function(){
+    requestAnimationFrame(function(){
+      fly.style.left=toRect.left+'px'; fly.style.top=toRect.top+'px';
+      fly.style.width=toRect.width+'px'; fly.style.height=toRect.height+'px';
+      if(rotateDeg) fly.style.transform='rotate('+rotateDeg+'deg)';
+    });
+  });
+  setTimeout(function(){ try{fly.remove();}catch(e){} if(onDone) onDone(); }, 320);
+}
+
+/* ══════════════════════════════════════════
+   DISTRIBUTION & DÉMARRAGE
+══════════════════════════════════════════ */
+function newGame(keepScores){
+  gameOver=false; busy=false; gameReady=false; resultSent=false;
+  chain=[]; leftEnd=-1; rightEnd=-1; passCount=0; oppMissing={}; pickedIdx=-1;
+  if(!keepScores) scores=[0,0];
+  hideChooser(); hideAct();
+  var rb=document.getElementById('replay-btn'); rb.classList.remove('show');
+  stopTimer();
+
+  var set=shuffle(makeSet());
+  hands[HUMAN]=set.slice(0,7);
+  hands[AI]=set.slice(7,14);
+  boneyard=set.slice(14);
+  sortHand(hands[HUMAN]);
+
+  render();
+  hideLoading();
+
+  var diffLbl = {easy:'Facile',medium:'Moyen',hard:'Difficile',expert:'Expert'}[DIFFICULTY];
+  document.getElementById('round-lbl').textContent='Entraînement · IA';
+  document.getElementById('bot-diff').textContent='NIVEAU '+diffLbl.toUpperCase();
+
+  showToast('🎲','Domino','Chaque joueur a 7 dominos.\nNiveau IA : '+diffLbl, 2000, function(){
+    gameReady=true;
+    openingMove();
+  });
+}
+
+function sortHand(h){
+  h.sort(function(a,b){ if(a.isDouble!==b.isDouble) return a.isDouble?-1:1; return pips(b)-pips(a); });
+}
+
+/* Le plus gros double commence (sinon le plus gros domino). */
+function openingMove(){
+  var best=-1, who=-1, tile=null, idx=-1;
+  for(var pl=0;pl<2;pl++) for(var i=0;i<hands[pl].length;i++){
+    var t=hands[pl][i]; if(t.isDouble && t.a>best){ best=t.a; who=pl; tile=t; idx=i; }
+  }
+  if(who<0){
+    var bp=-1;
+    for(var pl2=0;pl2<2;pl2++) for(var i2=0;i2<hands[pl2].length;i2++){
+      var t2=hands[pl2][i2]; if(pips(t2)>bp){ bp=pips(t2); who=pl2; tile=t2; idx=i2; }
+    }
+  }
+  var lbl = tile.a+'-'+tile.b;
+  var whoName = who===HUMAN ? 'Vous commencez' : (document.getElementById('name-ai').textContent+' commence');
+  setStrip('Ouverture : '+lbl, 'theirs');
+  showFlash((who===HUMAN?'Vous ouvrez':'L\'IA ouvre')+' avec le '+lbl);
+
+  // Retire le domino de la main et le pose (animé).
+  hands[who].splice(idx,1);
+  currentPlayer=who;
+  busy=true;
+  render();
+
+  setTimeout(function(){
+    animatePlace(who, tile, 'first', function(){
+      passCount=0;
+      afterMove(who);
+    });
+  }, who===HUMAN?300:600);
+}
+
+/* ══════════════════════════════════════════
+   POSER UN DOMINO (logique + animation)
+══════════════════════════════════════════ */
+function orientForSide(tile, side){
+  if(side==='first') return {a:tile.a,b:tile.b,double:tile.isDouble};
+  if(side==='right'){
+    var other=(tile.a===rightEnd)?tile.b:tile.a;
+    return {a:rightEnd,b:other,double:tile.isDouble};
+  }
+  var otherL=(tile.a===leftEnd)?tile.b:tile.a;
+  return {a:otherL,b:leftEnd,double:tile.isDouble};
+}
+
+function commitPlace(tile, side){
+  var oriented=orientForSide(tile, side);
+  if(side==='first'){ chain.push(oriented); leftEnd=oriented.a; rightEnd=oriented.b; lastLandIndex=0; }
+  else if(side==='right'){ chain.push(oriented); rightEnd=oriented.b; lastLandIndex=chain.length-1; }
+  else { chain.unshift(oriented); leftEnd=oriented.a; lastLandIndex=0; }
+}
+
+/* Anime le domino depuis la main (ou pioche) vers l'extrémité, puis l'insère. */
+function animatePlace(player, tile, side, onDone){
+  // Rect source : un domino de la main du joueur, sinon la pioche.
+  var srcRect=null;
+  var handEl=document.getElementById(player===HUMAN?'my-hand':'ai-hand');
+  var srcDom=handEl.querySelector('.domino');
+  if(srcDom) srcRect=srcDom.getBoundingClientRect();
+  else srcRect=document.getElementById('boneyard').getBoundingClientRect();
+
+  // Insère dans les données puis rend (le nouveau domino devient la cible).
+  commitPlace(tile, side);
+  var landIdx=lastLandIndex;
+  render();
+
+  var chainEl=document.getElementById('chain');
+  var targetDom=chainEl.children[landIdx];
+  var toRect = targetDom ? targetDom.getBoundingClientRect() : (document.getElementById('table').getBoundingClientRect());
+
+  // Cache le vrai domino posé le temps du vol.
+  if(targetDom) targetDom.style.opacity='0';
+
+  var oriented=chain[landIdx];
+  var orient=oriented.double?'vert':'horz';
+  flyDomino(srcRect, toRect, function(){
+    return buildDomino(oriented, orient, false, '30px');
+  }, 0, function(){
+    if(targetDom){
+      targetDom.style.opacity='';
+      targetDom.classList.remove('land'); void targetDom.offsetWidth; targetDom.classList.add('land');
+    }
+    sndPlace();
+    scrollToEnd(side);
+    if(onDone) onDone();
+  });
+}
+
+function scrollToEnd(side){
+  var sc=document.getElementById('chain-scroll');
+  requestAnimationFrame(function(){
+    if(side==='left') sc.scrollLeft=0;
+    else sc.scrollLeft=sc.scrollWidth;
+  });
+}
+
+/* ══════════════════════════════════════════
+   INTERACTION HUMAINE
+══════════════════════════════════════════ */
+function onTileTap(idx){
+  if(!gameReady||gameOver||busy||currentPlayer!==HUMAN) return;
+  var tile=hands[HUMAN][idx];
+  if(!canPlayTile(tile)){
+    // Domino injouable : petit rappel
+    pickedIdx=-1; render();
+    showFlash('Ce domino ne colle nulle part');
+    return;
+  }
+  var e=endsFor(tile);
+  if(e.first){ playHumanTile(idx,'first'); return; }
+  if(e.left && e.right && leftEnd!==rightEnd){
+    // Choix du côté
+    pickedIdx=idx; render();
+    showChooser(idx);
+    return;
+  }
+  if(e.right) playHumanTile(idx,'right');
+  else playHumanTile(idx,'left');
+}
+
+function playHumanTile(idx, side){
+  hideChooser();
+  var tile=hands[HUMAN][idx];
+  hands[HUMAN].splice(idx,1);
+  pickedIdx=-1; passCount=0;
+  busy=true; stopTimer();
+  render();
+  animatePlace(HUMAN, tile, side, function(){ afterMove(HUMAN); });
+}
+
+function showChooser(idx){
+  var c=document.getElementById('side-chooser');
+  c.classList.add('show');
+  document.getElementById('sc-left').textContent='◀ '+leftEnd;
+  document.getElementById('sc-right').textContent=rightEnd+' ▶';
+  document.getElementById('sc-left').onclick=function(){ playHumanTile(idx,'left'); };
+  document.getElementById('sc-right').onclick=function(){ playHumanTile(idx,'right'); };
+  document.getElementById('sc-cancel').onclick=function(){ hideChooser(); pickedIdx=-1; render(); };
+}
+function hideChooser(){ document.getElementById('side-chooser').classList.remove('show'); }
+
+/* Pioche (humain) */
+function humanDrawStep(){
+  if(busy||gameOver||currentPlayer!==HUMAN) return;
+  if(boneyard.length===0) return;
+  busy=true;
+  var boneRect=document.getElementById('boneyard').getBoundingClientRect();
+  var handEl=document.getElementById('my-hand');
+  var handRect=handEl.getBoundingClientRect();
+  var toRect={left:handRect.right-46, top:handRect.top+8, width:38, height:76};
+  var tile=boneyard.shift();
+  renderBoneyard();
+  sndDraw();
+  flyDomino(boneRect, toRect, function(){ return buildDomino(tile,'vert',false,'38px'); }, 0, function(){
+    hands[HUMAN].push(tile);
+    sortHand(hands[HUMAN]);
+    busy=false;
+    render();
+    updateHumanPrompt();
+  });
+}
+
+/* Détermine ce que l'humain doit faire (jouer / piocher / passer). */
+function updateHumanPrompt(){
+  if(gameOver) return;
+  var bone=document.getElementById('boneyard');
+  bone.classList.remove('can-draw');
+  hideAct();
+  if(hasPlayable(hands[HUMAN])){
+    setStrip('✦ À VOUS DE JOUER ✦','mine');
+  } else if(boneyard.length>0){
+    setStrip('Aucun coup — piochez','draw-hint');
+    bone.classList.add('can-draw');
+    showFlash('Piochez dans le talon');
+  } else {
+    setStrip('Aucun coup possible','draw-hint');
+    showAct('Passer', function(){ humanPass(); });
+  }
+}
+
+function humanPass(){
+  hideAct();
+  recordPass(HUMAN);
+  showFlash('Vous passez');
+  passCount++;
+  stopTimer();
+  if(checkBlocked()) return;
+  currentPlayer=AI;
+  render();
+  setTimeout(aiTurn, 700);
+}
+
+/* ══════════════════════════════════════════
+   FIN DE TOUR / DÉTECTION FIN DE PARTIE
+══════════════════════════════════════════ */
+function afterMove(justPlayed){
+  busy=false;
+  // Domino ! (main vide)
+  if(hands[justPlayed].length===0){
+    endGame(justPlayed,'domino');
+    return;
+  }
+  currentPlayer=1-justPlayed;
+  // Mise à jour partielle : on NE reconstruit PAS la ligne pour préserver
+  // l'animation d'atterrissage du domino qui vient d'être posé.
+  renderAIHand(); renderMyHand(); renderBoneyard(); updateTopUI(); refreshChainEnds();
+  if(gameOver) return;
+  if(currentPlayer===HUMAN){
+    startTimer(true);
+    updateHumanPrompt();
+  } else {
+    setStrip('Tour de l\'adversaire','theirs');
+    startTimer(false);
+    setTimeout(aiTurn, 750);
+  }
+}
+
+function recordPass(player){
+  // Si l'humain passe, l'IA sait qu'il n'a ni leftEnd ni rightEnd.
+  if(player===HUMAN){ if(leftEnd>=0) oppMissing[leftEnd]=1; if(rightEnd>=0) oppMissing[rightEnd]=1; }
+}
+
+function checkBlocked(){
+  // Deux passes consécutives = jeu bloqué.
+  if(passCount>=2){
+    var hp=handPips(hands[HUMAN]), ap=handPips(hands[AI]);
+    var winner = hp<ap ? HUMAN : (ap<hp ? AI : -1);
+    endGame(winner,'blocked',{hp:hp,ap:ap});
+    return true;
+  }
+  return false;
+}
+
+/* ══════════════════════════════════════════
+   IA
+══════════════════════════════════════════ */
+var AI_LEVELS={
+  easy:   {rnd:0.7, think:500, count:false},
+  medium: {rnd:0.25,think:650, count:false},
+  hard:   {rnd:0.05,think:750, count:true},
+  expert: {rnd:0,   think:850, count:true}
+};
+
+function aiTurn(){
+  if(gameOver) return;
+  var lvl=AI_LEVELS[DIFFICULTY]||AI_LEVELS.hard;
+
+  // 1) Tant qu'aucun coup et talon non vide, l'IA pioche (animé).
+  if(!hasPlayable(hands[AI]) && boneyard.length>0){
+    aiDrawStep(function(){ setTimeout(aiTurn, 260); });
+    return;
+  }
+
+  // 2) Aucun coup et talon vide → l'IA passe.
+  if(!hasPlayable(hands[AI])){
+    showFlash('L\'IA passe');
+    passCount++;
+    stopTimer();
+    if(checkBlocked()) return;
+    currentPlayer=HUMAN;
+    render();
+    startTimer(true);
+    updateHumanPrompt();
+    return;
+  }
+
+  // 3) Choisit le meilleur coup.
+  var choice=chooseAIMove(lvl);
+  busy=true; stopTimer();
+  var idx=-1;
+  for(var i=0;i<hands[AI].length;i++) if(hands[AI][i].id===choice.tile.id){ idx=i; break; }
+  hands[AI].splice(idx,1);
+  passCount=0;
+  render();
+  animatePlace(AI, choice.tile, choice.side, function(){
+    afterMove(AI);
+  });
+}
+
+function aiDrawStep(onDone){
+  var boneRect=document.getElementById('boneyard').getBoundingClientRect();
+  var aiHandEl=document.getElementById('ai-hand');
+  var aiRect=aiHandEl.getBoundingClientRect();
+  var toRect={left:aiRect.left+aiRect.width/2-12, top:aiRect.top+4, width:24, height:44};
+  var tile=boneyard.shift();
+  renderBoneyard();
+  sndDraw();
+  flyDomino(boneRect, toRect, function(){ return buildDomino(null,'vert',true,'24px'); }, 0, function(){
+    hands[AI].push(tile);
+    render();
+    if(onDone) onDone();
+  });
+}
+
+/* Évalue chaque coup légal et renvoie le meilleur {tile, side, score}. */
+function chooseAIMove(lvl){
+  var moves=[];
+  for(var i=0;i<hands[AI].length;i++){
+    var t=hands[AI][i];
+    var e=endsFor(t);
+    if(e.first){ moves.push({tile:t,side:'first'}); continue; }
+    if(e.left && e.right && leftEnd!==rightEnd){ moves.push({tile:t,side:'left'}); moves.push({tile:t,side:'right'}); }
+    else if(e.right) moves.push({tile:t,side:'right'});
+    else if(e.left) moves.push({tile:t,side:'left'});
+  }
+  // Niveau facile / moyen : part de hasard.
+  if(lvl.rnd>0 && Math.random()<lvl.rnd){
+    return moves[(Math.random()*moves.length)|0];
+  }
+  var best=null, bestScore=-1e9;
+  for(var m=0;m<moves.length;m++){
+    var sc=scoreMove(moves[m], lvl);
+    if(sc>bestScore){ bestScore=sc; best=moves[m]; }
+  }
+  if(AI_DEBUG) try{ console.log('[IA domino]', DIFFICULTY, best.tile.a+'-'+best.tile.b, best.side, bestScore.toFixed(1)); }catch(e){}
+  return best||moves[0];
+}
+
+function scoreMove(mv, lvl){
+  var t=mv.tile, s=0;
+  // a) Se débarrasser des dominos lourds.
+  s += pips(t)*1.0;
+  // b) Poser les doubles tôt (difficiles à placer plus tard).
+  if(t.isDouble) s += 7;
+
+  // Valeur de l'extrémité créée par ce coup.
+  var newEnd = newEndValue(t, mv.side);
+  // Autre extrémité inchangée.
+  var otherEnd = mv.side==='right' ? leftEnd : (mv.side==='left' ? rightEnd : newEnd);
+  if(mv.side==='first') otherEnd = t.a; // ligne = un seul domino, 2 extrémités
+
+  if(lvl.count){
+    // c) Garder de la flexibilité : préférer laisser une valeur qu'on possède encore.
+    var mine=countValueInHand(hands[AI], newEnd, t);
+    s += mine*2.2;
+    // d) Bloquer : si l'humain a passé sur cette valeur, la garder ouverte le gêne.
+    if(oppMissing[newEnd]) s += 6;
+    if(oppMissing[otherEnd]) s += 2;
+    // e) Éviter d'offrir une valeur trop facile (petit malus si double ouvre la même valeur des 2 côtés).
+    if(mv.side!=='first' && newEnd===otherEnd && !oppMissing[newEnd]) s -= 2;
+  }
+  // f) Si ce coup vide la main → priorité absolue.
+  if(hands[AI].length===1) s += 1000;
+  return s + Math.random()*0.5;
+}
+
+function newEndValue(t, side){
+  if(side==='first') return t.b;
+  if(side==='right') return (t.a===rightEnd)?t.b:t.a;
+  return (t.a===leftEnd)?t.b:t.a;
+}
+function countValueInHand(h, val, exclude){
+  var n=0;
+  for(var i=0;i<h.length;i++){ if(exclude && h[i].id===exclude.id) continue; if(tileFits(h[i],val)) n++; }
+  return n;
+}
+
+/* ══════════════════════════════════════════
+   FIN DE PARTIE
+══════════════════════════════════════════ */
+function endGame(winner, reason, extra){
+  if(gameOver) return;
+  gameOver=true; busy=false; gameReady=false;
+  stopTimer(); hideChooser(); hideAct();
+  document.getElementById('boneyard').classList.remove('can-draw');
+
+  if(winner>=0) scores[winner]++;
+  // Rendu partiel : on préserve le dernier domino posé (animation).
+  renderAIHand(); renderMyHand(); updateTopUI(); refreshChainEnds();
+
+  var humanWon = winner===HUMAN;
+  var emoji, title, sub;
+  if(reason==='domino'){
+    emoji = humanWon?'🏆':'🤖';
+    title = humanWon?'DOMINO ! Vous gagnez':'L\'IA fait domino';
+    sub   = humanWon?'Vous avez posé tous vos dominos.':'L\'adversaire a vidé sa main.';
+  } else if(reason==='blocked'){
+    if(winner<0){
+      emoji='🤝'; title='Jeu fermé — Égalité';
+      sub='Autant de points de chaque côté ('+extra.hp+').';
+    } else {
+      emoji = humanWon?'🏆':'🤖';
+      title = 'Jeu fermé — '+(humanWon?'Vous gagnez':'L\'IA gagne');
+      sub = 'Moins de points l\'emporte.\nVous : '+extra.hp+' · IA : '+extra.ap;
+    }
+  }
+
+  if(humanWon){ sndWin(); createConfetti(); }
+  else if(winner>=0) sndLose();
+
+  showToast(emoji, title, sub, 3800, function(){
+    sendResult(humanWon?'win':(winner<0?'draw':'loss'), reason);
+    document.getElementById('replay-btn').classList.add('show');
+    setStrip(humanWon?'Vous avez gagné 🎉':(winner<0?'Match nul':'Partie perdue'), humanWon?'mine':'theirs');
+  });
+}
+
+function sendResult(outcome, reason){
+  if(resultSent) return; resultSent=true;
+  var msg={type:'mindspille', source:'domino-ai', event:'practice_over', game:'domino', result:outcome, reason:reason||'normal', difficulty:DIFFICULTY};
+  try{ window.parent.postMessage(msg,'*'); }catch(e){}
+}
+
+/* ══════════════════════════════════════════
+   TOAST / FLASH / CONFETTIS
+══════════════════════════════════════════ */
+function showToast(emoji,title,sub,delay,cb){
+  var el=document.getElementById('toast');
+  document.getElementById('toast-emoji').textContent=emoji;
+  document.getElementById('toast-title').textContent=title;
+  document.getElementById('toast-sub').textContent=sub;
+  el.style.cssText='display:block;opacity:0;transform:translate(-50%,-50%) scale(0.8);transition:none;';
+  setTimeout(function(){ el.style.transition='all 0.35s cubic-bezier(0.175,0.885,0.32,1.275)'; el.style.opacity='1'; el.style.transform='translate(-50%,-50%) scale(1)'; },20);
+  setTimeout(function(){ el.style.opacity='0'; el.style.transform='translate(-50%,-50%) scale(0.85)'; setTimeout(function(){ el.style.display='none'; if(cb) cb(); },300); }, delay);
+}
+var flashT;
+function showFlash(msg){
+  var el=document.getElementById('flash'); el.textContent=msg; el.classList.add('show');
+  clearTimeout(flashT); flashT=setTimeout(function(){ el.classList.remove('show'); },1600);
+}
+
+var confettiCanvas=document.getElementById('confetti-canvas'), confettiCtx=confettiCanvas.getContext('2d'), confettiParts=[], confettiActive=false;
+function sizeConfetti(){ confettiCanvas.width=confettiCanvas.offsetWidth; confettiCanvas.height=confettiCanvas.offsetHeight; }
+function createConfetti(){
+  sizeConfetti();
+  var colors=['#fbbf24','#f59e0b','#ffffff','#e74c3c','#818cf8','#c084fc','#34d399'], shapes=['circle','square','triangle'];
+  for(var i=0;i<170;i++) confettiParts.push({x:confettiCanvas.width/2,y:confettiCanvas.height*0.4,vx:(Math.random()-.5)*22,vy:(Math.random()-.5)*22-6,color:colors[(Math.random()*colors.length)|0],shape:shapes[(Math.random()*shapes.length)|0],size:Math.random()*10+5,rotation:Math.random()*360,rotSpeed:(Math.random()-.5)*12,gravity:0.32,drag:0.985,life:1.0});
+  confettiActive=true;
+}
+function updateConfetti(){
+  if(!confettiActive) return;
+  confettiCtx.clearRect(0,0,confettiCanvas.width,confettiCanvas.height); var any=false;
+  for(var i=confettiParts.length-1;i>=0;i--){
+    var p=confettiParts[i]; p.x+=p.vx; p.y+=p.vy; p.vy+=p.gravity; p.vx*=p.drag; p.vy*=p.drag; p.rotation+=p.rotSpeed; p.life-=0.004;
+    if(p.life>0 && p.y<confettiCanvas.height+60){
+      any=true; confettiCtx.save(); confettiCtx.translate(p.x,p.y); confettiCtx.rotate(p.rotation*Math.PI/180); confettiCtx.globalAlpha=Math.max(0,p.life); confettiCtx.fillStyle=p.color;
+      if(p.shape==='circle'){ confettiCtx.beginPath(); confettiCtx.arc(0,0,p.size/2,0,Math.PI*2); confettiCtx.fill(); }
+      else if(p.shape==='square'){ confettiCtx.fillRect(-p.size/2,-p.size/2,p.size,p.size); }
+      else { confettiCtx.beginPath(); confettiCtx.moveTo(0,-p.size/2); confettiCtx.lineTo(p.size/2,p.size/2); confettiCtx.lineTo(-p.size/2,p.size/2); confettiCtx.closePath(); confettiCtx.fill(); }
+      confettiCtx.restore();
+    }
+  }
+  if(!any){ confettiActive=false; confettiParts=[]; confettiCtx.clearRect(0,0,confettiCanvas.width,confettiCanvas.height); }
+}
+(function loop(){ requestAnimationFrame(loop); updateConfetti(); })();
+
+/* ══════════════════════════════════════════
+   BOUTONS UI
+══════════════════════════════════════════ */
+function showAct(label,fn){ var b=document.getElementById('act-btn'); b.textContent=label; b.classList.add('show'); b.onclick=fn; }
+function hideAct(){ var b=document.getElementById('act-btn'); b.classList.remove('show'); b.onclick=null; }
+function hideLoading(){ var l=document.getElementById('loading'); if(l){ l.style.opacity='0'; setTimeout(function(){ l.style.display='none'; },500); } }
+
+document.getElementById('boneyard').addEventListener('click',function(){
+  if(this.classList.contains('can-draw')) humanDrawStep();
+});
+document.getElementById('btn-sound').addEventListener('click',function(){
+  soundOn=!soundOn; this.textContent=soundOn?'🔊':'🔇';
+  if(soundOn) beep(440,0.08,'sine',0.06);
+});
+document.getElementById('replay-btn').addEventListener('click',function(){
+  this.classList.remove('show');
+  document.getElementById('loading').style.display='flex';
+  document.getElementById('loading').style.opacity='1';
+  document.getElementById('loading').querySelector('p').textContent='NOUVELLE PARTIE...';
+  setTimeout(function(){ newGame(true); }, 400);
+});
+
+/* Bandeau bas : conserve le prompt humain à jour après pioche */
+window.addEventListener('resize', function(){ sizeConfetti(); });
+
+/* ══════════════════════════════════════════
+   BOOT
+══════════════════════════════════════════ */
+if(BET_AMOUNT>0){
+  var bb=document.getElementById('betBadge');
+  bb.textContent='Mise : '+BET_AMOUNT+' '+CURRENCY; bb.style.display='block';
+}
+function boot(){ sizeConfetti(); newGame(false); }
+if(document.readyState==='complete'||document.readyState==='interactive') setTimeout(boot,60);
+else document.addEventListener('DOMContentLoaded', boot);
+
+})();
+</script>
+</body>
+</html>

@@ -2041,6 +2041,8 @@ app.get(['/penalty', '/penalty.html', '/penalty_shootout.html', '/penalty-online
 app.get(['/penalty-ai', '/penalty_ai.html', '/penalty-solo', '/penalty-entrainement', '/penalty-ia'], serveSmart(['penalty_ai.html', 'penalty-ai.html'], true));
 app.get(['/echecs', '/echecs.html', '/echecs-online.html', '/echecs_multi.html', '/chess', '/chess.html', '/chess-online.html'], serveSmart(['echecs_multi.html', 'echecs.html', 'echecs-online.html']));
 app.get(['/echecs-ai', '/echecs_ai.html', '/echecs-solo', '/echecs-entrainement', '/echecs-ia', '/chess-ai', '/chess_ai.html', '/chess-solo', '/chess-ia'], serveSmart(['echecs_ai.html', 'echecs-ai.html']));
+app.get(['/domino', '/domino.html', '/domino-online.html', '/domino_multi.html', '/dominos'], serveSmart(['domino_multi.html', 'domino.html', 'domino-online.html', 'domino_ai.html']));
+app.get(['/domino-ai', '/domino_ai.html', '/domino-solo', '/domino-entrainement', '/domino-practice', '/domino-ia', '/dominos-ai'], serveSmart(['domino_ai.html', 'domino-ai.html']));
 
 // Moteur d'échecs partagé : servi depuis la même origine (pages 3D + Worker IA).
 app.get(['/echecs-engine.js', '/chess-engine.js'], (req, res) => {
