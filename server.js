@@ -1391,7 +1391,9 @@ function scheduleChifoumiReveal(croom, roomId) {
 const LUDO_TURN_DURATION = 30 * 1000;
 const LUDO_GRACE_DURATION = 60 * 1000;
 const LUDO_FINISH = 57;
-const LUDO_START_OFFSET = { 1: 0, 2: 26 };
+// Absolute cells match the 15x15 board artwork: slot 1 uses the yellow
+// start (cell 39), while slot 2 uses the blue start (cell 26).
+const LUDO_START_OFFSET = { 1: 39, 2: 26 };
 const LUDO_SAFE_CELLS = new Set([0, 8, 13, 21, 26, 34, 39, 47]);
 
 function createLudoState() {
