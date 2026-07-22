@@ -587,7 +587,23 @@ async function verifyDatabaseGameForJoin(socket, gameId, gameName, player, bet) 
 
 // Limiteur HTTP anti brute-force / credential stuffing sur l'authentification
 function authRateLimit(req, res, next) {
-  if (!rateLimit('auth:' + clientIp(req), 12, 5 * 60 * 1000)) {
+  const accessToken = req.body && req.body.supabaseAccessToken;
+  // Mobile carriers commonly place many customers behind the same public IP.
+  // Limiting every authenticated player only by IP made a second player fail
+  // to open a game after a few retries (login -> register -> login can already
+  // consume three requests). A valid Supabase session is rate-limited by its
+  // token digest, while the IP ceiling remains as a coarse abuse guard.
+  if (typeof accessToken === 'string' && accessToken.length >= 20 && accessToken.length <= 4096) {
+    const tokenKey = supabaseTokenDigest(accessToken);
+    if (!rateLimit('auth-token:' + tokenKey, 30, 5 * 60 * 1000) ||
+        !rateLimit('auth-ip:' + clientIp(req), 180, 5 * 60 * 1000)) {
+      return res.status(429).json({ error: 'Trop de tentatives. Réessayez dans quelques minutes.' });
+    }
+    return next();
+  }
+  // Legacy/local authentication has no independently verified Supabase
+  // identity, so it keeps the stricter IP limit.
+  if (!rateLimit('auth-legacy:' + clientIp(req), 12, 5 * 60 * 1000)) {
     return res.status(429).json({ error: 'Trop de tentatives. Réessayez dans quelques minutes.' });
   }
   next();
@@ -798,7 +814,20 @@ function requireAuth(req, res, next) {
   const h = req.headers['authorization'] || '';
   if (!h.startsWith('Bearer ')) return res.status(401).json({ error: 'Token manquant' });
   try {
-    const userId = jwt.verify(h.slice(7), JWT_SECRET).userId;
+    const payload = jwt.verify(h.slice(7), JWT_SECRET);
+    const userId = payload && payload.userId;
+    if (!isUuid(userId)) return res.status(401).json({ error: 'Token invalide' });
+    // Render can restart between /auth/login and /game/join. Restore the user
+    // only from fields signed by this server, exactly as Socket.io already
+    // does, so a healthy game is not rejected because an in-memory Map reset.
+    if (!users.has(userId) && isUuid(payload.supabaseId)) {
+      users.set(userId, {
+        id: userId,
+        username: safeName(payload.username, 'Joueur'),
+        supabaseId: payload.supabaseId
+      });
+      console.info('[auth] restored signed Supabase user for HTTP request');
+    }
     if (!users.has(userId)) return res.status(401).json({ error: 'Session expirée. Reconnectez-vous.' });
     req.userId = userId;
     next();
@@ -920,10 +949,18 @@ function authenticateSocketToken(socket, token) {
 io.use((socket, next) => {
   const forwarded = String(socket.handshake.headers['x-forwarded-for'] || '').split(',')[0].trim();
   const ip = forwarded || socket.handshake.address || 'unknown';
-  if (!rateLimit('socket-connect:' + ip, 60, 60000)) return next(new Error('rate_limited'));
   const token = socket.handshake.auth && socket.handshake.auth.token;
-  if (!token) return next();
-  if (!authenticateSocketToken(socket, token)) return next(new Error('unauthorized'));
+  if (!token) {
+    if (!rateLimit('socket-anonymous:' + ip, 30, 60000)) return next(new Error('rate_limited'));
+    return next();
+  }
+  if (!authenticateSocketToken(socket, token)) {
+    if (!rateLimit('socket-invalid:' + ip, 20, 60000)) return next(new Error('rate_limited'));
+    return next(new Error('unauthorized'));
+  }
+  // A shared carrier IP must not prevent two legitimate authenticated players
+  // from joining the same room. Limit the signed server account instead.
+  if (!rateLimit('socket-user:' + socket.userId, 30, 60000)) return next(new Error('rate_limited'));
   next();
 });
 
