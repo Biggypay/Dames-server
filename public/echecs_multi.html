@@ -148,6 +148,7 @@ body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%
   </div>
   <div class="btns">
     <button class="btn" id="btn-cam">⟳ Auto</button>
+    <button class="btn" id="btn-lock" title="Figer le plateau">🔓</button>
   </div>
 </div>
 
@@ -1123,6 +1124,7 @@ function updateConfetti(){
    CONTRÔLES SOURIS / TOUCH
 ══════════════════════════════════════════ */
 var raycaster=new THREE.Raycaster(), mouse=new THREE.Vector2();
+var boardLocked=false;
 var isDragging=false, dragMoved=false, lastTouchDist=0, lastMX=0, lastMY=0;
 
 function getPointerCell(cx,cy){
@@ -1143,7 +1145,7 @@ renderer.domElement.addEventListener('mousemove',function(e){
   if(!isDragging) return;
   var dx=e.clientX-lastMX, dy=e.clientY-lastMY;
   if(Math.abs(dx)+Math.abs(dy)>8) dragMoved=true;
-  if(!topViewAnimating){ camTheta-=dx*0.009; camPhi=Math.max(0.28,Math.min(1.45,camPhi-dy*0.007)); setCam(); }
+  if(!topViewAnimating && !boardLocked){ camTheta-=dx*0.009; camPhi=Math.max(0.28,Math.min(1.45,camPhi-dy*0.007)); setCam(); }
   lastMX=e.clientX; lastMY=e.clientY;
 });
 renderer.domElement.addEventListener('mouseup',function(e){
@@ -1161,7 +1163,7 @@ renderer.domElement.addEventListener('touchmove',function(e){
   if(e.touches.length===1 && isDragging){
     var dx=e.touches[0].clientX-lastMX, dy=e.touches[0].clientY-lastMY;
     if(Math.abs(dx)+Math.abs(dy)>15) dragMoved=true;
-    if(!topViewAnimating){ camTheta-=dx*0.010; camPhi=Math.max(0.28,Math.min(1.45,camPhi-dy*0.008)); setCam(); }
+    if(!topViewAnimating && !boardLocked){ camTheta-=dx*0.010; camPhi=Math.max(0.28,Math.min(1.45,camPhi-dy*0.008)); setCam(); }
     lastMX=e.touches[0].clientX; lastMY=e.touches[0].clientY;
   }else if(e.touches.length===2){
     var dx=e.touches[0].clientX-e.touches[1].clientX, dy=e.touches[0].clientY-e.touches[1].clientY;
@@ -1216,6 +1218,12 @@ document.getElementById('btn-topview').addEventListener('click',function(){
   document.getElementById('btn-cam').classList.remove('active-cam');
   document.getElementById('btn-topview').classList.toggle('active-top', camViewIdx!==0);
 });
+document.getElementById('btn-lock').addEventListener('click',function(){
+  boardLocked=!boardLocked;
+  if(boardLocked){ autoRotate=false; document.getElementById('btn-cam').classList.remove('active-cam'); }
+  this.classList[boardLocked?'add':'remove']('active-cam');
+  this.textContent=boardLocked?'🔒':'🔓';
+});
 document.getElementById('btn-cam').addEventListener('click',function(){
   autoRotate=!autoRotate;
   document.getElementById('btn-cam').classList[autoRotate?'add':'remove']('active-cam');
@@ -1227,7 +1235,7 @@ document.getElementById('btn-cam').addEventListener('click',function(){
 var hlPulseT=0, lastMoveAlpha=0, lastMoveDir=1;
 function renderLoop(){
   requestAnimationFrame(renderLoop);
-  if(autoRotate && !topViewAnimating){ camTheta+=0.004; setCam(); }
+  if(autoRotate && !topViewAnimating && !boardLocked){ camTheta+=0.004; setCam(); }
   hlPulseT+=0.04;
   for(var i=0; i<hlGroup.children.length; i++) hlGroup.children[i].material.opacity=0.30+Math.sin(hlPulseT*2)*0.22;
   for(var i=0; i<moveHlGroup.children.length; i++) moveHlGroup.children[i].material.opacity=0.60+Math.sin(hlPulseT*2.8+i)*0.22;
