@@ -158,6 +158,10 @@ var P1_NAME = P.get('p1Name') || 'Joueur 1';
 var P2_NAME = P.get('p2Name') || 'Joueur 2';
 var BET_AMOUNT = parseFloat(P.get('bet') || '0');
 var CURRENCY = P.get('currency') || 'HTG';
+/* Mode spectateur (lecture seule) : activé par ?spectate=1. Le spectateur ne
+   rejoint jamais de place de joueur, ne peut jamais jouer et ne fait qu'observer
+   le plateau en temps réel. Tout le chemin de code « joueur » reste intact. */
+var IS_SPECTATOR = (P.get('spectate') === '1' || P.get('spectator') === '1');
 
 if(!ROOM_ID && P1_ID && P2_ID){
   var _ids = [P1_ID, P2_ID].sort();
@@ -180,6 +184,20 @@ if (BET_AMOUNT > 0) {
     betBadge.textContent = 'Mise : ' + BET_AMOUNT + ' ' + CURRENCY;
     betBadge.style.display = 'block';
   }
+}
+
+// Habillage spectateur : badge « en direct », libellé, et suppression de
+// l'astuce « Tap = jouer » (il ne joue pas).
+if(IS_SPECTATOR){
+  try {
+    var mancheLbl = document.querySelector('.manche-lbl');
+    if(mancheLbl) mancheLbl.innerHTML = '👁 Spectateur · <span style="color:#f87171">EN DIRECT</span>';
+    var hintEl = document.getElementById('hint');
+    if(hintEl) hintEl.textContent = '👌 Pince = zoom · Glisse = tourner · Vous regardez en direct';
+    var nameHuman = document.getElementById('name-human'); if(nameHuman) nameHuman.textContent = 'Blancs';
+    var nameAi = document.getElementById('name-ai'); if(nameAi) nameAi.textContent = 'Rouges';
+    var loadingP = document.querySelector('#loading p'); if(loadingP) loadingP.textContent = 'CONNEXION AU DIRECT…';
+  } catch(e){}
 }
 
 var socket = null;
@@ -217,12 +235,19 @@ function hideLoading(){
 
 function initSocket(){
   var lt = document.querySelector('#loading p');
-  if(lt) lt.textContent='ROOM: '+(ROOM_ID||'MANQUANT')+' | SLOT: '+MY_SLOT;
+  if(lt) lt.textContent = IS_SPECTATOR ? 'CONNEXION AU DIRECT…' : ('ROOM: '+(ROOM_ID||'MANQUANT')+' | SLOT: '+MY_SLOT);
 
   socket = io({ transports:['websocket','polling'], reconnection:true, auth:{ token:P.get('token')||'' } });
 
   socket.on('connect', function(){
     document.getElementById('reconn-bar').classList.remove('show');
+    if(IS_SPECTATOR){
+      // Protocole spectateur autoritatif du serveur : on rejoint par l'ID de la
+      // partie (base de données). Le serveur nous place dans la room en lecture
+      // seule et diffuse l'état + les coups en direct.
+      socket.emit('spectator_join', { gameId: GAME_ID });
+      return;
+    }
     socket.emit('dames_join', {
       room: ROOM_ID, gameId: GAME_ID, player: MY_SLOT, supabaseId: MY_SUPABASE_ID, name: MY_NAME, bet: BET_AMOUNT, currency: CURRENCY
     });
@@ -249,6 +274,55 @@ function initSocket(){
 
   socket.on('disconnect', function(){
     if(!gameOver) document.getElementById('reconn-bar').classList.add('show');
+  });
+
+  /* Mode spectateur : le serveur répond à spectator_join par spectator_state
+     (instantané complet). Ensuite, comme le socket est placé dans la room, le
+     spectateur reçoit dames_move / dames_turn_start / dames_state_sync (toutes
+     les 5 s) / game:result — le plateau bouge donc en temps réel. */
+  socket.on('spectator:error', function(err){
+    if(!IS_SPECTATOR) return;
+    var ltn = document.querySelector('#loading p');
+    if(ltn) ltn.textContent = (err && err.message) || "Ce match n'est plus disponible en direct.";
+    window.parent.postMessage({ type:'spectator:error', game:'dames', gameId:GAME_ID, message:(err&&err.message)||'' }, '*');
+  });
+
+  socket.on('spectator_state', function(data){
+    if(!IS_SPECTATOR || !data) return;
+    // Le serveur diffuse les coups/synchros avec l'ID interne de la room (pas
+    // l'UUID de la partie) : on aligne ROOM_ID dessus pour que les gardes
+    // data.room === ROOM_ID des handlers dames_state_sync/ack passent.
+    if(data.room) ROOM_ID = data.room;
+    var st = data.state || {};
+    var players = data.players || {};
+    hideLoading();
+    MY_NAME = (players[1] && players[1].name) || 'Blancs';
+    OP_NAME = (players[2] && players[2].name) || 'Rouges';
+    if(BET_AMOUNT <= 0 && data.betAmount > 0){
+      var bb = document.getElementById('betBadge');
+      if(bb){ bb.textContent = 'Mise : ' + data.betAmount + ' ' + (data.currency||'HTG'); bb.style.display='block'; }
+    }
+    gameReady = true;
+    gameOver = (st.status === 'finished' || data.status === 'finished');
+    var sBoard = null;
+    try { sBoard = JSON.parse(st.boardState); } catch(e){}
+    if(sBoard && sBoard.length === BS){
+      board = sBoard;
+      if(typeof st.version === 'number') stateVersion = st.version;
+      if(st.currentPlayer !== undefined && st.currentPlayer !== null) currentPlayer = st.currentPlayer;
+      selectedPiece = null; validMoves = []; moveSequence = []; isSequenceActive = false;
+      currentTurnCaptures = []; isProcessing = false;
+      var wc=0, rc=0;
+      for(var r=0;r<BS;r++) for(var c=0;c<BS;c++) if(board[r][c]){ if(board[r][c].player===0) wc++; else rc++; }
+      capturedBy = [Math.max(0,20-rc), Math.max(0,20-wc)];
+      document.getElementById('score-w').textContent = wc;
+      document.getElementById('score-r').textContent = rc;
+      syncPieces(); clearHighlights(); clearLastMove(); updateCapturedDisplay();
+      if(st.lastMove && st.lastMove.from) showLastMoveOrigin(st.lastMove.from.row, st.lastMove.from.col);
+      stopTimer(); stopGraceTimer();
+      if(st.turnPlayer && st.status === 'playing') applySyncTimers(st);
+    }
+    updUI();
   });
 
   socket.on('dames_start', function(data){
@@ -323,7 +397,7 @@ function initSocket(){
   });
 
   socket.on('dames_move', function(data){
-    if(data.player === MY_SLOT) return;
+    if(!IS_SPECTATOR && data.player === MY_SLOT) return;
     if(typeof data.version === 'number'){
       if(data.version <= stateVersion) return;                            // doublon / déjà appliqué
       if(data.version > stateVersion + 1){ requestStateSync(); return; }  // coup manqué : resynchro
@@ -389,6 +463,7 @@ function initSocket(){
 
   socket.on('game:over', function(d){
     if(gameOver) return; hideLoading(); stopForfeitCountdown();
+    if(IS_SPECTATOR){ handleSpectatorEnd(d); return; }
     if(d.result === 'cancel'){
       gameOver=true; stopTimer(); stopGraceTimer();
       showToast('⚠️','Partie annulée','Déconnexion.\nPénalité appliquée.', 4000, function(){ sendResult('cancel', 'both_disconnected'); });
@@ -401,10 +476,26 @@ function initSocket(){
   socket.on('game:result', function(d){
     if(d.postMessage && !gameOver){
       hideLoading();
+      if(IS_SPECTATOR){ handleSpectatorEnd(d.postMessage); return; }
       var iWon = d.postMessage.result === 'win';
       handleGameEnd(iWon ? MY_PLAYER : 1-MY_PLAYER, 'forfeit');
     }
   });
+}
+
+/* Fin de partie côté spectateur : on affiche simplement le vainqueur, sans
+   aucun règlement (sendResult) ni logique « ma victoire / ma défaite ». */
+function handleSpectatorEnd(pm){
+  if(gameOver || !pm) return;
+  stopTimer(); stopGraceTimer(); stopForfeitCountdown(); gameOver = true;
+  if(pm.winner === 'draw' || pm.winnerSlot === 0 || pm.reason === 'draw'){
+    showToast('🤝','Match terminé','Match nul.', 5000, null);
+    return;
+  }
+  var whiteWon = (pm.winner === 'player1' || pm.winnerSlot === 1);
+  var winnerName = whiteWon ? (MY_NAME || 'Blancs') : (OP_NAME || 'Rouges');
+  createConfetti();
+  showToast(whiteWon ? '⚪' : '🔴', 'Match terminé', winnerName + ' remporte la partie.', 5000, null);
 }
 
 function applyPendingTimer(){
@@ -459,7 +550,7 @@ function adoptServerState(serverBoard, data){
   stopTimer(); stopGraceTimer();
   if(data.turnPlayer && data.status === 'playing') applySyncTimers(data);
   updUI();
-  showToast('🔄','Resynchronisé','Le plateau a été recalé sur le serveur.', 1600, null);
+  if(!IS_SPECTATOR) showToast('🔄','Resynchronisé','Le plateau a été recalé sur le serveur.', 1600, null);
 }
 
 function requestStateSync(){
@@ -901,8 +992,9 @@ function updateForcedHint(){
    JOUER AVEC CLIC DIRECT SUR CIBLE
 ═════════════════════════════════════════════════════ */
 function onCellClick(row, col){
+  if(IS_SPECTATOR) return;               // spectateur : lecture seule, aucun coup
   if(!gameReady || gameOver || isProcessing) return;
-  if(currentPlayer !== MY_PLAYER) return; 
+  if(currentPlayer !== MY_PLAYER) return;
 
   var result = getAllValidMoves(currentPlayer);
 
@@ -1035,7 +1127,7 @@ function afterPlayerStep(to, mesh, originRow, originCol){
       isSequenceActive = false;
       var nextPlayer = 1 - currentPlayer;
 
-      if(socket){
+      if(socket && !IS_SPECTATOR){
         // Émis même hors connexion : Socket.io met le coup en file et
         // l'enverra à la reconnexion, au lieu de le perdre en silence.
         socket.emit('dames_move', {
