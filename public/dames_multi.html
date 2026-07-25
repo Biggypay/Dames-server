@@ -242,7 +242,10 @@ function initSocket(){
   socket.on('connect', function(){
     document.getElementById('reconn-bar').classList.remove('show');
     if(IS_SPECTATOR){
-      socket.emit('dames_spectate', { room: ROOM_ID });
+      // Protocole spectateur autoritatif du serveur : on rejoint par l'ID de la
+      // partie (base de données). Le serveur nous place dans la room en lecture
+      // seule et diffuse l'état + les coups en direct.
+      socket.emit('spectator_join', { gameId: GAME_ID });
       return;
     }
     socket.emit('dames_join', {
@@ -273,32 +276,40 @@ function initSocket(){
     if(!gameOver) document.getElementById('reconn-bar').classList.add('show');
   });
 
-  /* Mode spectateur : état initial du plateau. Ensuite le spectateur reçoit,
-     comme tout membre de la room, dames_move / dames_turn_start /
-     dames_state_sync (toutes les 5 s) / game:result — donc le plateau bouge en
-     temps réel sans aucune action de sa part. */
-  socket.on('dames_spectate_state', function(data){
+  /* Mode spectateur : le serveur répond à spectator_join par spectator_state
+     (instantané complet). Ensuite, comme le socket est placé dans la room, le
+     spectateur reçoit dames_move / dames_turn_start / dames_state_sync (toutes
+     les 5 s) / game:result — le plateau bouge donc en temps réel. */
+  socket.on('spectator:error', function(err){
+    if(!IS_SPECTATOR) return;
+    var ltn = document.querySelector('#loading p');
+    if(ltn) ltn.textContent = (err && err.message) || "Ce match n'est plus disponible en direct.";
+    window.parent.postMessage({ type:'spectator:error', game:'dames', gameId:GAME_ID, message:(err&&err.message)||'' }, '*');
+  });
+
+  socket.on('spectator_state', function(data){
     if(!IS_SPECTATOR || !data) return;
-    if(data.notFound){
-      var ltn = document.querySelector('#loading p');
-      if(ltn) ltn.textContent = "Ce match n'est plus en cours.";
-      return;
-    }
+    // Le serveur diffuse les coups/synchros avec l'ID interne de la room (pas
+    // l'UUID de la partie) : on aligne ROOM_ID dessus pour que les gardes
+    // data.room === ROOM_ID des handlers dames_state_sync/ack passent.
+    if(data.room) ROOM_ID = data.room;
+    var st = data.state || {};
+    var players = data.players || {};
     hideLoading();
-    MY_NAME = data.player1Name || 'Blancs';
-    OP_NAME = data.player2Name || 'Rouges';
+    MY_NAME = (players[1] && players[1].name) || 'Blancs';
+    OP_NAME = (players[2] && players[2].name) || 'Rouges';
     if(BET_AMOUNT <= 0 && data.betAmount > 0){
       var bb = document.getElementById('betBadge');
       if(bb){ bb.textContent = 'Mise : ' + data.betAmount + ' ' + (data.currency||'HTG'); bb.style.display='block'; }
     }
     gameReady = true;
-    gameOver = (data.status === 'finished');
+    gameOver = (st.status === 'finished' || data.status === 'finished');
     var sBoard = null;
-    try { sBoard = JSON.parse(data.boardState); } catch(e){}
+    try { sBoard = JSON.parse(st.boardState); } catch(e){}
     if(sBoard && sBoard.length === BS){
       board = sBoard;
-      if(typeof data.version === 'number') stateVersion = data.version;
-      if(data.currentPlayer !== undefined && data.currentPlayer !== null) currentPlayer = data.currentPlayer;
+      if(typeof st.version === 'number') stateVersion = st.version;
+      if(st.currentPlayer !== undefined && st.currentPlayer !== null) currentPlayer = st.currentPlayer;
       selectedPiece = null; validMoves = []; moveSequence = []; isSequenceActive = false;
       currentTurnCaptures = []; isProcessing = false;
       var wc=0, rc=0;
@@ -307,9 +318,9 @@ function initSocket(){
       document.getElementById('score-w').textContent = wc;
       document.getElementById('score-r').textContent = rc;
       syncPieces(); clearHighlights(); clearLastMove(); updateCapturedDisplay();
-      if(data.lastMove && data.lastMove.from) showLastMoveOrigin(data.lastMove.from.row, data.lastMove.from.col);
+      if(st.lastMove && st.lastMove.from) showLastMoveOrigin(st.lastMove.from.row, st.lastMove.from.col);
       stopTimer(); stopGraceTimer();
-      if(data.turnPlayer && data.status === 'playing') applySyncTimers(data);
+      if(st.turnPlayer && st.status === 'playing') applySyncTimers(st);
     }
     updUI();
   });
