@@ -2446,6 +2446,32 @@ io.on('connection', (socket) => {
     // ignored: only the authoritative move engine can finish a match.
   });
 
+  // ── SPECTATEUR DAMES (lecture seule, totalement additif) ────────────────
+  // Un spectateur rejoint la room Socket.io SANS jamais occuper une place de
+  // joueur : il ne peut donc pas jouer (les handlers de coup vérifient
+  // players[slot].socketId), ne déclenche aucun timer d'abandon (la
+  // déconnexion ne parcourt que droom.players) et n'a aucun effet sur le
+  // règlement. On lui envoie l'état courant ; ensuite, comme il est dans la
+  // room, tous les broadcasts existants (dames_move, dames_turn_start,
+  // dames_state_sync périodique toutes les 5 s, game:result) lui parviennent
+  // en temps réel — sans toucher au chemin de code des joueurs.
+  socket.on('dames_spectate', ({ room } = {}) => {
+    if (!validRoom(room)) return;
+    if (!socketAllow(socket.id, 'dspectate', 10, 15000)) return;
+    const droom = damesRooms.get(room);
+    if (!droom) return socket.emit('dames_spectate_state', { room, notFound: true });
+    socket.join(room);
+    const snap = damesSnapshot(droom);
+    socket.emit('dames_spectate_state', {
+      ...snap,
+      spectator: true,
+      player1Name: droom.players[1]?.name || 'Joueur 1',
+      player2Name: droom.players[2]?.name || 'Joueur 2',
+      betAmount: droom.betAmount || 0,
+      currency: droom.currency || 'HTG'
+    });
+  });
+
   // ══════════════════════════════════════════════════════
   //  ÉCHECS MULTIJOUEUR (moteur FIDE autoritatif serveur)
   // ══════════════════════════════════════════════════════
