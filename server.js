@@ -553,7 +553,7 @@ async function loadDatabaseGameForJoin(gameId) {
     const timeout = setTimeout(() => controller.abort(), 5000);
     try {
       const response = await fetch(
-        SUPABASE_URL + '/rest/v1/games?id=eq.' + encodeURIComponent(gameId) + '&select=id,game_type,player1_id,player2_id,bet_amount,status',
+        SUPABASE_URL + '/rest/v1/games?id=eq.' + encodeURIComponent(gameId) + '&select=id,game_type,player1_id,player2_id,bet_amount,status,is_ai_opponent',
         { headers: serverSupabaseHeaders(), signal: controller.signal }
       );
       if (!response.ok) throw new Error('database_game_lookup_' + response.status);
@@ -597,6 +597,130 @@ async function verifyDatabaseGameForJoin(socket, gameId, gameName, player, bet) 
   } catch {
     return { ok: false, message: 'Validation serveur temporairement indisponible.' };
   }
+}
+
+function findLiveRoomByDatabaseGameId(gameId) {
+  if (!isUuid(gameId)) return null;
+  for (const [gameName, rooms] of Object.entries(ROOM_MAPS)) {
+    for (const [roomId, room] of rooms.entries()) {
+      if (room?.databaseGameId !== gameId) continue;
+      if (room.status !== 'playing') return null;
+      if (!room.players?.[1]?.supabaseId || !room.players?.[2]?.supabaseId) return null;
+      if (room.players[1].supabaseId === room.players[2].supabaseId) return null;
+      return { gameName, roomId, room };
+    }
+  }
+  return null;
+}
+
+function spectatorRoomSnapshot(gameName, room) {
+  const common = {
+    gameId: room.databaseGameId,
+    gameType: DB_GAME_TYPES[gameName],
+    serverGame: gameName,
+    room: room.id,
+    status: room.status,
+    betAmount: Number(room.betAmount || 0),
+    currency: room.currency || 'HTG',
+    serverTime: Date.now(),
+    players: {
+      1: { name: safeName(room.players?.[1]?.name), connected: room.players?.[1]?.connected === true },
+      2: { name: safeName(room.players?.[2]?.name), connected: room.players?.[2]?.connected === true }
+    }
+  };
+
+  if (gameName === 'dames') return { ...common, state: damesSnapshot(room) };
+  if (gameName === 'echecs') return { ...common, state: echecsSnapshot(room) };
+  if (gameName === 'tictactoe') {
+    return {
+      ...common,
+      state: {
+        gameState: room.gameState || null,
+        totalManches: room.totalManches || 5,
+        turnPlayer: room.turnPlayer,
+        turnStartTime: room.turnStartTime,
+        graceStartTime: room.graceStartTime,
+        turnDuration: TURN_DURATION,
+        graceDuration: GRACE_DURATION
+      }
+    };
+  }
+  if (gameName === 'quoridor') {
+    return {
+      ...common,
+      state: {
+        gameState: room.gameState || null,
+        currentSlot: room.currentSlot,
+        turnPlayer: room.turnPlayer,
+        turnStartTime: room.turnStartTime,
+        graceStartTime: room.graceStartTime,
+        turnDuration: TURN_DURATION,
+        graceDuration: GRACE_DURATION
+      }
+    };
+  }
+  if (gameName === 'penalty') {
+    return {
+      ...common,
+      state: {
+        round: room.currentRound,
+        scores: { p1: Number(room.scores?.p1 || 0), p2: Number(room.scores?.p2 || 0) },
+        phase: 'choosing',
+        turnStartTime: room.turnStartTime,
+        graceStartTime: room.graceStartTime,
+        turnDuration: PENALTY_TURN_DURATION,
+        graceDuration: PENALTY_GRACE_DURATION
+      }
+    };
+  }
+  if (gameName === 'chifoumi') {
+    return {
+      ...common,
+      state: {
+        scores: Array.isArray(room.scores) ? [...room.scores] : [0, 0],
+        currentRound: room.currentRound,
+        history: Array.isArray(room.history) ? room.history.map(item => ({ ...item })) : [],
+        revealPending: room.revealPending === true,
+        revealStartTime: room.revealStartTime || null,
+        revealDuration: CHIFOUMI_REVEAL_DURATION,
+        turnStartTime: room.turnStartTime,
+        graceStartTime: room.graceStartTime,
+        turnDuration: CHIFOUMI_TURN_DURATION,
+        graceDuration: CHIFOUMI_GRACE_DURATION
+      }
+    };
+  }
+  if (gameName === 'ludo') return { ...common, state: ludoPublicState(room) };
+  return null;
+}
+
+function authoritativeRoomById(roomId) {
+  for (const rooms of Object.values(ROOM_MAPS)) {
+    const room = rooms.get(roomId);
+    if (room) return room;
+  }
+  return null;
+}
+
+function spectatorCountForRoom(roomId) {
+  const members = io.sockets.adapter.rooms.get(roomId);
+  if (!members) return 0;
+  const room = authoritativeRoomById(roomId);
+  const playerSockets = new Set(
+    [room?.players?.[1]?.socketId, room?.players?.[2]?.socketId].filter(Boolean)
+  );
+  let count = 0;
+  for (const socketId of members) {
+    if (!playerSockets.has(socketId)) count++;
+  }
+  return count;
+}
+
+function emitSpectatorCount(roomId, count = spectatorCountForRoom(roomId)) {
+  io.to(roomId).emit('spectator_count', {
+    room: roomId,
+    count: Math.max(0, Number(count) || 0)
+  });
 }
 
 // Limiteur HTTP anti brute-force / credential stuffing sur l'authentification
@@ -1340,6 +1464,17 @@ function resolveChifoumiRound(croom, roomId) {
   croom.history.push({ round: croom.currentRound, choice1, choice2, winnerSlot });
   persistRoomSoon('chifoumi', croom);
 
+  // Public only after both hidden choices have been locked and resolved.
+  // Spectators never receive the private choice events sent to each player.
+  io.to(roomId).emit('chifoumi_round_result', {
+    round: croom.currentRound,
+    choice1,
+    choice2,
+    winnerSlot,
+    scores: [...croom.scores],
+    nextRound: croom.currentRound + 1
+  });
+
   for (const slot of [1, 2]) {
     const player = croom.players[slot];
     if (!player?.socketId) continue;
@@ -1919,6 +2054,7 @@ app.get('/health', (req, res) => {
     penaltyRooms: penaltyRooms.size, chifoumiRooms: chifoumiRooms.size,
     echecsRooms: echecsRooms.size, ludoRooms: ludoRooms.size,
     ludoConfig: { finish: LUDO_FINISH, starts: { yellow: LUDO_START_OFFSET[1], blue: LUDO_START_OFFSET[2] } },
+    spectatorProtocol: { version: 1, event: 'spectator_join', readOnly: true },
     queuedPlayers: [...queue.values()].reduce((total, players) => total + players.length, 0)
   });
 });
@@ -2331,6 +2467,76 @@ io.on('connection', (socket) => {
       return rejectSocket(socket, 'Accès à cette partie refusé.');
     }
     socket.join(gameId);
+  });
+
+  // Spectators join a real server-owned room in read-only mode. They never
+  // occupy a player slot, so every move/result handler keeps rejecting them.
+  // The initial snapshot is sanitised: hidden Penalty/RPS choices are omitted.
+  socket.on('spectator_join', async ({ gameId } = {}) => {
+    if (!authenticatedSocketUser(socket)) {
+      return socket.emit('spectator:error', { code: 'not_authenticated', message: 'Connexion requise pour regarder ce direct.' });
+    }
+    if (!isUuid(gameId) || !socketAllow(socket.id, 'spectator-join', 20, 60000)) {
+      return socket.emit('spectator:error', { code: 'invalid_request', message: 'Direct indisponible.' });
+    }
+
+    let databaseGame;
+    try {
+      databaseGame = await loadDatabaseGameForJoin(gameId);
+    } catch {
+      return socket.emit('spectator:error', { code: 'verification_failed', message: 'Vérification du direct indisponible.' });
+    }
+    if (!databaseGame ||
+        databaseGame.status !== 'in_progress' ||
+        databaseGame.is_ai_opponent === true ||
+        !databaseGame.player1_id ||
+        !databaseGame.player2_id ||
+        databaseGame.player1_id === databaseGame.player2_id) {
+      return socket.emit('spectator:error', { code: 'not_live', message: 'Ce match n’est plus en direct.' });
+    }
+
+    const live = findLiveRoomByDatabaseGameId(gameId);
+    if (!live || DB_GAME_TYPES[live.gameName] !== databaseGame.game_type) {
+      return socket.emit('spectator:error', { code: 'room_not_live', message: 'Le plateau n’est plus disponible en direct.' });
+    }
+    const snapshot = spectatorRoomSnapshot(live.gameName, live.room);
+    if (!snapshot) {
+      return socket.emit('spectator:error', { code: 'unsupported_game', message: 'Ce plateau ne peut pas encore être diffusé.' });
+    }
+
+    if (socket.spectatorRoomId && socket.spectatorRoomId !== live.roomId) {
+      socket.leave(socket.spectatorRoomId);
+    }
+    socket.spectatorRoomId = live.roomId;
+    socket.spectatorGameId = gameId;
+    socket.join(live.roomId);
+    socket.emit('spectator:joined', {
+      gameId,
+      room: live.roomId,
+      gameType: databaseGame.game_type,
+      readOnly: true
+    });
+    socket.emit('spectator_state', snapshot);
+    emitSpectatorCount(live.roomId);
+  });
+
+  socket.on('spectator_leave', () => {
+    const roomId = socket.spectatorRoomId;
+    if (roomId) {
+      socket.leave(roomId);
+      emitSpectatorCount(roomId);
+    }
+    socket.spectatorRoomId = null;
+    socket.spectatorGameId = null;
+  });
+
+  socket.on('disconnecting', () => {
+    const roomId = socket.spectatorRoomId;
+    if (!roomId) return;
+    socket.to(roomId).emit('spectator_count', {
+      room: roomId,
+      count: Math.max(0, spectatorCountForRoom(roomId) - 1)
+    });
   });
 
   // ══════════════════════════════════════════════════════
