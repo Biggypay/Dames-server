@@ -307,6 +307,7 @@ function initSocket(){
       var bar = document.getElementById('reconn-bar');
       bar.textContent = IS_SPECTATOR ? 'DIRECT INTERROMPU · RECONNEXION...' : 'RECONNEXION EN COURS...';
       bar.classList.add('show');
+      if(IS_SPECTATOR) window.parent.postMessage({ type:'spectator:reconnecting', game:'dames', gameId:GAME_ID }, '*');
     }
   });
 
@@ -315,6 +316,17 @@ function initSocket(){
     ROOM_ID = data && data.room ? data.room : ROOM_ID;
     var loadingText = document.querySelector('#loading p');
     if(loadingText) loadingText.textContent = 'DIRECT VALIDÉ · CHARGEMENT DU PLATEAU...';
+    window.parent.postMessage({ type:'spectator:connected', game:'dames', gameId:GAME_ID }, '*');
+  });
+
+  socket.on('spectator_count', function(data){
+    if(!IS_SPECTATOR) return;
+    window.parent.postMessage({
+      type:'spectator:count',
+      game:'dames',
+      gameId:GAME_ID,
+      count:Math.max(0, Number(data && data.count) || 0)
+    }, '*');
   });
 
   socket.on('spectator:error', function(data){
