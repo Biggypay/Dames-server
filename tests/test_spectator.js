@@ -135,6 +135,11 @@ async function main() {
     check('initial authoritative state is returned', initial.gameId === GAME_ID && initial.state?.gameState?.board?.length === 9, initial);
     check('snapshot does not expose player identifiers', !JSON.stringify(initial.players).includes(PLAYER_1) && !JSON.stringify(initial.players).includes(PLAYER_2));
 
+    const resyncPromise = once(spectator, 'spectator_state');
+    spectator.emit('spectator_request_state', { gameId: GAME_ID });
+    const resynced = await resyncPromise;
+    check('spectator can safely resync the read-only board', resynced.gameId === GAME_ID && resynced.state?.gameState?.board?.length === 9, resynced);
+
     spectator.emit('ttt_move', { room: ROOM, player: 1, row: 0, col: 0, symbol: 'X' });
     await sleep(100);
     const unchangedPromise = once(spectator, 'spectator_state');

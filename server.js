@@ -2530,6 +2530,20 @@ io.on('connection', (socket) => {
     socket.spectatorGameId = null;
   });
 
+  // Un spectateur peut redemander un snapshot complet après une coupure ou un
+  // événement manqué. Cette voie reste strictement en lecture seule et ne
+  // permet jamais de rejoindre une place joueur ni d'envoyer un coup.
+  socket.on('spectator_request_state', ({ gameId } = {}) => {
+    if (!socketAllow(socket.id, 'spectator-state', 12, 10000)) return;
+    if (!isUuid(gameId) || socket.spectatorGameId !== gameId || !socket.spectatorRoomId) return;
+    const live = findLiveRoomByDatabaseGameId(gameId);
+    if (!live || live.roomId !== socket.spectatorRoomId) {
+      return socket.emit('spectator:error', { code: 'not_live', message: 'Ce match n’est plus en direct.' });
+    }
+    const snapshot = spectatorRoomSnapshot(live.gameName, live.room);
+    if (snapshot) socket.emit('spectator_state', snapshot);
+  });
+
   socket.on('disconnecting', () => {
     const roomId = socket.spectatorRoomId;
     if (!roomId) return;

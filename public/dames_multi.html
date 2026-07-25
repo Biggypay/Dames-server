@@ -39,6 +39,10 @@ body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%
 
 /* BADGE MISE */
 .bet-badge{font-size:9px;background:rgba(251,191,36,0.15);border:1px solid rgba(251,191,36,0.4);border-radius:99px;padding:2px 8px;color:#fbbf24;font-weight:600;letter-spacing:0.5px;margin-top:2px}
+.spectator-badge{display:none;align-items:center;gap:5px;font-size:9px;background:rgba(56,189,248,0.14);border:1px solid rgba(125,211,252,0.42);border-radius:99px;padding:3px 9px;color:#bae6fd;font-weight:700;letter-spacing:1px;margin-top:2px;text-transform:uppercase}
+.spectator-badge.show{display:inline-flex}
+.spectator-badge-dot{width:6px;height:6px;border-radius:50%;background:#ef4444;box-shadow:0 0 0 3px rgba(239,68,68,.15);animation:urgentPulse 1s infinite alternate}
+body.spectator #force-jump-hint{display:none!important}
 
 .btns{display:flex;gap:7px}
 .btn{background:rgba(255,255,255,0.10);color:#fff;border:1px solid rgba(255,255,255,0.28);border-radius:99px;padding:6px 13px;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;-webkit-tap-highlight-color:transparent}
@@ -101,6 +105,7 @@ body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%
     <div class="score-row"><span class="snum sw" id="score-w">20</span><span class="ssep">vs</span><span class="snum sr" id="score-r">20</span></div>
     <span class="manche-lbl">Dames Multijoueur</span>
     <div class="bet-badge" id="betBadge" style="display:none;"></div>
+    <div class="spectator-badge" id="spectatorBadge"><span class="spectator-badge-dot"></span> Direct · lecture seule</div>
   </div>
   <div class="profile" id="profile-ai">
     <div class="profile-timer-wrap">
@@ -150,8 +155,9 @@ window.onerror=function(msg,url,line,col,err){
    URL PARAMS & RÉSEAU
 ══════════════════════════════════════════ */
 var P = new URLSearchParams(window.location.search);
+var IS_SPECTATOR = (P.get('spectate') === '1' || P.get('spectator') === '1');
 var ROOM_ID = P.get('room') || '';
-var MY_SLOT = parseInt(P.get('player') || '1', 10);
+var MY_SLOT = IS_SPECTATOR ? 1 : parseInt(P.get('player') || '1', 10);
 var P1_ID = P.get('p1Id') || '';
 var P2_ID = P.get('p2Id') || '';
 var P1_NAME = P.get('p1Name') || 'Joueur 1';
@@ -161,7 +167,6 @@ var CURRENCY = P.get('currency') || 'HTG';
 /* Mode spectateur (lecture seule) : activé par ?spectate=1. Le spectateur ne
    rejoint jamais de place de joueur, ne peut jamais jouer et ne fait qu'observer
    le plateau en temps réel. Tout le chemin de code « joueur » reste intact. */
-var IS_SPECTATOR = (P.get('spectate') === '1' || P.get('spectator') === '1');
 
 if(!ROOM_ID && P1_ID && P2_ID){
   var _ids = [P1_ID, P2_ID].sort();
@@ -169,7 +174,25 @@ if(!ROOM_ID && P1_ID && P2_ID){
 }
 if(!ROOM_ID) ROOM_ID = P.get('gameId') || P.get('matchId') || '';
 var GAME_ID = P.get('gameId') || P.get('matchId') || '';
-window.addEventListener('message', function(e){ if(e.data && e.data.type==='client:mutual_quit' && socket && socket.connected) socket.emit('game_mutual_quit',{room:ROOM_ID,game:'dames',player:MY_SLOT}); });
+var SPECTATOR_TOKEN = '';
+var spectatorInitReceived = false;
+window.addEventListener('message', function(e){
+  if(!e.data || e.source !== window.parent) return;
+  if(IS_SPECTATOR && e.data.type === 'spectator:init'){
+    if(e.data.gameId && GAME_ID && e.data.gameId !== GAME_ID) return;
+    SPECTATOR_TOKEN = typeof e.data.token === 'string' ? e.data.token : '';
+    if(typeof e.data.player1Name === 'string' && e.data.player1Name.trim()) P1_NAME = e.data.player1Name.trim().slice(0, 32);
+    if(typeof e.data.player2Name === 'string' && e.data.player2Name.trim()) P2_NAME = e.data.player2Name.trim().slice(0, 32);
+    MY_NAME = P1_NAME;
+    OP_NAME = P2_NAME;
+    spectatorInitReceived = true;
+    if(!socket) initSocket();
+    return;
+  }
+  if(!IS_SPECTATOR && e.data.type==='client:mutual_quit' && socket && socket.connected){
+    socket.emit('game_mutual_quit',{room:ROOM_ID,game:'dames',player:MY_SLOT});
+  }
+});
 
 var MY_PLAYER = MY_SLOT === 1 ? 0 : 1; // 0=Blanc, 1=Rouge
 var MY_SUPABASE_ID = MY_SLOT === 1 ? P1_ID : P2_ID;
@@ -177,14 +200,24 @@ var OP_SUPABASE_ID = MY_SLOT === 1 ? P2_ID : P1_ID;
 var MY_NAME = MY_SLOT === 1 ? P1_NAME : P2_NAME;
 var OP_NAME = MY_SLOT === 1 ? P2_NAME : P1_NAME;
 
+if(IS_SPECTATOR){
+  document.body.classList.add('spectator');
+  document.getElementById('spectatorBadge').classList.add('show');
+  document.getElementById('hint').textContent = 'Glisse = tourner · Pince = zoom · Spectateur en lecture seule';
+}
+
 // Affichage de la mise si elle existe
-if (BET_AMOUNT > 0) {
+function updateBetBadge(){
   var betBadge = document.getElementById('betBadge');
-  if (betBadge) {
+  if (!betBadge) return;
+  if (BET_AMOUNT > 0) {
     betBadge.textContent = 'Mise : ' + BET_AMOUNT + ' ' + CURRENCY;
     betBadge.style.display = 'block';
+  } else {
+    betBadge.style.display = 'none';
   }
 }
+updateBetBadge();
 
 // Habillage spectateur : badge « en direct », libellé, et suppression de
 // l'astuce « Tap = jouer » (il ne joue pas).
@@ -234,17 +267,15 @@ function hideLoading(){
 }
 
 function initSocket(){
+  if(socket || (IS_SPECTATOR && !spectatorInitReceived)) return;
   var lt = document.querySelector('#loading p');
-  if(lt) lt.textContent = IS_SPECTATOR ? 'CONNEXION AU DIRECT…' : ('ROOM: '+(ROOM_ID||'MANQUANT')+' | SLOT: '+MY_SLOT);
+  if(lt) lt.textContent = IS_SPECTATOR ? 'CONNEXION AU DIRECT 3D...' : 'ROOM: '+(ROOM_ID||'MANQUANT')+' | SLOT: '+MY_SLOT;
 
-  socket = io({ transports:['websocket','polling'], reconnection:true, auth:{ token:P.get('token')||'' } });
+  socket = io({ transports:['websocket','polling'], reconnection:true, auth:{ token:IS_SPECTATOR ? SPECTATOR_TOKEN : (P.get('token')||'') } });
 
   socket.on('connect', function(){
     document.getElementById('reconn-bar').classList.remove('show');
     if(IS_SPECTATOR){
-      // Protocole spectateur autoritatif du serveur : on rejoint par l'ID de la
-      // partie (base de données). Le serveur nous place dans la room en lecture
-      // seule et diffuse l'état + les coups en direct.
       socket.emit('spectator_join', { gameId: GAME_ID });
       return;
     }
@@ -271,58 +302,42 @@ function initSocket(){
       ? "Connexion validée — attente de l'adversaire…"
       : 'Connexion validée — démarrage du plateau…';
   });
-
   socket.on('disconnect', function(){
-    if(!gameOver) document.getElementById('reconn-bar').classList.add('show');
+    if(!gameOver){
+      var bar = document.getElementById('reconn-bar');
+      bar.textContent = IS_SPECTATOR ? 'DIRECT INTERROMPU · RECONNEXION...' : 'RECONNEXION EN COURS...';
+      bar.classList.add('show');
+    }
   });
 
-  /* Mode spectateur : le serveur répond à spectator_join par spectator_state
-     (instantané complet). Ensuite, comme le socket est placé dans la room, le
-     spectateur reçoit dames_move / dames_turn_start / dames_state_sync (toutes
-     les 5 s) / game:result — le plateau bouge donc en temps réel. */
-  socket.on('spectator:error', function(err){
+  socket.on('spectator:joined', function(data){
     if(!IS_SPECTATOR) return;
-    var ltn = document.querySelector('#loading p');
-    if(ltn) ltn.textContent = (err && err.message) || "Ce match n'est plus disponible en direct.";
-    window.parent.postMessage({ type:'spectator:error', game:'dames', gameId:GAME_ID, message:(err&&err.message)||'' }, '*');
+    ROOM_ID = data && data.room ? data.room : ROOM_ID;
+    var loadingText = document.querySelector('#loading p');
+    if(loadingText) loadingText.textContent = 'DIRECT VALIDÉ · CHARGEMENT DU PLATEAU...';
   });
 
-  socket.on('spectator_state', function(data){
-    if(!IS_SPECTATOR || !data) return;
-    // Le serveur diffuse les coups/synchros avec l'ID interne de la room (pas
-    // l'UUID de la partie) : on aligne ROOM_ID dessus pour que les gardes
-    // data.room === ROOM_ID des handlers dames_state_sync/ack passent.
-    if(data.room) ROOM_ID = data.room;
-    var st = data.state || {};
-    var players = data.players || {};
-    hideLoading();
-    MY_NAME = (players[1] && players[1].name) || 'Blancs';
-    OP_NAME = (players[2] && players[2].name) || 'Rouges';
-    if(BET_AMOUNT <= 0 && data.betAmount > 0){
-      var bb = document.getElementById('betBadge');
-      if(bb){ bb.textContent = 'Mise : ' + data.betAmount + ' ' + (data.currency||'HTG'); bb.style.display='block'; }
+  socket.on('spectator:error', function(data){
+    if(!IS_SPECTATOR) return;
+    var loadingText = document.querySelector('#loading p');
+    var message = data && data.message ? data.message : 'Ce plateau n’est plus disponible en direct.';
+    if(loadingText) loadingText.textContent = message;
+    window.parent.postMessage({ type:'spectator:error', game:'dames', gameId:GAME_ID, message:message }, '*');
+  });
+
+  socket.on('spectator_state', function(snapshot){
+    if(!IS_SPECTATOR || !snapshot || snapshot.gameType !== 'checkers' || !snapshot.state) return;
+    ROOM_ID = snapshot.room || ROOM_ID;
+    if(snapshot.players){
+      if(snapshot.players[1] && snapshot.players[1].name) P1_NAME = snapshot.players[1].name;
+      if(snapshot.players[2] && snapshot.players[2].name) P2_NAME = snapshot.players[2].name;
+      MY_NAME = P1_NAME;
+      OP_NAME = P2_NAME;
     }
-    gameReady = true;
-    gameOver = (st.status === 'finished' || data.status === 'finished');
-    var sBoard = null;
-    try { sBoard = JSON.parse(st.boardState); } catch(e){}
-    if(sBoard && sBoard.length === BS){
-      board = sBoard;
-      if(typeof st.version === 'number') stateVersion = st.version;
-      if(st.currentPlayer !== undefined && st.currentPlayer !== null) currentPlayer = st.currentPlayer;
-      selectedPiece = null; validMoves = []; moveSequence = []; isSequenceActive = false;
-      currentTurnCaptures = []; isProcessing = false;
-      var wc=0, rc=0;
-      for(var r=0;r<BS;r++) for(var c=0;c<BS;c++) if(board[r][c]){ if(board[r][c].player===0) wc++; else rc++; }
-      capturedBy = [Math.max(0,20-rc), Math.max(0,20-wc)];
-      document.getElementById('score-w').textContent = wc;
-      document.getElementById('score-r').textContent = rc;
-      syncPieces(); clearHighlights(); clearLastMove(); updateCapturedDisplay();
-      if(st.lastMove && st.lastMove.from) showLastMoveOrigin(st.lastMove.from.row, st.lastMove.from.col);
-      stopTimer(); stopGraceTimer();
-      if(st.turnPlayer && st.status === 'playing') applySyncTimers(st);
-    }
-    updUI();
+    BET_AMOUNT = Number(snapshot.betAmount || 0);
+    CURRENCY = snapshot.currency || 'HTG';
+    updateBetBadge();
+    startSpectatorGame(snapshot.state);
   });
 
   socket.on('dames_start', function(data){
@@ -404,7 +419,7 @@ function initSocket(){
       stateVersion = data.version;
     }
     if(data.steps && data.steps.length > 0){
-      executeRemoteSequence(data.steps, data.isComplete);
+      executeRemoteSequence(data.steps, data.isComplete, data.nextPlayer);
     }
   });
 
@@ -463,7 +478,11 @@ function initSocket(){
 
   socket.on('game:over', function(d){
     if(gameOver) return; hideLoading(); stopForfeitCountdown();
-    if(IS_SPECTATOR){ handleSpectatorEnd(d); return; }
+    if(IS_SPECTATOR){
+      var spectatorWinner = d && d.winnerSlot === 1 ? 0 : (d && d.winnerSlot === 2 ? 1 : -1);
+      handleSpectatorGameEnd(spectatorWinner, (d && d.reason) || 'normal');
+      return;
+    }
     if(d.result === 'cancel'){
       gameOver=true; stopTimer(); stopGraceTimer();
       showToast('⚠️','Partie annulée','Déconnexion.\nPénalité appliquée.', 4000, function(){ sendResult('cancel', 'both_disconnected'); });
@@ -476,26 +495,15 @@ function initSocket(){
   socket.on('game:result', function(d){
     if(d.postMessage && !gameOver){
       hideLoading();
-      if(IS_SPECTATOR){ handleSpectatorEnd(d.postMessage); return; }
+      if(IS_SPECTATOR){
+        var spectatorWinner = d.postMessage.winnerSlot === 1 ? 0 : (d.postMessage.winnerSlot === 2 ? 1 : -1);
+        handleSpectatorGameEnd(spectatorWinner, d.postMessage.reason || 'normal');
+        return;
+      }
       var iWon = d.postMessage.result === 'win';
       handleGameEnd(iWon ? MY_PLAYER : 1-MY_PLAYER, 'forfeit');
     }
   });
-}
-
-/* Fin de partie côté spectateur : on affiche simplement le vainqueur, sans
-   aucun règlement (sendResult) ni logique « ma victoire / ma défaite ». */
-function handleSpectatorEnd(pm){
-  if(gameOver || !pm) return;
-  stopTimer(); stopGraceTimer(); stopForfeitCountdown(); gameOver = true;
-  if(pm.winner === 'draw' || pm.winnerSlot === 0 || pm.reason === 'draw'){
-    showToast('🤝','Match terminé','Match nul.', 5000, null);
-    return;
-  }
-  var whiteWon = (pm.winner === 'player1' || pm.winnerSlot === 1);
-  var winnerName = whiteWon ? (MY_NAME || 'Blancs') : (OP_NAME || 'Rouges');
-  createConfetti();
-  showToast(whiteWon ? '⚪' : '🔴', 'Match terminé', winnerName + ' remporte la partie.', 5000, null);
 }
 
 function applyPendingTimer(){
@@ -558,7 +566,8 @@ function requestStateSync(){
   var now = Date.now();
   if(now - syncRequestedAt < 1500) return;
   syncRequestedAt = now;
-  socket.emit('dames_request_state', { room: ROOM_ID });
+  if(IS_SPECTATOR) socket.emit('spectator_request_state', { gameId: GAME_ID });
+  else socket.emit('dames_request_state', { room: ROOM_ID });
 }
 
 function startForfeitCountdown(seconds){
@@ -578,6 +587,7 @@ function stopForfeitCountdown(){
 }
 
 function sendResult(outcome, reason){
+  if(IS_SPECTATOR) return;
   if(resultSent) return; resultSent = true;
   var winnerId = outcome === 'win' ? MY_SUPABASE_ID : OP_SUPABASE_ID;
   var loserId  = outcome === 'win' ? OP_SUPABASE_ID : MY_SUPABASE_ID;
@@ -992,7 +1002,7 @@ function updateForcedHint(){
    JOUER AVEC CLIC DIRECT SUR CIBLE
 ═════════════════════════════════════════════════════ */
 function onCellClick(row, col){
-  if(IS_SPECTATOR) return;               // spectateur : lecture seule, aucun coup
+  if(IS_SPECTATOR) return;
   if(!gameReady || gameOver || isProcessing) return;
   if(currentPlayer !== MY_PLAYER) return;
 
@@ -1155,7 +1165,7 @@ function afterPlayerStep(to, mesh, originRow, originCol){
 /* ═════════════════════════════════════════════════════
    RÉCEPTION SEQUENCE ADVERSAIRE
 ═════════════════════════════════════════════════════ */
-function executeRemoteSequence(steps, isComplete) {
+function executeRemoteSequence(steps, isComplete, nextPlayer) {
   if(!steps || steps.length === 0) return;
   isProcessing = true; clearHighlights();
   var stepIdx = 0;
@@ -1164,7 +1174,7 @@ function executeRemoteSequence(steps, isComplete) {
     if(stepIdx >= steps.length) {
       var winner = checkGameOver();
       if(winner >= 0){ handleGameEnd(winner, 'normal'); return; }
-      if(isComplete) currentPlayer = MY_PLAYER;
+      if(isComplete) currentPlayer = typeof nextPlayer === 'number' ? nextPlayer : MY_PLAYER;
       isProcessing = false; updUI();
       if(!timerActive && !graceActive) applyPendingTimer();
       return;
@@ -1211,6 +1221,7 @@ function executeRemoteSequence(steps, isComplete) {
    FIN DE PARTIE ET UI
 ═════════════════════════════════════════════════════ */
 function handleGameEnd(winner, reason){
+  if(IS_SPECTATOR){ handleSpectatorGameEnd(winner, reason); return; }
   if(gameOver) return;
   stopTimer(); stopGraceTimer(); stopForfeitCountdown(); gameOver = true;
   var wc=0, rc=0;
@@ -1228,6 +1239,21 @@ function handleGameEnd(winner, reason){
   showToast(winnerEmoji, title, sub, 4000, function(){ sendResult(humanWon?'win':(reason==='draw'?'draw':'loss'), reason||'normal'); });
 }
 
+function handleSpectatorGameEnd(winner, reason){
+  if(gameOver) return;
+  stopTimer(); stopGraceTimer(); stopForfeitCountdown(); gameOver = true;
+  var wc=0, rc=0;
+  for(var r=0; r<BS; r++) for(var c=0; c<BS; c++) if(board[r][c]){ if(board[r][c].player===0) wc++; else rc++; }
+  var draw = winner !== 0 && winner !== 1;
+  var title = draw ? 'Match nul' : 'Victoire de ' + (winner === 0 ? P1_NAME : P2_NAME);
+  var sub = draw
+    ? 'La partie est terminée sans vainqueur.'
+    : (reason === 'timeout' ? 'Victoire par expiration du temps.' : reason === 'forfeit' ? 'Victoire par forfait.' : 'La partie est terminée.');
+  sub += '\n' + wc + ' pions blancs · ' + rc + ' pions rouges';
+  if(!draw) createConfetti();
+  showToast(draw ? '🤝' : (winner === 0 ? '⚪' : '🔴'), title, sub, 5000, null);
+}
+
 function hasKing(player){
   for(var r=0; r<BS; r++) for(var c=0; c<BS; c++) if(board[r][c] && board[r][c].player===player && board[r][c].king) return true;
   return false;
@@ -1243,6 +1269,35 @@ function updUI(){
   document.getElementById('profile-human').querySelector('.profile-name').textContent = MY_NAME;
   document.getElementById('profile-ai').querySelector('.profile-name').textContent = OP_NAME;
   updateForcedHint();
+}
+
+function startSpectatorGame(state){
+  if(!state || typeof state.boardState !== 'string') return;
+  gameReady=false; gameOver=false; isProcessing=false; resultSent=true;
+  selectedPiece=null; validMoves=[]; moveSequence=[]; isSequenceActive=false; pendingTimerData=null;
+  currentTurnCaptures=[];
+  camTheta=0; camPhi=0.72; camD=22; setCam();
+  initBoard();
+  try {
+    board = JSON.parse(state.boardState);
+  } catch(e){
+    var loadingText = document.querySelector('#loading p');
+    if(loadingText) loadingText.textContent = 'ÉTAT DU PLATEAU INVALIDE';
+    return;
+  }
+  currentPlayer = typeof state.currentPlayer === 'number' ? state.currentPlayer : 0;
+  stateVersion = typeof state.version === 'number' ? state.version : 0;
+  var wc=0, rc=0;
+  for(var r=0; r<BS; r++) for(var c=0; c<BS; c++) if(board[r][c]){ if(board[r][c].player===0) wc++; else rc++; }
+  capturedBy=[Math.max(0,20-rc),Math.max(0,20-wc)];
+  document.getElementById('score-w').textContent=wc;
+  document.getElementById('score-r').textContent=rc;
+  syncPieces(); clearHighlights(); clearLastMove(); stopTimer(); stopGraceTimer();
+  updateCapturedDisplay(); stopForfeitCountdown();
+  if(state.lastMove && state.lastMove.from) showLastMoveOrigin(state.lastMove.from.row, state.lastMove.from.col);
+  gameReady=true; updUI();
+  if(state.turnPlayer && state.status === 'playing') applySyncTimers(state);
+  hideLoading();
 }
 
 function startMultiGame(){
@@ -1425,8 +1480,17 @@ function renderLoop(){
 renderLoop();
 
 /* BOOT */
-if (document.readyState === 'complete' || document.readyState === 'interactive') { initSocket(); } 
-else { document.addEventListener('DOMContentLoaded', initSocket); }
+function bootGame(){
+  if(IS_SPECTATOR){
+    var loadingText = document.querySelector('#loading p');
+    if(loadingText) loadingText.textContent = 'PRÉPARATION DU DIRECT 3D...';
+    window.parent.postMessage({ type:'spectator:ready', game:'dames', gameId:GAME_ID }, '*');
+    return;
+  }
+  initSocket();
+}
+if (document.readyState === 'complete' || document.readyState === 'interactive') { bootGame(); }
+else { document.addEventListener('DOMContentLoaded', bootGame); }
 
 })();
 </script>
