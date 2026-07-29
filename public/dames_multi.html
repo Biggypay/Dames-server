@@ -155,6 +155,9 @@ window.onerror=function(msg,url,line,col,err){
    URL PARAMS & RÉSEAU
 ══════════════════════════════════════════ */
 var P = new URLSearchParams(window.location.search);
+var TOKEN_FRAGMENT = new URLSearchParams(window.location.hash.slice(1));
+var GAME_AUTH_TOKEN = TOKEN_FRAGMENT.get('token') || P.get('token') || '';
+if (TOKEN_FRAGMENT.has('token')) { try { history.replaceState(null, '', location.pathname + location.search); } catch (_) {} }
 var IS_SPECTATOR = (P.get('spectate') === '1' || P.get('spectator') === '1');
 var ROOM_ID = P.get('room') || '';
 var MY_SLOT = IS_SPECTATOR ? 1 : parseInt(P.get('player') || '1', 10);
@@ -271,7 +274,7 @@ function initSocket(){
   var lt = document.querySelector('#loading p');
   if(lt) lt.textContent = IS_SPECTATOR ? 'CONNEXION AU DIRECT 3D...' : 'ROOM: '+(ROOM_ID||'MANQUANT')+' | SLOT: '+MY_SLOT;
 
-  socket = io({ transports:['websocket','polling'], reconnection:true, auth:{ token:IS_SPECTATOR ? SPECTATOR_TOKEN : (P.get('token')||'') } });
+  socket = io({ transports:['websocket','polling'], reconnection:true, auth:{ token:IS_SPECTATOR ? SPECTATOR_TOKEN : GAME_AUTH_TOKEN } });
 
   socket.on('connect', function(){
     document.getElementById('reconn-bar').classList.remove('show');

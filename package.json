@@ -4,18 +4,19 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node tests/test_resync.js && node tests/test_chess_engine.js && node tests/test_echecs_server.js && node tests/test_ludo_chifoumi.js && node tests/test_spectator.js"
+    "test": "node tests/test_resync.js && node tests/test_tictactoe_server.js && node tests/test_chess_engine.js && node tests/test_echecs_server.js && node tests/test_ludo_chifoumi.js && node tests/test_spectator.js"
   },
-  "engines": { "node": "20.x" },
+  "engines": { "node": "24.x" },
   "dependencies": {
     "socket.io": "^4.7.4",
     "express": "^4.18.2",
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",
-    "uuid": "^9.0.0",
+    "uuid": "^11.1.1",
     "dotenv": "^16.3.1"
   },
   "devDependencies": {
     "socket.io-client": "^4.7.4"
   }
 }
+

@@ -72,6 +72,7 @@ async function main() {
       ...process.env,
       PORT: String(PORT),
       NODE_ENV: 'test',
+      TTT_TOTAL_ROUNDS: '1',
       ALLOWED_ORIGIN: 'https://mindspille.lovable.app',
       FRAME_ANCESTORS: 'https://mindspille.lovable.app'
     },
@@ -183,12 +184,30 @@ async function main() {
 
     console.log('\n--- Tic-Tac-Toe server-authoritative outcome ---');
     const tttRoom = 'test-ttt-authoritative';
+    const tttTurnEvents = [];
+    p1.socket.on('ttt_turn_start', data => tttTurnEvents.push({ ...data, receivedAt: Date.now() }));
     const tttStart1 = once(p1.socket, 'ttt_start');
     const tttStart2 = once(p2b.socket, 'ttt_start');
     p1.socket.emit('ttt_join', { room: tttRoom, player: 1, supabaseId: 'test-user-aaa', name: 'Alice', bet: 5000, currency: 'HTG', manches: 1 });
     p2b.socket.emit('ttt_join', { room: tttRoom, player: 2, supabaseId: 'test-user-bbb', name: 'Bob', bet: 5000, currency: 'HTG', manches: 1 });
-    await Promise.all([tttStart1, tttStart2]);
+    const [tttStarted1, tttStarted2] = await Promise.all([tttStart1, tttStart2]);
+    check('TTT uses the server-owned round count', tttStarted1.totalManches === 1 && tttStarted2.totalManches === 1);
+    check('TTT start contains the authoritative empty board', Array.isArray(tttStarted1.gameState?.board) && tttStarted1.gameState.board.every(cell => cell === null));
+    const invalidTurnError = once(p2b.socket, 'game:error');
+    const invalidTurnSync = once(p2b.socket, 'ttt_state_sync');
+    p2b.socket.emit('ttt_move', { room: tttRoom, player: 2, row: 2, col: 2, symbol: 'O' });
+    const [tttInvalidError, tttInvalidSync] = await Promise.all([invalidTurnError, invalidTurnSync]);
+    check('TTT rejects an out-of-turn move', tttInvalidError.recoverable === true, tttInvalidError);
+    check('TTT repairs the rejected client with an unchanged board', tttInvalidSync.revision === 0 && tttInvalidSync.gameState.board.every(cell => cell === null), tttInvalidSync);
+    const firstMoveAt = Date.now();
     await emitAndWait(p1.socket, p2b.socket, 'ttt_move', { room: tttRoom, player: 1, row: 0, col: 0, symbol: 'X' }, 'ttt_move');
+    await sleep(3200);
+    // Compare the authoritative startTime, not the local receive time: on a
+    // fast runner the legitimate initial timer and the move can be received in
+    // the same millisecond.
+    const lateWrongTimer = tttTurnEvents.find(event => event.startTime >= firstMoveAt && event.player === 1);
+    check('TTT never restores the clock to player 1 after the first move', !lateWrongTimer, tttTurnEvents);
+    check('TTT starts player 2 clock after player 1 move', tttTurnEvents.some(event => event.startTime >= firstMoveAt && event.player === 2), tttTurnEvents);
     await emitAndWait(p2b.socket, p1.socket, 'ttt_move', { room: tttRoom, player: 2, row: 1, col: 0, symbol: 'O' }, 'ttt_move');
     await emitAndWait(p1.socket, p2b.socket, 'ttt_move', { room: tttRoom, player: 1, row: 0, col: 1, symbol: 'X' }, 'ttt_move');
     await emitAndWait(p2b.socket, p1.socket, 'ttt_move', { room: tttRoom, player: 2, row: 1, col: 1, symbol: 'O' }, 'ttt_move');
@@ -249,3 +268,4 @@ async function main() {
 }
 
 main().catch(e => { console.error('ERREUR FATALE:', e.message); process.exit(1); });
+

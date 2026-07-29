@@ -179,9 +179,11 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
 <script>
 // ── CONFIG ────────────────────────────────────────────────────────────
 var P       = new URLSearchParams(location.search);
+var TOKEN_FRAGMENT = new URLSearchParams(location.hash.slice(1));
 var GAME_ID = P.get('gameId') || '';
 var PLAYER  = P.get('player') || '';
-var TOKEN   = P.get('token')  || '';
+var TOKEN   = TOKEN_FRAGMENT.get('token') || P.get('token') || '';
+if (TOKEN_FRAGMENT.has('token')) { try { history.replaceState(null, '', location.pathname + location.search); } catch (_) {} }
 var UNAME   = P.get('username') || 'Joueur';
 var SERVER  = location.origin;
 
