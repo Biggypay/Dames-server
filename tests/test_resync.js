@@ -202,9 +202,12 @@ async function main() {
     const firstMoveAt = Date.now();
     await emitAndWait(p1.socket, p2b.socket, 'ttt_move', { room: tttRoom, player: 1, row: 0, col: 0, symbol: 'X' }, 'ttt_move');
     await sleep(3200);
-    const lateWrongTimer = tttTurnEvents.find(event => event.receivedAt >= firstMoveAt && event.player === 1);
+    // Compare the authoritative startTime, not the local receive time: on a
+    // fast runner the legitimate initial timer and the move can be received in
+    // the same millisecond.
+    const lateWrongTimer = tttTurnEvents.find(event => event.startTime >= firstMoveAt && event.player === 1);
     check('TTT never restores the clock to player 1 after the first move', !lateWrongTimer, tttTurnEvents);
-    check('TTT starts player 2 clock after player 1 move', tttTurnEvents.some(event => event.receivedAt >= firstMoveAt && event.player === 2), tttTurnEvents);
+    check('TTT starts player 2 clock after player 1 move', tttTurnEvents.some(event => event.startTime >= firstMoveAt && event.player === 2), tttTurnEvents);
     await emitAndWait(p2b.socket, p1.socket, 'ttt_move', { room: tttRoom, player: 2, row: 1, col: 0, symbol: 'O' }, 'ttt_move');
     await emitAndWait(p1.socket, p2b.socket, 'ttt_move', { room: tttRoom, player: 1, row: 0, col: 1, symbol: 'X' }, 'ttt_move');
     await emitAndWait(p2b.socket, p1.socket, 'ttt_move', { room: tttRoom, player: 2, row: 1, col: 1, symbol: 'O' }, 'ttt_move');
