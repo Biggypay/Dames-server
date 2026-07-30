@@ -31,6 +31,9 @@ body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%
 .av-x-arm:nth-child(1){transform:translate(-50%,-50%) rotate(45deg)}
 .av-x-arm:nth-child(2){transform:translate(-50%,-50%) rotate(-45deg)}
 .av-o{width:24px;height:24px;border-radius:50%;border:5px solid #c0392b;box-shadow:0 0 10px rgba(192,57,43,0.6),inset 0 2px 4px rgba(255,120,100,0.3)}
+.profile-photo{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block}
+/* Barre de decision et aide au geste : masquees en vue depouillee. */
+body.chrome-hidden #bot,body.chrome-hidden #hint{display:none!important}
 
 .timer-urgent .timer-arc{animation:urgentPulse 0.5s infinite alternate}
 @keyframes urgentPulse{from{opacity:1}to{opacity:0.4}}
@@ -189,6 +192,11 @@ if(TOKEN_FRAGMENT.has('token')){try{history.replaceState(null,'',location.pathna
    rejoint jamais de place de joueur : il s'abonne au salon et ne fait que
    recevoir l'etat. Tout le chemin de code « joueur » reste intact. */
 var IS_SPECTATOR=(P.get('spectate')==='1'||P.get('spectator')==='1');
+var P1_AVATAR=P.get('p1Avatar')||'';
+var P2_AVATAR=P.get('p2Avatar')||'';
+/* Vue depouillee par defaut cote spectateur : l'application le demande via
+   ?controls=0 puis, a chaque bascule, par le message spectator:controls. */
+var SHOW_CHROME=!(IS_SPECTATOR&&(P.get('controls')==='0'||P.get('chrome')==='0'));
 var SPECTATOR_TOKEN='';
 var spectatorInitReceived=false;
 var ROOM_ID   =P.get('room')    ||'';
@@ -214,9 +222,18 @@ window.addEventListener('message',function(e){
     SPECTATOR_TOKEN=typeof e.data.token==='string'?e.data.token:'';
     if(typeof e.data.player1Name==='string'&&e.data.player1Name.trim())P1_NAME=e.data.player1Name.trim().slice(0,32);
     if(typeof e.data.player2Name==='string'&&e.data.player2Name.trim())P2_NAME=e.data.player2Name.trim().slice(0,32);
+    if(typeof e.data.player1Avatar==='string')P1_AVATAR=e.data.player1Avatar;
+    if(typeof e.data.player2Avatar==='string')P2_AVATAR=e.data.player2Avatar;
+    if(typeof e.data.showControls==='boolean')SHOW_CHROME=e.data.showControls;
     MY_NAME=P1_NAME;OP_NAME=P2_NAME;
+    applyChrome();updUI();
     spectatorInitReceived=true;
     if(!socket)initSocket();
+    return;
+  }
+  if(IS_SPECTATOR&&e.data.type==='spectator:controls'){
+    SHOW_CHROME=e.data.show===true;
+    applyChrome();
     return;
   }
   if(!IS_SPECTATOR&&e.data.type==='client:mutual_quit'&&socket&&socket.connected)
@@ -1052,22 +1069,44 @@ function startMatch(){
 /* ══════════════════════════════════════════
    UI
 ══════════════════════════════════════════ */
+/* La pastille X / O cede la place a la vraie photo du joueur. Le symbole ne
+   disparait pas du jeu — il reste sur le plateau — mais il n'a plus a tenir
+   lieu de portrait. Si la photo ne charge pas, on remet la pastille. */
+function setProfilePhoto(hostId,url,fallbackHtml){
+  var host=document.getElementById(hostId);
+  if(!host)return;
+  if(!url){host.innerHTML=fallbackHtml;return;}
+  var img=new Image();
+  img.className='profile-photo';img.alt='';img.referrerPolicy='no-referrer';
+  img.onerror=function(){host.innerHTML=fallbackHtml;};
+  img.onload=function(){host.innerHTML='';host.appendChild(img);};
+  img.src=url;
+}
+function applyChrome(){
+  document.body.classList.toggle('chrome-hidden',!SHOW_CHROME);
+}
+var AV_X='<div class="av-x"><div class="av-x-arm"></div><div class="av-x-arm"></div></div>';
+var AV_O='<div class="av-o"></div>';
+
 function updUI(){
-  var ahEl=document.getElementById('avatar-human');
-  var aaEl=document.getElementById('avatar-ai');
+  var myAvatar =MY_SLOT===1?P1_AVATAR:P2_AVATAR;
+  var opAvatar =MY_SLOT===1?P2_AVATAR:P1_AVATAR;
   if(MY_SYMBOL==='X'){
-    ahEl.innerHTML='<div class="av-x"><div class="av-x-arm"></div><div class="av-x-arm"></div></div>';
-    aaEl.innerHTML='<div class="av-o"></div>';
+    setProfilePhoto('avatar-human',myAvatar,AV_X);
+    setProfilePhoto('avatar-ai',opAvatar,AV_O);
     document.getElementById('timer-arc-human').setAttribute('stroke','#dde6f0');
     document.getElementById('timer-arc-ai').setAttribute('stroke','#e74c3c');
   }else{
-    ahEl.innerHTML='<div class="av-o"></div>';
-    aaEl.innerHTML='<div class="av-x"><div class="av-x-arm"></div><div class="av-x-arm"></div></div>';
+    setProfilePhoto('avatar-human',myAvatar,AV_O);
+    setProfilePhoto('avatar-ai',opAvatar,AV_X);
     document.getElementById('timer-arc-human').setAttribute('stroke','#e74c3c');
     document.getElementById('timer-arc-ai').setAttribute('stroke','#dde6f0');
   }
-  document.getElementById('name-human').textContent=MY_NAME.toUpperCase().slice(0,8);
-  document.getElementById('name-ai').textContent=OP_NAME.toUpperCase().slice(0,8);
+  /* On garde le nom exact du profil : ni majuscules forcees ni « VOUS ». */
+  var meName=IS_SPECTATOR?P1_NAME:MY_NAME;
+  var opName=IS_SPECTATOR?P2_NAME:OP_NAME;
+  document.getElementById('name-human').textContent=String(meName||'').slice(0,14);
+  document.getElementById('name-ai').textContent=String(opName||'').slice(0,14);
 
   var elW=document.getElementById('score-w'),elR=document.getElementById('score-r');
   var prevW=parseInt(elW.textContent)||0,prevR=parseInt(elR.textContent)||0;
@@ -1330,6 +1369,7 @@ function renderLoop(){
 renderLoop();
 
 /* INIT */
+applyChrome();
 if(IS_SPECTATOR){
   /* On previent l'application hote que la page est prete a recevoir le jeton. */
   try{window.parent.postMessage({type:'spectator:ready',game:'tictactoe',gameId:GAME_ID},'*');}catch(_){}

@@ -26,6 +26,9 @@ body{background:linear-gradient(135deg,#1e1b4b 0%,#312e81 50%,#1e1b4b 100%);heig
 
 .profile-avatar{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;border-radius:50%;-webkit-border-radius:50%;background-clip:padding-box;background:rgba(255,255,255,0.05);border:2px solid rgba(255,255,255,0.12);transition:all 0.3s}
 .profile.active .profile-avatar{border-color:rgba(255,255,255,0.5)}
+.profile-photo{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block}
+/* Barre de decision : masquee quand l'application demande une vue depouillee. */
+body.chrome-hidden #bot{display:none!important}
 
 .av-w{width:22px;height:22px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#f0f0f0,#c0c0c0);border:2px solid #a0a0a0;box-shadow:0 2px 6px rgba(255,255,255,0.4)}
 .av-r{width:22px;height:22px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#f87171,#b91c1c);border:2px solid #991b1b;box-shadow:0 2px 6px rgba(248,113,113,0.4)}
@@ -169,6 +172,11 @@ if (TOKEN_FRAGMENT.has('token')) { try { history.replaceState(null, '', location
    rejoint jamais de place de joueur : il s'abonne au salon et ne fait que
    recevoir l'etat. Tout le chemin de code « joueur » reste intact. */
 var IS_SPECTATOR = (P.get('spectate') === '1' || P.get('spectator') === '1');
+var P1_AVATAR = P.get('p1Avatar') || '';
+var P2_AVATAR = P.get('p2Avatar') || '';
+/* Vue depouillee par defaut cote spectateur : l'application le demande via
+   ?controls=0 puis, a chaque bascule, par le message spectator:controls. */
+var SHOW_CHROME = !(IS_SPECTATOR && (P.get('controls') === '0' || P.get('chrome') === '0'));
 var SPECTATOR_TOKEN = '';
 var spectatorInitReceived = false;
 var ROOM_ID    = P.get('room')     || '';
@@ -191,8 +199,20 @@ window.addEventListener('message', function(e) {
   if (IS_SPECTATOR && e.data.type === 'spectator:init') {
     if (e.data.gameId && GAME_ID && e.data.gameId !== GAME_ID) return;
     SPECTATOR_TOKEN = typeof e.data.token === 'string' ? e.data.token : '';
+    if (typeof e.data.player1Name === 'string' && e.data.player1Name.trim()) P1_NAME = e.data.player1Name.trim().slice(0, 24);
+    if (typeof e.data.player2Name === 'string' && e.data.player2Name.trim()) P2_NAME = e.data.player2Name.trim().slice(0, 24);
+    if (typeof e.data.player1Avatar === 'string') P1_AVATAR = e.data.player1Avatar;
+    if (typeof e.data.player2Avatar === 'string') P2_AVATAR = e.data.player2Avatar;
+    if (typeof e.data.showControls === 'boolean') SHOW_CHROME = e.data.showControls;
+    MY_NAME = P1_NAME; OP_NAME = P2_NAME;
+    applyChrome(); applyProfiles();
     spectatorInitReceived = true;
     if (!socket) initSocket();
+    return;
+  }
+  if (IS_SPECTATOR && e.data.type === 'spectator:controls') {
+    SHOW_CHROME = e.data.show === true;
+    applyChrome();
     return;
   }
   if (!IS_SPECTATOR && e.data.type === 'client:mutual_quit' && socket && socket.connected)
@@ -203,6 +223,43 @@ var MY_SUPABASE_ID = MY_SLOT === 1 ? P1_ID : P2_ID;
 var OP_SUPABASE_ID = MY_SLOT === 1 ? P2_ID : P1_ID;
 var MY_NAME        = MY_SLOT === 1 ? P1_NAME : P2_NAME;
 var OP_NAME        = MY_SLOT === 1 ? P2_NAME : P1_NAME;
+
+/* La pastille de couleur cede la place a la vraie photo du joueur. Le nom
+   affiche est celui du profil, jamais « Vous » / « Adversaire » : un
+   spectateur ne joue pas, ces libelles ne veulent rien dire pour lui. */
+function setProfilePhoto(slotId, url, fallbackClass) {
+  var host = document.getElementById(slotId);
+  if (!host) return;
+  if (url) {
+    var img = new Image();
+    img.className = 'profile-photo';
+    img.alt = '';
+    img.referrerPolicy = 'no-referrer';
+    /* Si la photo ne charge pas, on remet la pastille : jamais de trou. */
+    img.onerror = function () { host.innerHTML = '<div class="' + fallbackClass + '"></div>'; };
+    img.onload = function () { host.innerHTML = ''; host.appendChild(img); };
+    img.src = url;
+  } else {
+    host.innerHTML = '<div class="' + fallbackClass + '"></div>';
+  }
+}
+
+function applyProfiles() {
+  var meName = IS_SPECTATOR ? P1_NAME : MY_NAME;
+  var opName = IS_SPECTATOR ? P2_NAME : OP_NAME;
+  var meEl = document.getElementById('name-me'); if (meEl) meEl.textContent = meName;
+  var opEl = document.getElementById('name-op'); if (opEl) opEl.textContent = opName;
+  var meAvatar = MY_SLOT === 1 ? P1_AVATAR : P2_AVATAR;
+  var opAvatar = MY_SLOT === 1 ? P2_AVATAR : P1_AVATAR;
+  setProfilePhoto('avatar-me', meAvatar, 'av-w');
+  setProfilePhoto('avatar-op', opAvatar, 'av-r');
+}
+
+function applyChrome() {
+  document.body.classList.toggle('chrome-hidden', !SHOW_CHROME);
+}
+applyChrome();
+applyProfiles();
 
 /* Slot 1 = blanc (row 8→0), Slot 2 = rouge (row 0→8) */
 var IS_P1 = MY_SLOT === 1;
@@ -985,6 +1042,11 @@ function initSocket() {
   socket.on('spectator_state', function(snapshot) {
     if (!snapshot || !snapshot.state) return;
     hideSpectatorOverlay();
+    if (snapshot.players) {
+      if (snapshot.players[1] && snapshot.players[1].name) P1_NAME = snapshot.players[1].name;
+      if (snapshot.players[2] && snapshot.players[2].name) P2_NAME = snapshot.players[2].name;
+      applyProfiles();
+    }
     applySpectatorState(snapshot.state.gameState);
     var st = snapshot.state;
     if (st.graceStartTime || st.turnStartTime) {
@@ -1156,8 +1218,7 @@ function startNewGame() {
   initGame();   
   vmoves = []; vhw = []; vvw = [];
 
-  document.getElementById('name-me').textContent = MY_NAME;
-  document.getElementById('name-op').textContent = OP_NAME;
+  applyProfiles();
 
   if (IS_P1) {
     document.getElementById('goal-me').textContent = '▲ OBJ';
