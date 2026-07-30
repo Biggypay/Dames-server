@@ -181,28 +181,41 @@ window.onerror=function(msg,url,line,col,err){
    URL PARAMS
 ══════════════════════════════════════════ */
 var P=new URLSearchParams(window.location.search);
+var TOKEN_FRAGMENT=new URLSearchParams(window.location.hash.slice(1));
+var GAME_AUTH_TOKEN=TOKEN_FRAGMENT.get('token')||P.get('token')||'';
+if(TOKEN_FRAGMENT.has('token')){try{history.replaceState(null,'',location.pathname+location.search);}catch(_) {}}
 
 /* MODE ENTRAINEMENT : aucun argent, aucun reseau, aucun matchmaking.
    L'humain est TOUJOURS X et commence la premiere manche ; l'IA est O.
-   Le plateau, les animations et l'interface sont exactement ceux de la
-   partie en ligne : seule l'origine des coups adverses change. */
+   Plateau, animations et interface sont ceux de la partie en ligne ; seule
+   l'origine des coups adverses change. */
 var DIFFICULTY=(P.get('difficulty')||P.get('level')||'medium').toLowerCase();
 if(DIFFICULTY==='max'||DIFFICULTY==='extreme')DIFFICULTY='expert';
 if(['easy','medium','hard','expert'].indexOf(DIFFICULTY)<0)DIFFICULTY='medium';
-
-var ROOM_ID='solo-ia';
-var GAME_ID='';
-var MY_SLOT=1;
+var ROOM_ID   ='solo-ia';
+var MY_SLOT   =1;
+var P1_ID     =P.get('p1Id')    ||'';
+var P2_ID     =P.get('p2Id')    ||'';
+var P1_NAME   =P.get('p1Name')  ||'Joueur 1';
+var P2_NAME   =P.get('p2Name')  ||'Joueur 2';
 var BET_AMOUNT=0;
-var CURRENCY=P.get('currency')||'HTG';
+var CURRENCY  =P.get('currency')||'HTG';
 var TOTAL_MANCHES=parseInt(P.get('manches')||'5',10);
-if(!(TOTAL_MANCHES>=1&&TOTAL_MANCHES<=15))TOTAL_MANCHES=5;
 
-var MY_PLAYER=0;
-var MY_NAME  =P.get('name')||P.get('username')||'Vous';
-var OP_NAME  ='IA';
-var MY_SYMBOL='X';
-var OP_SYMBOL='O';
+if(!ROOM_ID&&P1_ID&&P2_ID){
+  var _ids=[P1_ID,P2_ID].sort();
+  ROOM_ID='ttt-'+_ids[0].slice(-8)+'-'+_ids[1].slice(-8);
+}
+if(!ROOM_ID){ROOM_ID=P.get('gameId')||P.get('matchId')||'';}
+var GAME_ID=P.get('gameId')||P.get('matchId')||'';
+
+var MY_PLAYER      = 0;
+var MY_SUPABASE_ID = MY_SLOT===1?P1_ID:P2_ID;
+var OP_SUPABASE_ID = MY_SLOT===1?P2_ID:P1_ID;
+var MY_NAME        = P.get('name')||P.get('username')||'Vous';
+var OP_NAME        = 'IA';
+var MY_SYMBOL  = 'X';
+var OP_SYMBOL  = 'O';
 
 /* Badge mise */
 if(BET_AMOUNT>0){
@@ -240,6 +253,9 @@ var currentPlayer=0;
 var board=[null,null,null,null,null,null,null,null,null];
 var meshes=[null,null,null,null,null,null,null,null,null];
 var mancheStarterPlayer=0;
+var lastServerRevision=-1,pendingMove=null,pendingServerState=null;
+var authoritativeMatchWinner=0,pendingGameOverPayload=null;
+var roundAnimationActive=false;
 
 var TIMER_DURATION=30000,CIRC=2*Math.PI*26;
 var timerStart=null,timerRAF=null,timerActive=false;
@@ -491,6 +507,43 @@ function placeSymbol(sym,row,col){
   animPop(m);
 }
 
+function relativeRoundResults(results){
+  var list=Array.isArray(results)?results:[];
+  if(MY_SLOT===1)return list.slice();
+  return list.map(function(result){return result==='w'?'r':(result==='r'?'w':result);});
+}
+
+function rebuildBoardFromServer(nextBoard){
+  while(piecesGroup.children.length)piecesGroup.remove(piecesGroup.children[0]);
+  meshes=[null,null,null,null,null,null,null,null,null];
+  piecePhysics={};clearHL();stopWinPulse();
+  board=nextBoard.slice();
+  for(var r=0;r<3;r++)for(var c=0;c<3;c++){
+    var sym=board[bIdx(r,c)];
+    if(sym){var mesh=sym==='X'?makeX(r,c):makeO(r,c);mesh.scale.set(1,1,1);meshes[bIdx(r,c)]=mesh;initPiecePhysics(mesh);}
+  }
+}
+
+function applyAuthoritativeState(gs,forceRebuild){
+  if(!gs||typeof gs!=='object')return false;
+  var revision=Math.max(0,Number(gs.revision)||0);
+  if(revision<lastServerRevision)return false;
+  var nextBoard=Array.isArray(gs.board)&&gs.board.length===9?gs.board.map(function(cell){return cell==='X'||cell==='O'?cell:null;}):null;
+  if(!nextBoard)return false;
+  lastServerRevision=revision;
+  currentPlayer=Number(gs.currentPlayer)===1?1:0;
+  if(MY_SLOT===1){matchW=Number(gs.matchW)||0;matchR=Number(gs.matchR)||0;}
+  else{matchW=Number(gs.matchR)||0;matchR=Number(gs.matchW)||0;}
+  manchesDone=Number(gs.manchesDone)||0;
+  mancheResults=relativeRoundResults(gs.mancheResults);
+  isTiebreaker=gs.isTiebreaker===true;
+  mancheStarterPlayer=Number(gs.mancheStarterPlayer)===1?1:0;
+  if(forceRebuild||JSON.stringify(board)!==JSON.stringify(nextBoard))rebuildBoardFromServer(nextBoard);
+  else board=nextBoard.slice();
+  updateDots();updUI();
+  return true;
+}
+
 /* ══════════════════════════════════════════
    SOCKET.IO
 ══════════════════════════════════════════ */
@@ -596,6 +649,23 @@ function scheduleAiMove(){
   },range[0]+Math.random()*(range[1]-range[0]));
 }
 
+function finishFromServerPayload(d){
+  if(!d||gameOver)return;
+  if(d.result==='cancel'){
+    gameOver=true;matchOver=true;mancheOver=true;
+    stopTimer();stopGraceTimer();pendingTimerData=null;
+    var penalty=d.penalty||0;
+    showToast('⚠️','Partie annulée','Les deux joueurs se sont déconnectés.\nPénalité de '+penalty+' HTG appliquée.',4000,function(){sendResult('cancel','both_disconnected');});
+    return;
+  }
+  if(d.result==='draw'||d.winnerSlot===0||d.winner==='draw')return handleMatchEnd('draw',d.reason||'draw');
+  var iWon=d.result==='win'||d.winnerSupabaseId===MY_SUPABASE_ID||
+           (d.winnerSlot&&d.winnerSlot===MY_SLOT)||
+           (d.winner==='player1'&&MY_SLOT===1)||
+           (d.winner==='player2'&&MY_SLOT===2);
+  handleMatchEnd(iWon?'win':'loss',d.reason||'normal');
+}
+
 /* ══════════════════════════════════════════
    FORFAIT
 ══════════════════════════════════════════ */
@@ -691,6 +761,8 @@ function playCell(row,col){
   placeSymbol(MY_SYMBOL,row,col);
   clearHL();
 
+  /* Sans serveur, c'est cette page qui arbitre : elle conclut la manche
+     elle-meme puis laisse l'IA repondre. */
   var win=checkWin(board,MY_SYMBOL);
   if(win){handleWin(MY_SYMBOL,win);return;}
   if(isDraw(board)){handleDraw();return;}
@@ -709,6 +781,7 @@ function handleWin(winner,winLine){
   stopTimer();stopGraceTimer();pendingTimerData=null;cancelAiMove();
   mancheOver=true;manchesDone++;
   var humanWon=(winner===MY_SYMBOL);
+  /* En ligne, le serveur tient le score. Ici il n'y a personne d'autre. */
   if(humanWon){matchW++;mancheResults.push('w');}
   else{matchR++;mancheResults.push('r');}
   mancheStarterPlayer=1-mancheStarterPlayer;
@@ -742,11 +815,12 @@ function handleDraw(){
 }
 
 function finalizeManche(winner,humanWon){
+  roundAnimationActive=false;
+  if(gameOver)return;
   updUI();
   var matchDecided;
   if(isTiebreaker){
-    // Mort subite : la manche décisive ne tranche QUE si elle a un vainqueur.
-    // Un nul en mort subite => on rejoue une nouvelle manche décisive.
+    /* Mort subite : seule une manche avec vainqueur tranche. */
     matchDecided=!!winner;
   }else{
     var manchesLeft=TOTAL_MANCHES-manchesDone;
@@ -756,7 +830,10 @@ function finalizeManche(winner,humanWon){
   if(matchDecided){
     var e2=winner&&humanWon?MY_SYMBOL:(winner&&!humanWon?OP_SYMBOL:'🤝');
     var t2=winner&&humanWon?'Manche gagnée !':(winner&&!humanWon?'Manche perdue !':'Nul !');
-    showToast(e2,t2,'',1500,function(){showMatchResult();});
+    showToast(e2,t2,'',1500,function(){
+      if(pendingGameOverPayload){var payload=pendingGameOverPayload;pendingGameOverPayload=null;finishFromServerPayload(payload);}
+      else showMatchResult();
+    });
   }else{
     var e3=winner&&humanWon?MY_SYMBOL:(winner&&!humanWon?OP_SYMBOL:'🤝');
     var t3=winner&&humanWon?'Vous gagnez !':(winner&&!humanWon?OP_NAME+' gagne !':'Nul !');
@@ -783,9 +860,8 @@ function showMatchResult(){
     matchOver=true;gameOver=true;
     showToast(OP_SYMBOL,'Défaite',OP_NAME+' remporte la partie !\n'+matchW+' – '+matchR,3500,function(){sendResult('loss','normal');});
   }else{
-    // Égalité après les manches réglementaires => MORT SUBITE.
-    // On ne termine PAS le match : on rejoue des manches décisives jusqu'à un vrai gagnant.
-    // (Ne pas mettre matchOver/gameOver ici, sinon la manche décisive resterait bloquée.)
+    /* Egalite apres les manches reglementaires : mort subite. On ne termine
+       PAS le match, sinon la manche decisive resterait bloquee. */
     isTiebreaker=true;
     showToast('⚡','Égalité !','Manche décisive (mort subite) !',2500,function(){resetManche();});
   }
@@ -795,10 +871,15 @@ function handleMatchEnd(outcome,reason){
   if(gameOver)return;
   stopTimer();stopGraceTimer();stopForfeitCountdown();pendingTimerData=null;
   gameOver=true;matchOver=true;mancheOver=true;
-  var humanWon=(outcome==='win');
-  showToast(humanWon?MY_SYMBOL:OP_SYMBOL,humanWon?'Victoire !':'Défaite',
-    humanWon?'L\'adversaire a abandonné.':'Vous avez abandonné la partie.',
-    3500,function(){sendResult(outcome,reason||'forfeit');});
+  var humanWon=(outcome==='win'),isDrawResult=(outcome==='draw');
+  var title=isDrawResult?'Match nul':(humanWon?'Victoire !':'Défaite');
+  var icon=isDrawResult?'🤝':(humanWon?MY_SYMBOL:OP_SYMBOL);
+  var detail;
+  if(reason==='forfeit'||reason==='resign')detail=humanWon?'L\'adversaire a abandonné.':'Vous avez déclaré forfait.';
+  else if(reason==='timeout')detail=humanWon?'L\'adversaire a dépassé le temps autorisé.':'Votre temps de jeu est écoulé.';
+  else if(isDrawResult)detail='La partie se termine sur une égalité.';
+  else detail=(humanWon?MY_NAME:OP_NAME)+' remporte la partie.\n'+matchW+' – '+matchR;
+  showToast(icon,title,detail,3500,function(){if(humanWon)createConfetti();sendResult(outcome,reason||'normal');});
 }
 
 /* ══════════════════════════════════════════
@@ -808,12 +889,18 @@ function resetManche(){
   stopTimer();stopGraceTimer();
   pendingTimerData=null;
   // Garde-fou : une nouvelle manche (y compris la manche décisive) doit toujours être jouable.
-  gameReady=false;mancheOver=false;matchOver=false;gameOver=false;isProcessing=false;
-  board=[null,null,null,null,null,null,null,null,null];
-  while(piecesGroup.children.length)piecesGroup.remove(piecesGroup.children[0]);
-  meshes=[null,null,null,null,null,null,null,null,null];
-  piecePhysics={};clearHL();stopWinPulse();
-  currentPlayer=mancheStarterPlayer;
+  gameReady=false;mancheOver=false;matchOver=false;gameOver=false;isProcessing=false;roundAnimationActive=false;
+  if(pendingServerState){
+    var next=pendingServerState;pendingServerState=null;
+    applyAuthoritativeState(next,true);
+  }else{
+    board=[null,null,null,null,null,null,null,null,null];
+    while(piecesGroup.children.length)piecesGroup.remove(piecesGroup.children[0]);
+    meshes=[null,null,null,null,null,null,null,null,null];
+    piecePhysics={};clearHL();stopWinPulse();
+    currentPlayer=mancheStarterPlayer;
+  }
+  authoritativeMatchWinner=0;
   gameReady=true;
   updUI();
   /* Une manche sur deux commence par l'IA : sans cela le plateau resterait
@@ -835,7 +922,6 @@ function startMatch(){
     (MY_PLAYER===0?'Vous commencez (X)':OP_NAME+' commence (X)'),
     2400,function(){
       resetManche();
-      if(!timerActive&&!graceActive)applyPendingTimer();
     });
 }
 
@@ -1126,3 +1212,4 @@ initAI();
 </script>
 </body>
 </html>
+
