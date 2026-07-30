@@ -185,8 +185,14 @@ var P=new URLSearchParams(window.location.search);
 var TOKEN_FRAGMENT=new URLSearchParams(window.location.hash.slice(1));
 var GAME_AUTH_TOKEN=TOKEN_FRAGMENT.get('token')||P.get('token')||'';
 if(TOKEN_FRAGMENT.has('token')){try{history.replaceState(null,'',location.pathname+location.search);}catch(_) {}}
+/* Mode spectateur (lecture seule), active par ?spectate=1. Le spectateur ne
+   rejoint jamais de place de joueur : il s'abonne au salon et ne fait que
+   recevoir l'etat. Tout le chemin de code « joueur » reste intact. */
+var IS_SPECTATOR=(P.get('spectate')==='1'||P.get('spectator')==='1');
+var SPECTATOR_TOKEN='';
+var spectatorInitReceived=false;
 var ROOM_ID   =P.get('room')    ||'';
-var MY_SLOT   =parseInt(P.get('player')||'1',10);
+var MY_SLOT   =IS_SPECTATOR?1:parseInt(P.get('player')||'1',10);
 var P1_ID     =P.get('p1Id')    ||'';
 var P2_ID     =P.get('p2Id')    ||'';
 var P1_NAME   =P.get('p1Name')  ||'Joueur 1';
@@ -201,7 +207,21 @@ if(!ROOM_ID&&P1_ID&&P2_ID){
 }
 if(!ROOM_ID){ROOM_ID=P.get('gameId')||P.get('matchId')||'';}
 var GAME_ID=P.get('gameId')||P.get('matchId')||'';
-window.addEventListener('message',function(e){if(e.data&&e.data.type==='client:mutual_quit'&&socket&&socket.connected)socket.emit('game_mutual_quit',{room:ROOM_ID,game:'tictactoe',player:MY_SLOT});});
+window.addEventListener('message',function(e){
+  if(!e.data)return;
+  if(IS_SPECTATOR&&e.data.type==='spectator:init'){
+    if(e.data.gameId&&GAME_ID&&e.data.gameId!==GAME_ID)return;
+    SPECTATOR_TOKEN=typeof e.data.token==='string'?e.data.token:'';
+    if(typeof e.data.player1Name==='string'&&e.data.player1Name.trim())P1_NAME=e.data.player1Name.trim().slice(0,32);
+    if(typeof e.data.player2Name==='string'&&e.data.player2Name.trim())P2_NAME=e.data.player2Name.trim().slice(0,32);
+    MY_NAME=P1_NAME;OP_NAME=P2_NAME;
+    spectatorInitReceived=true;
+    if(!socket)initSocket();
+    return;
+  }
+  if(!IS_SPECTATOR&&e.data.type==='client:mutual_quit'&&socket&&socket.connected)
+    socket.emit('game_mutual_quit',{room:ROOM_ID,game:'tictactoe',player:MY_SLOT});
+});
 
 var MY_PLAYER      = MY_SLOT===1?0:1;
 var MY_SUPABASE_ID = MY_SLOT===1?P1_ID:P2_ID;
@@ -553,12 +573,15 @@ function applyAuthoritativeState(gs,forceRebuild){
    SOCKET.IO
 ══════════════════════════════════════════ */
 function initSocket(){
+  /* Sans jeton spectateur, se connecter ne servirait a rien : le serveur
+     refuse un abonnement non authentifie. On attend le postMessage. */
+  if(IS_SPECTATOR&&!spectatorInitReceived)return;
   var lt=document.querySelector('#loading-text');
-  if(lt)lt.textContent='ROOM: '+(ROOM_ID||'MANQUANT')+' | SLOT: '+MY_SLOT;
+  if(lt)lt.textContent=IS_SPECTATOR?'CONNEXION AU DIRECT…':'ROOM: '+(ROOM_ID||'MANQUANT')+' | SLOT: '+MY_SLOT;
 
   socket=io({
     transports:['websocket','polling'],
-    auth:{token:GAME_AUTH_TOKEN},
+    auth:{token:IS_SPECTATOR?SPECTATOR_TOKEN:GAME_AUTH_TOKEN},
     reconnection:true,
     reconnectionAttempts:Infinity,
     reconnectionDelay:1000,
@@ -568,11 +591,47 @@ function initSocket(){
 
   socket.on('connect',function(){
     document.getElementById('reconn-bar').classList.remove('show');
-    emitJoin();
+    if(IS_SPECTATOR)socket.emit('spectator_join',{gameId:GAME_ID});
+    else emitJoin();
   });
 
   socket.on('disconnect',function(){
     if(!gameOver)document.getElementById('reconn-bar').classList.add('show');
+    if(IS_SPECTATOR)try{window.parent.postMessage({type:'spectator:reconnecting',game:'tictactoe',gameId:GAME_ID},'*');}catch(_){}
+  });
+
+  /* ── Voie spectateur : abonnement, etat complet, erreurs ── */
+  socket.on('spectator:joined',function(){
+    hideLoading();
+    gameReady=false;
+    try{window.parent.postMessage({type:'spectator:connected',game:'tictactoe',gameId:GAME_ID},'*');}catch(_){}
+  });
+
+  socket.on('spectator_state',function(snapshot){
+    if(!snapshot||!snapshot.state)return;
+    hideLoading();
+    var st=snapshot.state;
+    if(snapshot.players){
+      if(snapshot.players[1]&&snapshot.players[1].name)P1_NAME=snapshot.players[1].name;
+      if(snapshot.players[2]&&snapshot.players[2].name)P2_NAME=snapshot.players[2].name;
+      MY_NAME=P1_NAME;OP_NAME=P2_NAME;
+    }
+    TOTAL_MANCHES=Math.max(1,Number(st.totalManches)||TOTAL_MANCHES);
+    if(st.gameState)applyAuthoritativeState(st.gameState,false);
+    updUI();
+    /* Le spectateur suit le meme chronometre que les joueurs. */
+    if(st.graceStartTime||st.turnStartTime){
+      pendingTimerData={type:'sync',serverTime:snapshot.serverTime,turnPlayer:st.turnPlayer,
+        graceStartTime:st.graceStartTime||null,turnStartTime:st.turnStartTime||null};
+      applyPendingTimer();
+    }
+  });
+
+  socket.on('spectator:error',function(data){
+    var message=(data&&data.message)||'Ce direct n\u2019est plus disponible.';
+    var lt3=document.querySelector('#loading-text');
+    if(lt3)lt3.textContent=message;
+    try{window.parent.postMessage({type:'spectator:error',game:'tictactoe',gameId:GAME_ID,message:message},'*');}catch(_){}
   });
 
   socket.on('connect_error',function(){
@@ -834,6 +893,7 @@ function startGraceTimer(isMyTurn,serverStartTime,duration){
    CLIC CELLULE
 ══════════════════════════════════════════ */
 function playCell(row,col){
+  if(IS_SPECTATOR)return;   /* lecture seule */
   if(!gameReady||mancheOver||matchOver||isProcessing)return;
   if(currentPlayer!==MY_PLAYER)return;
   if(board[bIdx(row,col)])return;
@@ -1270,6 +1330,10 @@ function renderLoop(){
 renderLoop();
 
 /* INIT */
+if(IS_SPECTATOR){
+  /* On previent l'application hote que la page est prete a recevoir le jeton. */
+  try{window.parent.postMessage({type:'spectator:ready',game:'tictactoe',gameId:GAME_ID},'*');}catch(_){}
+}
 initSocket();
 
 })();
