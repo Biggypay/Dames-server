@@ -365,6 +365,27 @@ function hydratePersistedRoom(record) {
   }
   room.turnTimer = null; room.graceTimer = null; room.revealTimer = null; room.disconnectTimer = null;
   if (record.game_type === 'chifoumi') room.revealPending = false;
+  if (record.game_type === 'tictactoe') {
+    room.totalManches = TTT_TOTAL_ROUNDS;
+    room.gameState = room.gameState && typeof room.gameState === 'object' ? room.gameState : tttState();
+    room.gameState.revision = Math.max(0, Number(room.gameState.revision) || 0);
+    // A round result is persisted before the animation delay. If Render restarts
+    // during that delay, resume from the next clean round instead of leaving the
+    // room permanently locked in resolvingRound=true.
+    if (room.gameState.resolvingRound) {
+      const lastResult = room.gameState.mancheResults?.[room.gameState.mancheResults.length - 1];
+      const recoveredWinner = room.gameState.isTiebreaker
+        ? (lastResult === 'w' ? 1 : (lastResult === 'r' ? 2 : 0))
+        : tttMatchWinner(room.gameState, room.totalManches);
+      if (recoveredWinner) room.recoveredTTTWinnerSlot = recoveredWinner;
+      else {
+        room.gameState.board = Array(9).fill(null);
+        room.gameState.resolvingRound = false;
+        room.gameState.currentPlayer = Number(room.gameState.mancheStarterPlayer) === 1 ? 1 : 0;
+        room.gameState.revision++;
+      }
+    }
+  }
   room.settlementPromise = null; room.settlementRetryTimer = null; room.cleanupTimer = null; room.reconnectDeadline = null;
   room.mutualQuitRequests = new Set(Array.isArray(room.mutualQuitRequests) ? room.mutualQuitRequests : []);
   if (room.status !== 'finished') {
@@ -386,7 +407,12 @@ async function restorePersistedRooms() {
       if (!room || !roomMap) continue;
       roomMap.set(room.id, room);
       restored++;
-      if (room.status === 'finished' && room.pendingSettlement) {
+      if (record.game_type === 'tictactoe' && room.recoveredTTTWinnerSlot) {
+        const winnerSlot = room.recoveredTTTWinnerSlot;
+        delete room.recoveredTTTWinnerSlot;
+        room.status = 'playing';
+        notifyTTTRoomOver(room, room.id, winnerSlot, 'normal');
+      } else if (room.status === 'finished' && room.pendingSettlement) {
         const pending = room.pendingSettlement;
         void settleRoomInSupabase(room, record.game_type, pending.winnerSlot, pending.reason);
       } else if (room.status === 'paused') {
@@ -861,9 +887,10 @@ function checkersClientBoard(board) {
   }));
 }
 
+const TTT_TOTAL_ROUNDS = Math.max(1, Math.min(15, Number(process.env.TTT_TOTAL_ROUNDS) || 5));
 const TTT_LINES = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8], [0, 4, 8], [2, 4, 6]];
 function tttWinningLine(board, symbol) { return TTT_LINES.find(line => line.every(index => board[index] === symbol)) || null; }
-function tttState() { return { board: Array(9).fill(null), currentPlayer: 0, matchW: 0, matchR: 0, manchesDone: 0, mancheResults: [], isTiebreaker: false, mancheStarterPlayer: 0, resolvingRound: false }; }
+function tttState() { return { board: Array(9).fill(null), currentPlayer: 0, matchW: 0, matchR: 0, manchesDone: 0, mancheResults: [], isTiebreaker: false, mancheStarterPlayer: 0, resolvingRound: false, revision: 0 }; }
 function tttMatchWinner(state, total) {
   if (state.isTiebreaker) return null;
   const remaining = total - state.manchesDone;
@@ -884,15 +911,23 @@ function finishTTTRound(room, roomId, winnerSlot, winLine) {
   else state.mancheResults.push('d');
   state.mancheStarterPlayer = 1 - state.mancheStarterPlayer;
   state.currentPlayer = state.mancheStarterPlayer;
-  const winner = winnerSlot || 'draw';
-  io.to(roomId).emit('ttt_manche_result', { room: roomId, winner, winLine: winLine ? winLine.map(index => ({ row: Math.floor(index / 3), col: index % 3 })) : null, matchW: state.matchW, matchR: state.matchR, manchesDone: state.manchesDone, mancheResults: state.mancheResults, isTiebreaker: state.isTiebreaker, nextStarterPlayer: state.mancheStarterPlayer });
+  state.revision = Math.max(0, Number(state.revision) || 0) + 1;
   const matchWinner = state.isTiebreaker ? winnerSlot : tttMatchWinner(state, room.totalManches);
+  const winner = winnerSlot || 'draw';
+  io.to(roomId).emit('ttt_manche_result', { room: roomId, winner, winLine: winLine ? winLine.map(index => ({ row: Math.floor(index / 3), col: index % 3 })) : null, matchW: state.matchW, matchR: state.matchR, manchesDone: state.manchesDone, mancheResults: [...state.mancheResults], isTiebreaker: state.isTiebreaker, nextStarterPlayer: state.mancheStarterPlayer, matchWinner, revision: state.revision, totalManches: room.totalManches });
   persistRoomSoon('tictactoe', room);
   setTimeout(() => {
-    if (room.status !== 'playing') return;
+    if (room.status === 'finished') return;
     if (matchWinner) return notifyTTTRoomOver(room, roomId, matchWinner, 'normal');
     state.board = Array(9).fill(null);
     state.resolvingRound = false;
+    state.revision++;
+    persistRoomSoon('tictactoe', room);
+    if (room.status !== 'playing') {
+      room.pausedTurnPlayer = state.currentPlayer + 1;
+      return;
+    }
+    io.to(roomId).emit('ttt_state_sync', tttSnapshot(room));
     startTTTTurnTimer(room, roomId, state.currentPlayer + 1);
   }, 2800);
 }
@@ -1249,21 +1284,59 @@ function clearTTTTurnTimers(troom) {
   troom.turnStartTime = null; troom.graceStartTime = null; troom.turnPlayer = null;
 }
 
+function tttSnapshot(troom) {
+  const state = troom.gameState || tttState();
+  const snap = {
+    room: troom.id,
+    revision: Math.max(0, Number(state.revision) || 0),
+    gameState: {
+      board: Array.isArray(state.board) ? [...state.board] : Array(9).fill(null),
+      currentPlayer: Number(state.currentPlayer) === 1 ? 1 : 0,
+      matchW: Number(state.matchW) || 0,
+      matchR: Number(state.matchR) || 0,
+      manchesDone: Number(state.manchesDone) || 0,
+      mancheResults: Array.isArray(state.mancheResults) ? [...state.mancheResults] : [],
+      isTiebreaker: state.isTiebreaker === true,
+      mancheStarterPlayer: Number(state.mancheStarterPlayer) === 1 ? 1 : 0,
+      resolvingRound: state.resolvingRound === true,
+      revision: Math.max(0, Number(state.revision) || 0)
+    },
+    totalManches: troom.totalManches || TTT_TOTAL_ROUNDS,
+    status: troom.status,
+    serverTime: Date.now(),
+    turnPlayer: troom.turnPlayer
+  };
+  if (troom.status === 'playing' && troom.turnPlayer !== null) {
+    if (troom.graceStartTime) { snap.graceStartTime = troom.graceStartTime; snap.graceDuration = GRACE_DURATION; }
+    else if (troom.turnStartTime) { snap.turnStartTime = troom.turnStartTime; snap.turnDuration = TURN_DURATION; }
+  }
+  return snap;
+}
+
+const _tttSyncLoop = setInterval(() => {
+  for (const [roomId, troom] of tttRooms) {
+    if (troom.status !== 'playing') continue;
+    io.to(roomId).emit('ttt_state_sync', tttSnapshot(troom));
+  }
+}, DAMES_SYNC_INTERVAL);
+if (_tttSyncLoop.unref) _tttSyncLoop.unref();
+
 function startTTTTurnTimer(troom, roomId, playerSlot) {
   clearTTTTurnTimers(troom);
-  if (troom.status === 'finished') return;
+  const state = troom.gameState;
+  if (troom.status !== 'playing' || !state || state.resolvingRound || state.currentPlayer + 1 !== playerSlot) return;
   const now = Date.now();
   troom.turnPlayer = playerSlot; troom.turnStartTime = now; troom.graceStartTime = null;
   io.to(roomId).emit('ttt_turn_start', { player: playerSlot, startTime: now, duration: TURN_DURATION });
   troom.turnTimer = setTimeout(() => {
     troom.turnTimer = null;
-    if (troom.status === 'finished') return;
+    if (troom.status !== 'playing' || state.resolvingRound || state.currentPlayer + 1 !== playerSlot) return;
     const graceNow = Date.now();
     troom.graceStartTime = graceNow;
     io.to(roomId).emit('ttt_turn_warning', { player: playerSlot, startTime: graceNow, duration: GRACE_DURATION });
     troom.graceTimer = setTimeout(() => {
       troom.graceTimer = null;
-      if (troom.status === 'finished') return;
+      if (troom.status !== 'playing' || state.resolvingRound || state.currentPlayer + 1 !== playerSlot) return;
       const winnerSlot = playerSlot === 1 ? 2 : 1;
       notifyTTTRoomOver(troom, roomId, winnerSlot, 'timeout');
     }, GRACE_DURATION);
@@ -2531,6 +2604,20 @@ io.on('connection', (socket) => {
     socket.spectatorGameId = null;
   });
 
+  // Un spectateur peut redemander un snapshot complet après une coupure ou un
+  // événement manqué. Cette voie reste strictement en lecture seule et ne
+  // permet jamais de rejoindre une place joueur ni d'envoyer un coup.
+  socket.on('spectator_request_state', ({ gameId } = {}) => {
+    if (!socketAllow(socket.id, 'spectator-state', 12, 10000)) return;
+    if (!isUuid(gameId) || socket.spectatorGameId !== gameId || !socket.spectatorRoomId) return;
+    const live = findLiveRoomByDatabaseGameId(gameId);
+    if (!live || live.roomId !== socket.spectatorRoomId) {
+      return socket.emit('spectator:error', { code: 'not_live', message: 'Ce match n’est plus en direct.' });
+    }
+    const snapshot = spectatorRoomSnapshot(live.gameName, live.room);
+    if (snapshot) socket.emit('spectator_state', snapshot);
+  });
+
   socket.on('disconnecting', () => {
     const roomId = socket.spectatorRoomId;
     if (!roomId) return;
@@ -2784,15 +2871,16 @@ io.on('connection', (socket) => {
   // ══════════════════════════════════════════════════════
   //  TTT MULTIJOUEUR
   // ══════════════════════════════════════════════════════
-  socket.on('ttt_join', async ({ room, player, supabaseId, name, bet, currency, manches, gameId }) => {
+  socket.on('ttt_join', async ({ room, player, supabaseId, name, bet, currency, gameId }) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return rejectSocket(socket, 'Room ou joueur invalide.');
     const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'tictactoe', player, bet);
     if (!databaseCheck.ok) return rejectSocket(socket, databaseCheck.message);
     let troom = tttRooms.get(room);
     if (!troom) {
-      troom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, gameState: tttState(), turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null, turnPlayer: null, totalManches: Math.max(1, Math.min(15, Number(manches) || 5)) };
+      troom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, gameState: tttState(), turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null, turnPlayer: null, totalManches: TTT_TOTAL_ROUNDS };
       tttRooms.set(room, troom);
     }
+    troom.totalManches = TTT_TOTAL_ROUNDS;
     if (!bindDatabaseGame(troom, gameId)) return rejectSocket(socket, 'Cette room est déjà liée à une autre partie.');
     if (!joinRoomAsAuthenticatedPlayer(socket, troom, room, player, supabaseId, name)) return;
     if (bet && !troom.betAmount) troom.betAmount = bet;
@@ -2825,7 +2913,7 @@ io.on('connection', (socket) => {
       socket.to(room).emit('ttt_player_status', { slot: player, connected: true, name });
       socket.to(room).emit('player:reconnected', { message: `${name} est de retour !` });
       const opponentName = player === 1 ? (troom.players[2]?.name || 'Adversaire') : (troom.players[1]?.name || 'Adversaire');
-      socket.emit('ttt_start', { room, yourSlot: player, opponentName, bet: troom.betAmount, currency: troom.currency, reconnected: true, paused: troom.status === 'paused', gameState: troom.gameState || null, totalManches: troom.totalManches });
+      socket.emit('ttt_start', { room, yourSlot: player, opponentName, bet: troom.betAmount, currency: troom.currency, reconnected: true, paused: troom.status === 'paused', gameState: troom.gameState || null, totalManches: troom.totalManches, revision: troom.gameState?.revision || 0 });
       if (troom.turnPlayer !== null && troom.status === 'playing') {
         const now = Date.now();
         if (troom.graceStartTime) socket.emit('ttt_turn_sync', { serverTime: now, turnPlayer: troom.turnPlayer, graceStartTime: troom.graceStartTime, duration: GRACE_DURATION });
@@ -2839,26 +2927,42 @@ io.on('connection', (socket) => {
       troom.startedAt = Date.now();
       persistRoomSoon('tictactoe', troom);
       const p1 = troom.players[1], p2 = troom.players[2];
-      io.to(p1.socketId).emit('ttt_start', { room, yourSlot: 1, opponentName: p2.name, bet: troom.betAmount, currency: troom.currency, reconnected: false, totalManches: troom.totalManches });
-      io.to(p2.socketId).emit('ttt_start', { room, yourSlot: 2, opponentName: p1.name, bet: troom.betAmount, currency: troom.currency, reconnected: false, totalManches: troom.totalManches });
-      setTimeout(() => { if (troom.status === 'playing') startTTTTurnTimer(troom, room, 1); }, 3000);
+      io.to(p1.socketId).emit('ttt_start', { room, yourSlot: 1, opponentName: p2.name, bet: troom.betAmount, currency: troom.currency, reconnected: false, totalManches: troom.totalManches, gameState: troom.gameState, revision: troom.gameState.revision });
+      io.to(p2.socketId).emit('ttt_start', { room, yourSlot: 2, opponentName: p1.name, bet: troom.betAmount, currency: troom.currency, reconnected: false, totalManches: troom.totalManches, gameState: troom.gameState, revision: troom.gameState.revision });
+      // Start exactly once. The old delayed timeout could fire after player 1's
+      // first move and incorrectly put the clock back on player 1.
+      startTTTTurnTimer(troom, room, 1);
     }
   });
 
-  socket.on('ttt_move', ({ room, player, row, col, symbol }) => {
-    if (!validRoom(room) || !validPlayerSlot(player) || !Number.isInteger(row) || !Number.isInteger(col) || row < 0 || row > 2 || col < 0 || col > 2) return;
+  socket.on('ttt_move', ({ room, player, row, col, symbol, clientMoveId } = {}) => {
+    if (!validRoom(room) || !validPlayerSlot(player) || !Number.isInteger(row) || !Number.isInteger(col) || row < 0 || row > 2 || col < 0 || col > 2) return rejectSocket(socket, 'Coup Tic-Tac-Toe invalide.');
     const troom = tttRooms.get(room), state = troom?.gameState;
-    if (!troom || !state || troom.status !== 'playing' || state.resolvingRound || troom.players[player]?.socketId !== socket.id) return;
+    const rejectMove = (message) => {
+      socket.emit('game:error', { message, game: 'tictactoe', recoverable: true });
+      if (troom && state) socket.emit('ttt_state_sync', tttSnapshot(troom));
+    };
+    if (!troom || !state) return rejectMove('Partie Tic-Tac-Toe introuvable.');
+    if (troom.status !== 'playing' || state.resolvingRound || troom.players[player]?.socketId !== socket.id) return rejectMove('Ce coup ne peut pas être joué maintenant.');
     const expectedSymbol = player === 1 ? 'X' : 'O', index = row * 3 + col;
-    if (state.currentPlayer !== player - 1 || symbol !== expectedSymbol || state.board[index] !== null) return rejectSocket(socket, 'Coup Tic-Tac-Toe invalide.');
+    if (state.currentPlayer !== player - 1 || symbol !== expectedSymbol || state.board[index] !== null) return rejectMove('Coup Tic-Tac-Toe invalide.');
+    clearTTTTurnTimers(troom);
     state.board[index] = expectedSymbol;
     const line = tttWinningLine(state.board, expectedSymbol);
     const draw = !line && state.board.every(Boolean);
     state.currentPlayer = player === 1 ? 1 : 0;
-    socket.to(room).emit('ttt_move', { room, player, row, col, symbol: expectedSymbol, boardState: JSON.stringify(state.board), nextPlayer: state.currentPlayer });
+    state.revision = Math.max(0, Number(state.revision) || 0) + 1;
+    io.to(room).emit('ttt_move', { room, player, row, col, symbol: expectedSymbol, boardState: JSON.stringify(state.board), nextPlayer: state.currentPlayer, revision: state.revision, clientMoveId: typeof clientMoveId === 'string' ? clientMoveId.slice(0, 80) : null });
     persistRoomSoon('tictactoe', troom);
     if (line || draw) return finishTTTRound(troom, room, line ? player : 0, line);
     startTTTTurnTimer(troom, room, state.currentPlayer + 1);
+  });
+
+  socket.on('ttt_request_state', ({ room } = {}) => {
+    if (!validRoom(room) || !socketAllow(socket.id, 'tttsync', 20, 10000)) return;
+    const troom = tttRooms.get(room);
+    if (!troom || !socketIsPlayer(troom, socket.id)) return;
+    socket.emit('ttt_state_sync', tttSnapshot(troom));
   });
 
   socket.on('ttt_manche_end', () => {}); // Kept for old clients; scores are server-owned.
@@ -3560,3 +3664,4 @@ startServer().catch(error => {
   console.error('[startup] fatal error', error.message);
   process.exit(1);
 });
+

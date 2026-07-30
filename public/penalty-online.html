@@ -254,6 +254,9 @@ body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%
    PARAMÈTRES URL
 ══════════════════════════════════════ */
 var P           = new URLSearchParams(window.location.search);
+var TOKEN_FRAGMENT = new URLSearchParams(window.location.hash.slice(1));
+var GAME_AUTH_TOKEN = TOKEN_FRAGMENT.get('token') || P.get('token') || '';
+if (TOKEN_FRAGMENT.has('token')) { try { history.replaceState(null, '', location.pathname + location.search); } catch (_) {} }
 var ROOM_ID     = P.get('room')     || '';
 var MY_SLOT     = parseInt(P.get('player') || '1', 10);  /* 1 ou 2 */
 var P1_ID       = P.get('p1Id')     || '';
@@ -347,7 +350,7 @@ function initSocket() {
 
   socket = io({
     transports: ['websocket', 'polling'],
-    auth: { token: P.get('token') || '' },
+    auth: { token: GAME_AUTH_TOKEN },
     reconnection: true,
     reconnectionAttempts: Infinity,
     reconnectionDelay: 1000,

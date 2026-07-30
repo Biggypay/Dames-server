@@ -182,6 +182,9 @@ window.onerror=function(msg,url,line,col,err){
    URL PARAMS
 ══════════════════════════════════════════ */
 var P=new URLSearchParams(window.location.search);
+var TOKEN_FRAGMENT=new URLSearchParams(window.location.hash.slice(1));
+var GAME_AUTH_TOKEN=TOKEN_FRAGMENT.get('token')||P.get('token')||'';
+if(TOKEN_FRAGMENT.has('token')){try{history.replaceState(null,'',location.pathname+location.search);}catch(_) {}}
 var ROOM_ID   =P.get('room')    ||'';
 var MY_SLOT   =parseInt(P.get('player')||'1',10);
 var P1_ID     =P.get('p1Id')    ||'';
@@ -241,6 +244,7 @@ function sendResult(outcome,reason){
   var msg={type:'game_result',game:'tictactoe',room:ROOM_ID,winner:winnerId,loser:loserId,bet:BET_AMOUNT,currency:CURRENCY,reason:reason||'normal',p1Id:P1_ID,p2Id:P2_ID};
   // Wallet settlement is emitted by the authoritative server, never by this iframe.
   if(socket&&socket.connected)socket.emit('ttt_result',msg);
+  try{window.parent.postMessage(msg,'*');}catch(e){}
 }
 
 /* ══════════════════════════════════════════
@@ -254,6 +258,9 @@ var currentPlayer=0;
 var board=[null,null,null,null,null,null,null,null,null];
 var meshes=[null,null,null,null,null,null,null,null,null];
 var mancheStarterPlayer=0;
+var lastServerRevision=-1,pendingMove=null,pendingServerState=null;
+var authoritativeMatchWinner=0,pendingGameOverPayload=null;
+var roundAnimationActive=false;
 
 var TIMER_DURATION=30000,CIRC=2*Math.PI*26;
 var timerStart=null,timerRAF=null,timerActive=false;
@@ -505,6 +512,43 @@ function placeSymbol(sym,row,col){
   animPop(m);
 }
 
+function relativeRoundResults(results){
+  var list=Array.isArray(results)?results:[];
+  if(MY_SLOT===1)return list.slice();
+  return list.map(function(result){return result==='w'?'r':(result==='r'?'w':result);});
+}
+
+function rebuildBoardFromServer(nextBoard){
+  while(piecesGroup.children.length)piecesGroup.remove(piecesGroup.children[0]);
+  meshes=[null,null,null,null,null,null,null,null,null];
+  piecePhysics={};clearHL();stopWinPulse();
+  board=nextBoard.slice();
+  for(var r=0;r<3;r++)for(var c=0;c<3;c++){
+    var sym=board[bIdx(r,c)];
+    if(sym){var mesh=sym==='X'?makeX(r,c):makeO(r,c);mesh.scale.set(1,1,1);meshes[bIdx(r,c)]=mesh;initPiecePhysics(mesh);}
+  }
+}
+
+function applyAuthoritativeState(gs,forceRebuild){
+  if(!gs||typeof gs!=='object')return false;
+  var revision=Math.max(0,Number(gs.revision)||0);
+  if(revision<lastServerRevision)return false;
+  var nextBoard=Array.isArray(gs.board)&&gs.board.length===9?gs.board.map(function(cell){return cell==='X'||cell==='O'?cell:null;}):null;
+  if(!nextBoard)return false;
+  lastServerRevision=revision;
+  currentPlayer=Number(gs.currentPlayer)===1?1:0;
+  if(MY_SLOT===1){matchW=Number(gs.matchW)||0;matchR=Number(gs.matchR)||0;}
+  else{matchW=Number(gs.matchR)||0;matchR=Number(gs.matchW)||0;}
+  manchesDone=Number(gs.manchesDone)||0;
+  mancheResults=relativeRoundResults(gs.mancheResults);
+  isTiebreaker=gs.isTiebreaker===true;
+  mancheStarterPlayer=Number(gs.mancheStarterPlayer)===1?1:0;
+  if(forceRebuild||JSON.stringify(board)!==JSON.stringify(nextBoard))rebuildBoardFromServer(nextBoard);
+  else board=nextBoard.slice();
+  updateDots();updUI();
+  return true;
+}
+
 /* ══════════════════════════════════════════
    SOCKET.IO
 ══════════════════════════════════════════ */
@@ -514,7 +558,7 @@ function initSocket(){
 
   socket=io({
     transports:['websocket','polling'],
-    auth:{token:P.get('token')||''},
+    auth:{token:GAME_AUTH_TOKEN},
     reconnection:true,
     reconnectionAttempts:Infinity,
     reconnectionDelay:1000,
@@ -538,51 +582,28 @@ function initSocket(){
 
   socket.on('ttt_start',function(data){
     hideLoading();
-
-    if(data.reconnected&&gameReady&&!data.paused){
-      gameOver=false;isProcessing=false;
-      stopForfeitCountdown();
-      showToast('📶','Connexion rétablie','La partie reprend !',2000,function(){updUI();});
-
-    }else if(data.reconnected&&!gameReady&&!data.gameState){
-      startMatch();
-
-    }else if(data.reconnected&&data.gameState){
+    TOTAL_MANCHES=Math.max(1,Number(data.totalManches)||5);
+    if(data.gameState){
       gameOver=false;isProcessing=false;resultSent=false;
-      mancheOver=false;matchOver=false;
-      stopForfeitCountdown();
-      try{
-        var gs=data.gameState;
-        board=gs.board||[null,null,null,null,null,null,null,null,null];
-        currentPlayer=gs.currentPlayer!==undefined?gs.currentPlayer:0;
-        matchW=gs.matchW||0;matchR=gs.matchR||0;
-        manchesDone=gs.manchesDone||0;mancheResults=gs.mancheResults||[];
-        isTiebreaker=gs.isTiebreaker||false;
-        mancheStarterPlayer=gs.mancheStarterPlayer||0;
-        while(piecesGroup.children.length)piecesGroup.remove(piecesGroup.children[0]);
-        meshes=[null,null,null,null,null,null,null,null,null];
-        piecePhysics={};
-        for(var r=0;r<3;r++)for(var c=0;c<3;c++){
-          var sym=board[bIdx(r,c)];
-          if(sym){var m2=sym==='X'?makeX(r,c):makeO(r,c);m2.scale.set(1,1,1);meshes[bIdx(r,c)]=m2;initPiecePhysics(m2);}
-        }
-        clearHL();stopTimer();stopGraceTimer();
-        updateDots();
-        showToast('📶','Partie restaurée','Reprise là où vous étiez !',2400,function(){
-          gameReady=true;updUI();
-          applyPendingTimer();
+      mancheOver=data.gameState.resolvingRound===true;matchOver=false;roundAnimationActive=false;
+      pendingMove=null;pendingServerState=null;authoritativeMatchWinner=0;
+      stopForfeitCountdown();stopTimer();stopGraceTimer();
+      applyAuthoritativeState(data.gameState,true);
+      if(data.reconnected){
+        showToast('📶','Partie restaurée','Reprise là où vous étiez !',2000,function(){
+          gameReady=!mancheOver&&!data.paused;updUI();applyPendingTimer();
         });
-      }catch(e){startMatch();}
-
-    }else{
-      startMatch();
-    }
+      }else{
+        showToast('🎲','Partie commencée',(MY_PLAYER===0?'Vous commencez (X)':OP_NAME+' commence (X)'),2400,function(){
+          gameReady=!mancheOver;updUI();applyPendingTimer();
+        });
+      }
+    }else startMatch();
   });
 
   socket.on('ttt_turn_start',function(data){
-    if(gameOver||mancheOver||matchOver)return;
     pendingTimerData={type:'turn_start',player:data.player,startTime:data.startTime};
-    if(!gameReady)return;
+    if(gameOver||mancheOver||matchOver||!gameReady)return;
     pendingTimerData=null;
     stopGraceTimer();
     var isMyTurn=(data.player===MY_SLOT);
@@ -590,15 +611,16 @@ function initSocket(){
   });
 
   socket.on('ttt_turn_warning',function(data){
-    if(gameOver||mancheOver||matchOver)return;
+    pendingTimerData={type:'sync',serverTime:Date.now(),turnPlayer:data.player,graceStartTime:data.startTime,turnStartTime:null};
+    if(gameOver||mancheOver||matchOver||!gameReady)return;
+    pendingTimerData=null;
     var isMyTurn=(data.player===MY_SLOT);
     startGraceTimer(isMyTurn,data.startTime,data.duration);
   });
 
   socket.on('ttt_turn_sync',function(data){
-    if(gameOver||mancheOver||matchOver)return;
     pendingTimerData={type:'sync',serverTime:data.serverTime,turnPlayer:data.turnPlayer,graceStartTime:data.graceStartTime||null,turnStartTime:data.turnStartTime||null};
-    if(!gameReady)return;
+    if(gameOver||mancheOver||matchOver||!gameReady)return;
     pendingTimerData=null;
     var offset=Date.now()-data.serverTime;
     if(data.graceStartTime){var isMyTurn=(data.turnPlayer===MY_SLOT);startGraceTimer(isMyTurn,data.graceStartTime+offset,60000);}
@@ -606,26 +628,63 @@ function initSocket(){
   });
 
   socket.on('ttt_move',function(data){
-    if(data.player===MY_SLOT)return;
-    if(mancheOver||matchOver||isProcessing)return;
-    isProcessing=true;
+    if(matchOver||gameOver)return;
+    var incomingRevision=Math.max(0,Number(data.revision)||0);
+    if(incomingRevision<lastServerRevision)return;
+    lastServerRevision=incomingRevision;
     var sym=data.player===1?'X':'O';
-    placeSymbol(sym,data.row,data.col);
+    var index=bIdx(data.row,data.col);
+    if(!board[index])placeSymbol(sym,data.row,data.col);
+    else if(board[index]!==sym){socket.emit('ttt_request_state',{room:ROOM_ID});return;}
+    if(data.boardState){
+      try{var authoritativeBoard=JSON.parse(data.boardState);if(Array.isArray(authoritativeBoard)&&authoritativeBoard.length===9)board=authoritativeBoard;}catch(e){}
+    }
     clearHL();
-    var win=checkWin(board,sym);
-    if(win){handleWin(sym,win);return;}
-    if(isDraw(board)){handleDraw();return;}
-    currentPlayer=MY_PLAYER;
+    currentPlayer=Number(data.nextPlayer)===1?1:0;
+    if(data.player===MY_SLOT)pendingMove=null;
     isProcessing=false;
-    gameReady=true;
+    gameReady=!checkWin(board,sym)&&!isDraw(board);
     updUI();
     if(!timerActive&&!graceActive)applyPendingTimer();
   });
 
   socket.on('ttt_manche_result',function(data){
     if(mancheOver||matchOver)return;
-    if(data.winner==='draw'){handleDraw();}
-    else{var winSym=data.winner===1?'X':'O';var winLine=data.winLine||null;if(winLine)handleWin(winSym,winLine);else handleDraw();}
+    lastServerRevision=Math.max(lastServerRevision,Number(data.revision)||0);
+    if(MY_SLOT===1){matchW=Number(data.matchW)||0;matchR=Number(data.matchR)||0;}
+    else{matchW=Number(data.matchR)||0;matchR=Number(data.matchW)||0;}
+    manchesDone=Number(data.manchesDone)||0;
+    mancheResults=relativeRoundResults(data.mancheResults);
+    isTiebreaker=data.isTiebreaker===true;
+    mancheStarterPlayer=Number(data.nextStarterPlayer)===1?1:0;
+    authoritativeMatchWinner=Number(data.matchWinner)||0;
+    pendingMove=null;gameReady=false;isProcessing=true;roundAnimationActive=true;updateDots();
+    if(data.winner==='draw')handleDraw();
+    else{var winSym=data.winner===1?'X':'O';var winLine=data.winLine||null;if(winLine)handleWin(winSym,winLine);else{socket.emit('ttt_request_state',{room:ROOM_ID});handleDraw();}}
+  });
+
+  socket.on('ttt_state_sync',function(data){
+    if(!data||!data.gameState||gameOver)return;
+    TOTAL_MANCHES=Math.max(1,Number(data.totalManches)||TOTAL_MANCHES);
+    if(roundAnimationActive||data.gameState.resolvingRound===true){
+      pendingServerState=data.gameState;
+      lastServerRevision=Math.max(lastServerRevision,Number(data.revision)||Number(data.gameState.revision)||0);
+      return;
+    }
+    pendingServerState=null;pendingMove=null;isProcessing=false;mancheOver=false;
+    applyAuthoritativeState(data.gameState,false);
+    gameReady=data.status==='playing';
+    if(data.graceStartTime||data.turnStartTime){
+      pendingTimerData={type:'sync',serverTime:data.serverTime,turnPlayer:data.turnPlayer,graceStartTime:data.graceStartTime||null,turnStartTime:data.turnStartTime||null};
+      applyPendingTimer();
+    }
+  });
+
+  socket.on('game:error',function(data){
+    if(!data||data.game!=='tictactoe'||!data.recoverable)return;
+    pendingMove=null;isProcessing=true;gameReady=false;
+    socket.emit('ttt_request_state',{room:ROOM_ID});
+    showToast('⚠️','Coup non validé',data.message||'Le serveur resynchronise le plateau.',1600,function(){});
   });
 
   socket.on('game:reconnect_deadline',function(data){
@@ -661,29 +720,34 @@ function initSocket(){
     if(gameOver)return;
     hideLoading();
     stopForfeitCountdown();
-    if(d.result==='cancel'){
-      gameOver=true;matchOver=true;mancheOver=true;
-      stopTimer();stopGraceTimer();pendingTimerData=null;
-      var penalty=d.penalty||0;
-      showToast('⚠️','Partie annulée',
-        'Les deux joueurs se sont déconnectés.\nPénalité de '+penalty+' HTG appliquée.',
-        4000,function(){sendResult('cancel','both_disconnected');});
-      return;
-    }
-    var iWon=d.winnerSupabaseId===MY_SUPABASE_ID||
-             (d.winnerSlot&&d.winnerSlot===MY_SLOT)||
-             (d.winner==='player1'&&MY_SLOT===1)||
-             (d.winner==='player2'&&MY_SLOT===2);
-    handleMatchEnd(iWon?'win':'loss','forfeit');
+    if(mancheOver&&d.reason==='normal'){pendingGameOverPayload=d;return;}
+    finishFromServerPayload(d);
   });
 
   socket.on('game:result',function(d){
     if(d.postMessage&&!gameOver){
       hideLoading();
-      var iWon=d.postMessage.result==='win';
-      handleMatchEnd(iWon?'win':'loss','forfeit');
+      if(mancheOver&&d.postMessage.reason==='normal'){pendingGameOverPayload=d.postMessage;return;}
+      finishFromServerPayload(d.postMessage);
     }
   });
+}
+
+function finishFromServerPayload(d){
+  if(!d||gameOver)return;
+  if(d.result==='cancel'){
+    gameOver=true;matchOver=true;mancheOver=true;
+    stopTimer();stopGraceTimer();pendingTimerData=null;
+    var penalty=d.penalty||0;
+    showToast('⚠️','Partie annulée','Les deux joueurs se sont déconnectés.\nPénalité de '+penalty+' HTG appliquée.',4000,function(){sendResult('cancel','both_disconnected');});
+    return;
+  }
+  if(d.result==='draw'||d.winnerSlot===0||d.winner==='draw')return handleMatchEnd('draw',d.reason||'draw');
+  var iWon=d.result==='win'||d.winnerSupabaseId===MY_SUPABASE_ID||
+           (d.winnerSlot&&d.winnerSlot===MY_SLOT)||
+           (d.winner==='player1'&&MY_SLOT===1)||
+           (d.winner==='player2'&&MY_SLOT===2);
+  handleMatchEnd(iWon?'win':'loss',d.reason||'normal');
 }
 
 /* ══════════════════════════════════════════
@@ -773,6 +837,7 @@ function playCell(row,col){
   if(!gameReady||mancheOver||matchOver||isProcessing)return;
   if(currentPlayer!==MY_PLAYER)return;
   if(board[bIdx(row,col)])return;
+  if(!socket||!socket.connected){showToast('📡','Connexion interrompue','Le coup sera possible après la reconnexion.',1500,function(){});return;}
 
   gameReady=false;isProcessing=true;
   stopTimer();stopGraceTimer();
@@ -781,25 +846,16 @@ function playCell(row,col){
   placeSymbol(MY_SYMBOL,row,col);
   clearHL();
 
-  if(socket&&socket.connected){
-    socket.emit('ttt_move',{
-      room:ROOM_ID,player:MY_SLOT,
-      row:row,col:col,
-      symbol:MY_SYMBOL,
-      boardState:JSON.stringify(board),
-      nextPlayer:1-MY_PLAYER
-    });
-  }
-
-  var win=checkWin(board,MY_SYMBOL);
-  if(win){handleWin(MY_SYMBOL,win);return;}
-  if(isDraw(board)){handleDraw();return;}
-
-  currentPlayer=1-MY_PLAYER;
-  isProcessing=false;
-  gameReady=true;
-  updUI();
-  if(!timerActive&&!graceActive)applyPendingTimer();
+  pendingMove='m-'+Date.now()+'-'+Math.random().toString(36).slice(2,8);
+  socket.emit('ttt_move',{
+    room:ROOM_ID,player:MY_SLOT,
+    row:row,col:col,
+    symbol:MY_SYMBOL,
+    clientMoveId:pendingMove
+  });
+  // Le serveur confirme le coup via ttt_move. En cas de perte du paquet,
+  // on demande l'état exact et on restaure le plateau sans double animation.
+  setTimeout(function(){if(pendingMove&&socket&&socket.connected)socket.emit('ttt_request_state',{room:ROOM_ID});},2500);
 }
 
 /* ══════════════════════════════════════════
@@ -807,11 +863,8 @@ function playCell(row,col){
 ══════════════════════════════════════════ */
 function handleWin(winner,winLine){
   stopTimer();stopGraceTimer();pendingTimerData=null;
-  mancheOver=true;manchesDone++;
+  mancheOver=true;
   var humanWon=(winner===MY_SYMBOL);
-  if(humanWon){matchW++;mancheResults.push('w');}
-  else{matchR++;mancheResults.push('r');}
-  mancheStarterPlayer=1-mancheStarterPlayer;
   updateDots();
 
   setTimeout(function(){
@@ -834,29 +887,24 @@ function handleWin(winner,winLine){
 
 function handleDraw(){
   stopTimer();stopGraceTimer();pendingTimerData=null;
-  mancheOver=true;manchesDone++;
-  mancheResults.push('d');
-  mancheStarterPlayer=1-mancheStarterPlayer;
+  mancheOver=true;
   updateDots();
   setTimeout(function(){clearBoardSilent(function(){finalizeManche(null,false);});},500);
 }
 
 function finalizeManche(winner,humanWon){
+  roundAnimationActive=false;
+  if(gameOver)return;
   updUI();
-  var matchDecided;
-  if(isTiebreaker){
-    // Mort subite : la manche décisive ne tranche QUE si elle a un vainqueur.
-    // Un nul en mort subite => on rejoue une nouvelle manche décisive.
-    matchDecided=!!winner;
-  }else{
-    var manchesLeft=TOTAL_MANCHES-manchesDone;
-    matchDecided=(matchR+manchesLeft<matchW)||(matchW+manchesLeft<matchR)||manchesDone>=TOTAL_MANCHES;
-  }
+  var matchDecided=authoritativeMatchWinner===1||authoritativeMatchWinner===2;
 
   if(matchDecided){
     var e2=winner&&humanWon?MY_SYMBOL:(winner&&!humanWon?OP_SYMBOL:'🤝');
     var t2=winner&&humanWon?'Manche gagnée !':(winner&&!humanWon?'Manche perdue !':'Nul !');
-    showToast(e2,t2,'',1500,function(){showMatchResult();});
+    showToast(e2,t2,'',1500,function(){
+      if(pendingGameOverPayload){var payload=pendingGameOverPayload;pendingGameOverPayload=null;finishFromServerPayload(payload);}
+      else showMatchResult();
+    });
   }else{
     var e3=winner&&humanWon?MY_SYMBOL:(winner&&!humanWon?OP_SYMBOL:'🤝');
     var t3=winner&&humanWon?'Vous gagnez !':(winner&&!humanWon?OP_NAME+' gagne !':'Nul !');
@@ -882,23 +930,22 @@ function showMatchResult(){
   }else if(!isDraw2){
     matchOver=true;gameOver=true;
     showToast(OP_SYMBOL,'Défaite',OP_NAME+' remporte la partie !\n'+matchW+' – '+matchR,3500,function(){sendResult('loss','normal');});
-  }else{
-    // Égalité après les manches réglementaires => MORT SUBITE.
-    // On ne termine PAS le match : on rejoue des manches décisives jusqu'à un vrai gagnant.
-    // (Ne pas mettre matchOver/gameOver ici, sinon la manche décisive resterait bloquée.)
-    isTiebreaker=true;
-    showToast('⚡','Égalité !','Manche décisive (mort subite) !',2500,function(){resetManche();});
-  }
+  }else showToast('⚡','Égalité !','Le serveur prépare la manche décisive.',2500,function(){resetManche();});
 }
 
 function handleMatchEnd(outcome,reason){
   if(gameOver)return;
   stopTimer();stopGraceTimer();stopForfeitCountdown();pendingTimerData=null;
   gameOver=true;matchOver=true;mancheOver=true;
-  var humanWon=(outcome==='win');
-  showToast(humanWon?MY_SYMBOL:OP_SYMBOL,humanWon?'Victoire !':'Défaite',
-    humanWon?'L\'adversaire a abandonné.':'Vous avez abandonné la partie.',
-    3500,function(){sendResult(outcome,reason||'forfeit');});
+  var humanWon=(outcome==='win'),isDrawResult=(outcome==='draw');
+  var title=isDrawResult?'Match nul':(humanWon?'Victoire !':'Défaite');
+  var icon=isDrawResult?'🤝':(humanWon?MY_SYMBOL:OP_SYMBOL);
+  var detail;
+  if(reason==='forfeit'||reason==='resign')detail=humanWon?'L\'adversaire a abandonné.':'Vous avez déclaré forfait.';
+  else if(reason==='timeout')detail=humanWon?'L\'adversaire a dépassé le temps autorisé.':'Votre temps de jeu est écoulé.';
+  else if(isDrawResult)detail='La partie se termine sur une égalité.';
+  else detail=(humanWon?MY_NAME:OP_NAME)+' remporte la partie.\n'+matchW+' – '+matchR;
+  showToast(icon,title,detail,3500,function(){if(humanWon)createConfetti();sendResult(outcome,reason||'normal');});
 }
 
 /* ══════════════════════════════════════════
@@ -908,12 +955,18 @@ function resetManche(){
   stopTimer();stopGraceTimer();
   pendingTimerData=null;
   // Garde-fou : une nouvelle manche (y compris la manche décisive) doit toujours être jouable.
-  gameReady=false;mancheOver=false;matchOver=false;gameOver=false;isProcessing=false;
-  board=[null,null,null,null,null,null,null,null,null];
-  while(piecesGroup.children.length)piecesGroup.remove(piecesGroup.children[0]);
-  meshes=[null,null,null,null,null,null,null,null,null];
-  piecePhysics={};clearHL();stopWinPulse();
-  currentPlayer=mancheStarterPlayer;
+  gameReady=false;mancheOver=false;matchOver=false;gameOver=false;isProcessing=false;roundAnimationActive=false;
+  if(pendingServerState){
+    var next=pendingServerState;pendingServerState=null;
+    applyAuthoritativeState(next,true);
+  }else{
+    board=[null,null,null,null,null,null,null,null,null];
+    while(piecesGroup.children.length)piecesGroup.remove(piecesGroup.children[0]);
+    meshes=[null,null,null,null,null,null,null,null,null];
+    piecePhysics={};clearHL();stopWinPulse();
+    currentPlayer=mancheStarterPlayer;
+  }
+  authoritativeMatchWinner=0;
   gameReady=true;
   updUI();
   if(!timerActive&&!graceActive)applyPendingTimer();
@@ -1223,3 +1276,4 @@ initSocket();
 </script>
 </body>
 </html>
+
