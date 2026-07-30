@@ -2169,6 +2169,7 @@ app.get(['/game', '/game-online.html', '/game.html'], serveSmart(['game.html', '
 app.get(['/dames', '/dames.html', '/dames-online.html', '/dames_multi.html'], serveSmart(['dames_multi.html', 'dames.html', 'dames-online.html']));
 app.get(['/dames-ai', '/dames_ai.html', '/dames-solo', '/dames-entrainement', '/dames-practice', '/dames-ia'], serveSmart(['dames_ai.html', 'dames-ai.html']));
 app.get(['/ttt', '/ttt.html', '/ttt-online.html', '/ttt_game.html'], serveSmart(['ttt_game.html', 'ttt.html', 'ttt-online.html']));
+app.get(['/tictactoe-ai', '/ttt-ai', '/ttt_ai.html', '/tictactoe_ai.html', '/ttt-solo', '/tictactoe-solo', '/ttt-entrainement', '/tictactoe-entrainement', '/ttt-ia', '/tictactoe-ia'], serveSmart(['ttt_ai.html', 'tictactoe_ai.html', 'ttt-ai.html']));
 app.get(['/quoridor', '/quoridor.html', '/quoridor-online.html', '/quoridor_multi.html'], serveSmart(['quoridor_multi.html', 'quoridor.html', 'quoridor-online.html']));
 app.get(['/quoridor-ai', '/quoridor_ai.html', '/quoridor-solo', '/quoridor-entrainement', '/quoridor-ia'], serveSmart(['quoridor_ai.html', 'quoridor-ai.html']));
 app.get(['/chifoumi', '/chifoumi.html', '/chifoumi-online.html'], serveSmart(['chifoumi-online.html', 'chifoumi.html']));
