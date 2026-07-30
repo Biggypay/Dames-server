@@ -165,8 +165,14 @@ var P = new URLSearchParams(window.location.search);
 var TOKEN_FRAGMENT = new URLSearchParams(window.location.hash.slice(1));
 var GAME_AUTH_TOKEN = TOKEN_FRAGMENT.get('token') || P.get('token') || '';
 if (TOKEN_FRAGMENT.has('token')) { try { history.replaceState(null, '', location.pathname + location.search); } catch (_) {} }
+/* Mode spectateur (lecture seule), active par ?spectate=1. Le spectateur ne
+   rejoint jamais de place de joueur : il s'abonne au salon et ne fait que
+   recevoir l'etat. Tout le chemin de code « joueur » reste intact. */
+var IS_SPECTATOR = (P.get('spectate') === '1' || P.get('spectator') === '1');
+var SPECTATOR_TOKEN = '';
+var spectatorInitReceived = false;
 var ROOM_ID    = P.get('room')     || '';
-var MY_SLOT    = parseInt(P.get('player') || '1', 10);
+var MY_SLOT    = IS_SPECTATOR ? 1 : parseInt(P.get('player') || '1', 10);
 var P1_ID      = P.get('p1Id')     || '';
 var P2_ID      = P.get('p2Id')     || '';
 var P1_NAME    = P.get('p1Name')   || 'Joueur 1';
@@ -180,7 +186,18 @@ if (!ROOM_ID && P1_ID && P2_ID) {
 }
 if (!ROOM_ID) { ROOM_ID = P.get('gameId') || P.get('matchId') || ''; }
 var GAME_ID = P.get('gameId') || P.get('matchId') || '';
-window.addEventListener('message', function(e) { if (e.data && e.data.type === 'client:mutual_quit' && socket && socket.connected) socket.emit('game_mutual_quit', { room: ROOM_ID, game: 'quoridor', player: MY_SLOT }); });
+window.addEventListener('message', function(e) {
+  if (!e.data) return;
+  if (IS_SPECTATOR && e.data.type === 'spectator:init') {
+    if (e.data.gameId && GAME_ID && e.data.gameId !== GAME_ID) return;
+    SPECTATOR_TOKEN = typeof e.data.token === 'string' ? e.data.token : '';
+    spectatorInitReceived = true;
+    if (!socket) initSocket();
+    return;
+  }
+  if (!IS_SPECTATOR && e.data.type === 'client:mutual_quit' && socket && socket.connected)
+    socket.emit('game_mutual_quit', { room: ROOM_ID, game: 'quoridor', player: MY_SLOT });
+});
 
 var MY_SUPABASE_ID = MY_SLOT === 1 ? P1_ID : P2_ID;
 var OP_SUPABASE_ID = MY_SLOT === 1 ? P2_ID : P1_ID;
@@ -677,7 +694,7 @@ function getCanvasXY(e) {
   return { x:(src.clientX-rect.left)*sx, y:(src.clientY-rect.top)*sy };
 }
 
-canvas.addEventListener('click',    function(e){ handleTap(getCanvasXY(e)); });
+canvas.addEventListener('click',    function(e){ if (IS_SPECTATOR) return; handleTap(getCanvasXY(e)); });
 canvas.addEventListener('touchend', function(e){ e.preventDefault(); handleTap(getCanvasXY(e)); }, {passive:false});
 
 function handleTap(pt) {
@@ -905,11 +922,15 @@ renderLoop();
 var socket = null;
 
 function initSocket() {
-  document.getElementById('loading-txt').textContent = 'ROOM: ' + (ROOM_ID || 'MANQUANT') + ' | SLOT: ' + MY_SLOT;
+  /* Sans jeton spectateur, se connecter ne servirait a rien : le serveur
+     refuse un abonnement non authentifie. On attend le postMessage. */
+  if (IS_SPECTATOR && !spectatorInitReceived) return;
+  document.getElementById('loading-txt').textContent =
+    IS_SPECTATOR ? 'CONNEXION AU DIRECT…' : 'ROOM: ' + (ROOM_ID || 'MANQUANT') + ' | SLOT: ' + MY_SLOT;
 
   socket = io({
     transports: ['websocket', 'polling'],
-    auth: { token: GAME_AUTH_TOKEN },
+    auth: { token: IS_SPECTATOR ? SPECTATOR_TOKEN : GAME_AUTH_TOKEN },
     reconnection: true,
     reconnectionAttempts: Infinity,
     reconnectionDelay: 1000,
@@ -919,6 +940,7 @@ function initSocket() {
 
   socket.on('connect', function() {
     document.getElementById('reconn-bar').classList.remove('show');
+    if (IS_SPECTATOR) { socket.emit('spectator_join', { gameId: GAME_ID }); return; }
     socket.emit('quoridor_join', {
       room: ROOM_ID, gameId: GAME_ID, player: MY_SLOT,
       supabaseId: MY_SUPABASE_ID, name: MY_NAME,
@@ -928,6 +950,56 @@ function initSocket() {
 
   socket.on('disconnect', function() {
     if (!gameOver) document.getElementById('reconn-bar').classList.add('show');
+    if (IS_SPECTATOR) try { window.parent.postMessage({ type:'spectator:reconnecting', game:'quoridor', gameId:GAME_ID }, '*'); } catch(_) {}
+  });
+
+  /* ── Voie spectateur : abonnement, etat complet, erreurs ── */
+  function hideSpectatorOverlay() {
+    var overlay = document.getElementById('waiting-overlay');
+    if (!overlay) return;
+    overlay.style.opacity = '0';
+    overlay.style.transition = 'opacity 0.4s';
+    setTimeout(function() { overlay.style.display = 'none'; }, 400);
+  }
+
+  /* L'etat complet suffit a redessiner : positions, murs restants et
+     barrieres posees y sont tous. On evite ainsi de rejouer des coups
+     incrementaux, dont le chemin « adversaire » ignore le joueur 1. */
+  function applySpectatorState(raw) {
+    if (!raw) return;
+    try {
+      var gs = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (!gs || !gs.s1Pos || !gs.s2Pos) return;
+      restoreFromState(gs);
+      draw();
+      updUI();
+    } catch (e) {}
+  }
+
+  socket.on('spectator:joined', function() {
+    hideSpectatorOverlay();
+    gameReady = false;
+    try { window.parent.postMessage({ type:'spectator:connected', game:'quoridor', gameId:GAME_ID }, '*'); } catch(_) {}
+  });
+
+  socket.on('spectator_state', function(snapshot) {
+    if (!snapshot || !snapshot.state) return;
+    hideSpectatorOverlay();
+    applySpectatorState(snapshot.state.gameState);
+    var st = snapshot.state;
+    if (st.graceStartTime || st.turnStartTime) {
+      var offset = Date.now() - (snapshot.serverTime || Date.now());
+      var isP1 = st.turnPlayer === MY_SLOT;
+      if (st.graceStartTime) startGraceTimer(isP1, st.graceStartTime + offset, 60000);
+      else startTimer(isP1, st.turnStartTime + offset);
+    }
+  });
+
+  socket.on('spectator:error', function(data) {
+    var message = (data && data.message) || 'Ce direct n\u2019est plus disponible.';
+    var el = document.getElementById('loading-txt');
+    if (el) el.textContent = message;
+    try { window.parent.postMessage({ type:'spectator:error', game:'quoridor', gameId:GAME_ID, message:message }, '*'); } catch(_) {}
   });
 
   socket.on('quoridor_start', function(data) {
@@ -1003,6 +1075,7 @@ function initSocket() {
   });
 
   socket.on('quoridor_move', function(data) {
+    if (IS_SPECTATOR) { applySpectatorState(data.gameState); return; }
     if (data.player === MY_SLOT) return;
     if (data.gameState) {
       try {
@@ -1119,6 +1192,10 @@ draw();
 /* ✅ FIX 2 — supprimé : document.getElementById('loading').style.display = 'flex'
    waiting-overlay est déjà visible par défaut dans le HTML, cette ligne était inutile et crashait */
 
+if (IS_SPECTATOR) {
+  /* On previent l'application hote que la page est prete a recevoir le jeton. */
+  try { window.parent.postMessage({ type:'spectator:ready', game:'quoridor', gameId:GAME_ID }, '*'); } catch(_) {}
+}
 initSocket();
 window.addEventListener('resize', function() { 
     calcLayout(); 
