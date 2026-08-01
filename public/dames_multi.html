@@ -31,6 +31,13 @@ body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%
 .av-red{width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#c0392b 0%,#e74c3c 50%,#a93226 100%);border:3px solid #922b21;box-shadow:0 2px 8px rgba(231,76,60,0.4),inset 0 2px 4px rgba(255,150,150,0.3);position:relative}
 .av-red::after{content:'';position:absolute;top:20%;left:20%;width:35%;height:20%;border-radius:50%;background:rgba(255,200,200,0.4);transform:rotate(-45deg)}
 .av-king::before{content:'♔';position:absolute;top:50%;left:50%;transform:translate(-50%,-55%);font-size:14px;color:#fbbf24;text-shadow:0 1px 2px rgba(0,0,0,0.5)}
+/* La vraie photo du joueur remplace la pastille blanche ou rouge. */
+.profile-photo{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block}
+/* La couronne ne peut plus etre dessinee DANS le pion : elle devient une
+   pastille posee sur le bord de la photo, pour ne pas masquer le visage. */
+.king-badge{position:absolute;right:1px;bottom:1px;width:15px;height:15px;border-radius:50%;background:rgba(15,12,41,0.92);border:1px solid rgba(251,191,36,0.7);color:#fbbf24;font-size:10px;line-height:13px;text-align:center;pointer-events:none;z-index:2}
+/* Vue depouillee : la barre de decision et l'aide au geste disparaissent. */
+body.chrome-hidden #bot,body.chrome-hidden #hint{display:none!important}
 .profile-name{font-family:'Cinzel',serif;font-size:9px;letter-spacing:1.5px;color:rgba(255,255,255,0.45);text-transform:uppercase;transition:color 0.3s;max-width:72px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .profile.active .profile-name{color:rgba(255,255,255,0.9)}
 .top-center{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px}
@@ -105,7 +112,6 @@ body.spectator #force-jump-hint{display:none!important}
     <div class="score-row"><span class="snum sw" id="score-w">20</span><span class="ssep">vs</span><span class="snum sr" id="score-r">20</span></div>
     <span class="manche-lbl">Dames Multijoueur</span>
     <div class="bet-badge" id="betBadge" style="display:none;"></div>
-    <div class="spectator-badge" id="spectatorBadge"><span class="spectator-badge-dot"></span> Direct · lecture seule</div>
   </div>
   <div class="profile" id="profile-ai">
     <div class="profile-timer-wrap">
@@ -159,6 +165,11 @@ var TOKEN_FRAGMENT = new URLSearchParams(window.location.hash.slice(1));
 var GAME_AUTH_TOKEN = TOKEN_FRAGMENT.get('token') || P.get('token') || '';
 if (TOKEN_FRAGMENT.has('token')) { try { history.replaceState(null, '', location.pathname + location.search); } catch (_) {} }
 var IS_SPECTATOR = (P.get('spectate') === '1' || P.get('spectator') === '1');
+var P1_AVATAR = P.get('p1Avatar') || '';
+var P2_AVATAR = P.get('p2Avatar') || '';
+/* Vue depouillee par defaut cote spectateur : l'application la demande par
+   ?controls=0 puis, a chaque bascule, par le message spectator:controls. */
+var SHOW_CHROME = !(IS_SPECTATOR && (P.get('controls') === '0' || P.get('chrome') === '0'));
 var ROOM_ID = P.get('room') || '';
 var MY_SLOT = IS_SPECTATOR ? 1 : parseInt(P.get('player') || '1', 10);
 var P1_ID = P.get('p1Id') || '';
@@ -186,10 +197,21 @@ window.addEventListener('message', function(e){
     SPECTATOR_TOKEN = typeof e.data.token === 'string' ? e.data.token : '';
     if(typeof e.data.player1Name === 'string' && e.data.player1Name.trim()) P1_NAME = e.data.player1Name.trim().slice(0, 32);
     if(typeof e.data.player2Name === 'string' && e.data.player2Name.trim()) P2_NAME = e.data.player2Name.trim().slice(0, 32);
+    if(typeof e.data.player1Avatar === 'string') P1_AVATAR = e.data.player1Avatar;
+    if(typeof e.data.player2Avatar === 'string') P2_AVATAR = e.data.player2Avatar;
+    if(typeof e.data.showControls === 'boolean') SHOW_CHROME = e.data.showControls;
     MY_NAME = P1_NAME;
     OP_NAME = P2_NAME;
+    applyChrome(); updUI();
     spectatorInitReceived = true;
     if(!socket) initSocket();
+    return;
+  }
+  /* Agrandir / reduire ne recharge PAS l'iframe : cela couperait le direct.
+     L'application se contente d'annoncer le nouvel etat. */
+  if(IS_SPECTATOR && e.data.type === 'spectator:controls'){
+    SHOW_CHROME = e.data.show === true;
+    applyChrome();
     return;
   }
   if(!IS_SPECTATOR && e.data.type==='client:mutual_quit' && socket && socket.connected){
@@ -205,8 +227,7 @@ var OP_NAME = MY_SLOT === 1 ? P2_NAME : P1_NAME;
 
 if(IS_SPECTATOR){
   document.body.classList.add('spectator');
-  document.getElementById('spectatorBadge').classList.add('show');
-  document.getElementById('hint').textContent = 'Glisse = tourner · Pince = zoom · Spectateur en lecture seule';
+  document.getElementById('hint').textContent = 'Glisse = tourner · Pince = zoom';
 }
 
 // Affichage de la mise si elle existe
@@ -229,9 +250,11 @@ if(IS_SPECTATOR){
     var mancheLbl = document.querySelector('.manche-lbl');
     if(mancheLbl) mancheLbl.innerHTML = '👁 Spectateur · <span style="color:#f87171">EN DIRECT</span>';
     var hintEl = document.getElementById('hint');
-    if(hintEl) hintEl.textContent = '👌 Pince = zoom · Glisse = tourner · Vous regardez en direct';
-    var nameHuman = document.getElementById('name-human'); if(nameHuman) nameHuman.textContent = 'Blancs';
-    var nameAi = document.getElementById('name-ai'); if(nameAi) nameAi.textContent = 'Rouges';
+    if(hintEl) hintEl.textContent = '👌 Pince = zoom · Glisse = tourner';
+    /* Le nom exact du profil, jamais la couleur du pion : « Blancs » ne dit
+       pas qui joue. */
+    var nameHuman = document.getElementById('name-human'); if(nameHuman) nameHuman.textContent = P1_NAME;
+    var nameAi = document.getElementById('name-ai'); if(nameAi) nameAi.textContent = P2_NAME;
     var loadingP = document.querySelector('#loading p'); if(loadingP) loadingP.textContent = 'CONNEXION AU DIRECT…';
   } catch(e){}
 }
@@ -988,7 +1011,12 @@ function showLastMoveOrigin(row, col){
 
 /* --- AUTO-CIBLAGE DES PRISES MULTI --- */
 function updateForcedHint(){
-  var result = getAllValidMoves(currentPlayer), hint = document.getElementById('force-jump-hint');
+  var hint = document.getElementById('force-jump-hint');
+  /* updUI() peut etre appele avant initBoard() — des la reception du jeton
+     spectateur, pour peindre les portraits sans attendre le premier coup.
+     Sans ce garde-fou, le parcours du plateau vide leve une exception. */
+  if(!board || !board.length){ if(hint) hint.classList.remove('show'); return; }
+  var result = getAllValidMoves(currentPlayer);
   if(result.forced){ 
       hint.classList.add('show'); 
       hint.textContent = currentPlayer === MY_PLAYER ? '⚡ Prise obligatoire !' : '⚡ L\'adversaire doit prendre !'; 
@@ -1270,19 +1298,56 @@ function handleSpectatorGameEnd(winner, reason){
 }
 
 function hasKing(player){
-  for(var r=0; r<BS; r++) for(var c=0; c<BS; c++) if(board[r][c] && board[r][c].player===player && board[r][c].king) return true;
+  if(!board || !board.length) return false;
+  for(var r=0; r<BS; r++) for(var c=0; c<BS; c++) if(board[r] && board[r][c] && board[r][c].player===player && board[r][c].king) return true;
   return false;
 }
 
+/* La pastille blanche ou rouge cede la place a la vraie photo du joueur. La
+   couleur reste lisible sur le plateau et dans l'anneau du chronometre — elle
+   n'a plus a tenir lieu de portrait. Si la photo ne charge pas, la pastille
+   revient : jamais de trou a la place d'un visage. */
+function setProfilePhoto(hostId, url, fallbackHtml){
+  var host = document.getElementById(hostId);
+  if(!host) return;
+  if(!url){ host.innerHTML = fallbackHtml; return; }
+  if(host.getAttribute('data-photo') === url) return;
+  host.setAttribute('data-photo', url);
+  var img = new Image();
+  img.className = 'profile-photo'; img.alt = ''; img.referrerPolicy = 'no-referrer';
+  img.onerror = function(){ host.removeAttribute('data-photo'); host.innerHTML = fallbackHtml; };
+  img.onload = function(){ host.innerHTML = ''; host.appendChild(img); };
+  img.src = url;
+}
+/* La couronne se pose par-dessus la photo au lieu d'etre dessinee dedans. */
+function setKingBadge(hostId, isKing){
+  var host = document.getElementById(hostId);
+  if(!host) return;
+  var badge = host.querySelector('.king-badge');
+  if(isKing && !badge){
+    badge = document.createElement('div');
+    badge.className = 'king-badge'; badge.textContent = '♔';
+    host.appendChild(badge);
+  } else if(!isKing && badge){ badge.remove(); }
+}
+function applyChrome(){
+  document.body.classList.toggle('chrome-hidden', !SHOW_CHROME);
+}
 function updUI(){
-  var ahEl=document.getElementById('avatar-human'), aaEl=document.getElementById('avatar-ai');
   var isHW = MY_PLAYER === 0;
-  ahEl.innerHTML='<div class="av-'+(isHW?'white':'red')+(hasKing(MY_PLAYER)?' av-king':'')+'"></div>';
-  aaEl.innerHTML='<div class="av-'+(isHW?'red':'white')+(hasKing(1-MY_PLAYER)?' av-king':'')+'"></div>';
+  var pastilleMe = '<div class="av-'+(isHW?'white':'red')+(hasKing(MY_PLAYER)?' av-king':'')+'"></div>';
+  var pastilleOp = '<div class="av-'+(isHW?'red':'white')+(hasKing(1-MY_PLAYER)?' av-king':'')+'"></div>';
+  /* Cote spectateur, « moi » est toujours le joueur 1 : c'est son plateau. */
+  var myAvatar = MY_SLOT === 1 ? P1_AVATAR : P2_AVATAR;
+  var opAvatar = MY_SLOT === 1 ? P2_AVATAR : P1_AVATAR;
+  setProfilePhoto('avatar-human', myAvatar, pastilleMe);
+  setProfilePhoto('avatar-ai', opAvatar, pastilleOp);
+  if(myAvatar) setKingBadge('avatar-human', hasKing(MY_PLAYER));
+  if(opAvatar) setKingBadge('avatar-ai', hasKing(1-MY_PLAYER));
   document.getElementById('timer-arc-human').setAttribute('stroke', isHW?'#ffffff':'#e74c3c');
   document.getElementById('timer-arc-ai').setAttribute('stroke', isHW?'#e74c3c':'#ffffff');
-  document.getElementById('profile-human').querySelector('.profile-name').textContent = MY_NAME;
-  document.getElementById('profile-ai').querySelector('.profile-name').textContent = OP_NAME;
+  document.getElementById('profile-human').querySelector('.profile-name').textContent = IS_SPECTATOR ? P1_NAME : MY_NAME;
+  document.getElementById('profile-ai').querySelector('.profile-name').textContent = IS_SPECTATOR ? P2_NAME : OP_NAME;
   updateForcedHint();
 }
 
@@ -1495,6 +1560,7 @@ function renderLoop(){
 renderLoop();
 
 /* BOOT */
+applyChrome();
 function bootGame(){
   if(IS_SPECTATOR){
     var loadingText = document.querySelector('#loading p');
@@ -1504,6 +1570,7 @@ function bootGame(){
   }
   initSocket();
 }
+try { updUI(); } catch(_) {}
 if (document.readyState === 'complete' || document.readyState === 'interactive') { bootGame(); }
 else { document.addEventListener('DOMContentLoaded', bootGame); }
 
