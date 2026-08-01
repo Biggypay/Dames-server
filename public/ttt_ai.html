@@ -307,7 +307,64 @@ function resize(){
   var cc=document.getElementById('confetti-canvas');
   if(cc){cc.width=w;cc.height=h;}
 }
+
+/* ══════════════════════════════════════════
+   CADRAGE AUTOMATIQUE DU PLATEAU
+   ══════════════════════════════════════════
+   La distance de la camera etait une constante, donc juste pour un seul format
+   d'ecran. Sur un telephone etroit, le champ horizontal est bien plus ferme
+   que le vertical : le plateau sortait des deux cotes. On cherche ici, par
+   dichotomie, la plus petite distance a laquelle les huit coins du plateau se
+   projettent tous dans le cadre — exact quel que soit le format et quel que
+   soit l'angle de vue. */
+var fitD = camD;
+var userZoomed = false;   /* le pincement du joueur prime sur le recadrage */
+
+function boardFitRadius(){
+    /* Le socle du plateau mesure 6.6 de cote ; la moitie, plus une marge. */
+  return 3.55;
+}
+
+function fitDistanceFor(phi, theta){
+  var R = boardFitRadius();
+  if(!R || !camera) return camD;
+  var saveD = camD, savePhi = camPhi, saveTheta = camTheta;
+  var corners = [];
+  for(var sx = -1; sx <= 1; sx += 2)
+    for(var sz = -1; sz <= 1; sz += 2)
+      for(var sy = 0; sy <= 1; sy++)
+        corners.push(new THREE.Vector3(sx * R, sy * 1.1, sz * R));
+  var lo = 4, hi = 200;
+  for(var i = 0; i < 26; i++){
+    var mid = (lo + hi) / 2;
+    camD = mid; camPhi = phi; camTheta = theta; setCam();
+    camera.updateMatrixWorld(true);
+    var fits = true;
+    for(var k = 0; k < corners.length; k++){
+      var p = corners[k].clone().project(camera);
+      if(Math.abs(p.x) > 0.94 || Math.abs(p.y) > 0.94){ fits = false; break; }
+    }
+    if(fits) hi = mid; else lo = mid;
+  }
+  camD = saveD; camPhi = savePhi; camTheta = saveTheta; setCam();
+  return hi;
+}
+
+function fitBoardToScreen(force){
+  if(userZoomed && !force) return;
+  if(force) userZoomed = false;
+  fitD = fitDistanceFor(camPhi, camTheta);
+  camD = fitD;
+  setCam();
+}
+
 resize();
+window.addEventListener('resize', function(){ fitBoardToScreen(false); });
+/* Trois passes : au chargement, une fois la mise en page stabilisee, puis
+   apres l'apparition de la barre d'adresse sur telephone. */
+setTimeout(function(){ fitBoardToScreen(true); }, 0);
+setTimeout(function(){ fitBoardToScreen(true); }, 300);
+setTimeout(function(){ fitBoardToScreen(true); }, 1200);
 window.addEventListener('resize',resize);
 
 scene.add(new THREE.AmbientLight(0xffffff,0.45));

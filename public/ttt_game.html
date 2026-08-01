@@ -68,10 +68,11 @@ body.chrome-hidden #bot,body.chrome-hidden #hint{display:none!important}
 #reconn-bar.show{display:block}
 #forfeit-bar{position:absolute;bottom:60px;left:50%;transform:translateX(-50%);background:rgba(30,27,75,0.95);border:1px solid rgba(251,191,36,0.5);border-radius:99px;padding:8px 20px;font-family:'Cinzel',serif;font-size:12px;color:#fbbf24;display:none;z-index:25;backdrop-filter:blur(8px)}
 #forfeit-bar.show{display:block}
-/* Le bandeau du tour se posait au milieu du plateau : en vue reduite, il
-   masquait le match qu'on etait venu regarder. Il descend a la place du
-   pied de page, dont les commandes sont justement effacees. */
-body.chrome-hidden #forfeit-bar{bottom:8px;font-size:11px;padding:6px 16px;max-width:calc(100% - 24px);text-align:center;white-space:normal}
+/* Le compte a rebours du tour ne concerne QUE les deux joueurs : eux seuls
+   peuvent agir dessus. Cote spectateur il ne servait a rien et masquait le
+   plateau — d'autant que l'anneau du chronometre autour de chaque photo
+   donne deja la meme information, sans rien recouvrir. */
+body.chrome-hidden #forfeit-bar,body.spectator #forfeit-bar{display:none!important}
 
 /* ── LOADING ── */
 #loading{position:absolute;inset:0;background:linear-gradient(135deg,#1e1b4b 0%,#312e81 100%);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:100;transition:opacity .6s}
@@ -353,8 +354,69 @@ function resize(){
   var cc=document.getElementById('confetti-canvas');
   if(cc){cc.width=w;cc.height=h;}
 }
+
+/* ══════════════════════════════════════════
+   CADRAGE AUTOMATIQUE DU PLATEAU
+   ══════════════════════════════════════════
+   La distance de la camera etait une constante. Elle ne pouvait donc convenir
+   qu'a un seul format d'ecran. Sur un telephone etroit, le champ de vision
+   horizontal est bien plus ferme que le vertical : le plateau sortait des deux
+   cotes, et le joueur devait pincer pour reculer avant meme de pouvoir jouer.
+
+   On cherche ici, par dichotomie, la plus petite distance a laquelle les huit
+   coins du plateau se projettent tous dans le cadre. C'est exact quel que soit
+   le format, quel que soit l'angle de vue, et cela reste vrai pendant la
+   rotation — puisque le calcul porte sur les coins, pas sur une estimation. */
+var fitD = camD;
+var userZoomed = false;   /* le pincement du joueur prime sur le recadrage */
+
+function boardFitRadius(){
+    /* Le socle du plateau mesure 6.6 de cote ; la moitie, plus une marge. */
+  return 3.55;
+}
+
+function fitDistanceFor(phi, theta){
+  var R = boardFitRadius();
+  if(!R || !camera) return camD;
+  var saveD = camD, savePhi = camPhi, saveTheta = camTheta;
+  var corners = [];
+  for(var sx = -1; sx <= 1; sx += 2)
+    for(var sz = -1; sz <= 1; sz += 2)
+      for(var sy = 0; sy <= 1; sy++)
+        corners.push(new THREE.Vector3(sx * R, sy * 1.1, sz * R));
+  var lo = 4, hi = 200;
+  for(var i = 0; i < 26; i++){
+    var mid = (lo + hi) / 2;
+    camD = mid; camPhi = phi; camTheta = theta; setCam();
+    camera.updateMatrixWorld(true);
+    var fits = true;
+    for(var k = 0; k < corners.length; k++){
+      var p = corners[k].clone().project(camera);
+      /* 0.94 : une marge, pour que le cadre du plateau ne colle pas au bord. */
+      if(Math.abs(p.x) > 0.94 || Math.abs(p.y) > 0.94){ fits = false; break; }
+    }
+    if(fits) hi = mid; else lo = mid;
+  }
+  camD = saveD; camPhi = savePhi; camTheta = saveTheta; setCam();
+  return hi;
+}
+
+function fitBoardToScreen(force){
+  if(userZoomed && !force) return;
+  if(force) userZoomed = false;
+  fitD = fitDistanceFor(camPhi, camTheta);
+  camD = fitD;
+  setCam();
+}
+
 resize();
 window.addEventListener('resize',resize);
+window.addEventListener('resize', function(){ fitBoardToScreen(false); });
+/* Trois passes : au chargement, une fois la mise en page stabilisee, puis
+   apres l'apparition de la barre d'adresse sur telephone. */
+setTimeout(function(){ fitBoardToScreen(true); }, 0);
+setTimeout(function(){ fitBoardToScreen(true); }, 300);
+setTimeout(function(){ fitBoardToScreen(true); }, 1200);
 
 scene.add(new THREE.AmbientLight(0xffffff,0.45));
 var dirLight=new THREE.DirectionalLight(0xffffff,0.85);
@@ -1086,6 +1148,10 @@ function setProfilePhoto(hostId,url,fallbackHtml){
   img.onload=function(){host.innerHTML='';host.appendChild(img);};
   img.src=url;
 }
+/* Marque le corps de page comme « spectateur ». La classe survit a
+   l'agrandissement, contrairement a chrome-hidden : ce qui ne concerne que
+   les joueurs reste cache dans les deux vues. */
+if(IS_SPECTATOR) try{ document.body.classList.add('spectator'); }catch(_){}
 function applyChrome(){
   document.body.classList.toggle('chrome-hidden',!SHOW_CHROME);
 }

@@ -84,10 +84,11 @@ body.spectator #force-jump-hint{display:none!important}
 #reconn-bar.show{display:block}
 #forfeit-bar{position:absolute;bottom:60px;left:50%;transform:translateX(-50%);background:rgba(30,27,75,0.95);border:1px solid rgba(251,191,36,0.5);border-radius:99px;padding:8px 20px;font-family:'Cinzel',serif;font-size:12px;color:#fbbf24;display:none;z-index:25;backdrop-filter:blur(8px)}
 #forfeit-bar.show{display:block}
-/* Le bandeau du tour se posait au milieu du plateau : en vue reduite, il
-   masquait le match qu'on etait venu regarder. Il descend a la place du
-   pied de page, dont les commandes sont justement effacees. */
-body.chrome-hidden #forfeit-bar{bottom:8px;font-size:11px;padding:6px 16px;max-width:calc(100% - 24px);text-align:center;white-space:normal}
+/* Le compte a rebours du tour ne concerne QUE les deux joueurs : eux seuls
+   peuvent agir dessus. Cote spectateur il ne servait a rien et masquait le
+   plateau — d'autant que l'anneau du chronometre autour de chaque photo
+   donne deja la meme information, sans rien recouvrir. */
+body.chrome-hidden #forfeit-bar,body.spectator #forfeit-bar{display:none!important}
 #hint{position:absolute;bottom:4px;left:50%;transform:translateX(-50%);font-size:10px;color:rgba(255,255,255,.45);white-space:nowrap;pointer-events:none;z-index:5}
 
 #bot{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 14px;background:rgba(255,255,255,0.08);backdrop-filter:blur(12px);border-top:1px solid rgba(255,255,255,0.15);z-index:20}
@@ -406,7 +407,7 @@ function initSocket(){
         
         // CORRECTION CAMÉRA: 0 pour Blanc (regarde depuis le bas), Math.PI pour Rouge
         camTheta = MY_PLAYER === 0 ? 0 : Math.PI; 
-        camPhi = 0.72; camD = 22; setCam();
+        camPhi = 0.72; fitBoardToScreen(true);
         
         var wc=0, rc=0;
         for(var r=0;r<BS;r++) for(var c=0;c<BS;c++) if(board[r][c]){ if(board[r][c].player===0) wc++; else rc++; }
@@ -731,7 +732,70 @@ function resize(){
   renderer.setSize(w, h); camera.aspect = w/h; camera.updateProjectionMatrix();
   var cc = document.getElementById('confetti-canvas'); if(cc){ cc.width = w; cc.height = h; }
 }
+
+/* ══════════════════════════════════════════
+   CADRAGE AUTOMATIQUE DU PLATEAU
+   ══════════════════════════════════════════
+   La distance de la camera etait une constante. Elle ne pouvait donc convenir
+   qu'a un seul format d'ecran. Sur un telephone etroit, le champ de vision
+   horizontal est bien plus ferme que le vertical : le plateau sortait des deux
+   cotes, et le joueur devait pincer pour reculer avant meme de pouvoir jouer.
+
+   On cherche ici, par dichotomie, la plus petite distance a laquelle les huit
+   coins du plateau se projettent tous dans le cadre. C'est exact quel que soit
+   le format, quel que soit l'angle de vue, et cela reste vrai pendant la
+   rotation — puisque le calcul porte sur les coins, pas sur une estimation. */
+var fitD = camD;
+var userZoomed = false;   /* le pincement du joueur prime sur le recadrage */
+
+function boardFitRadius(){
+    /* BO est le demi-ecart entre centres de cases ; on ajoute une demi-case
+     puis l'epaisseur du cadre en bois. */
+  if(typeof BO !== 'number' || typeof CELL !== 'number') return 0;
+  return BO + CELL * 0.5 + 0.45;
+}
+
+function fitDistanceFor(phi, theta){
+  var R = boardFitRadius();
+  if(!R || !camera) return camD;
+  var saveD = camD, savePhi = camPhi, saveTheta = camTheta;
+  var corners = [];
+  for(var sx = -1; sx <= 1; sx += 2)
+    for(var sz = -1; sz <= 1; sz += 2)
+      for(var sy = 0; sy <= 1; sy++)
+        corners.push(new THREE.Vector3(sx * R, sy * 1.1, sz * R));
+  var lo = 4, hi = 200;
+  for(var i = 0; i < 26; i++){
+    var mid = (lo + hi) / 2;
+    camD = mid; camPhi = phi; camTheta = theta; setCam();
+    camera.updateMatrixWorld(true);
+    var fits = true;
+    for(var k = 0; k < corners.length; k++){
+      var p = corners[k].clone().project(camera);
+      /* 0.94 : une marge, pour que le cadre du plateau ne colle pas au bord. */
+      if(Math.abs(p.x) > 0.94 || Math.abs(p.y) > 0.94){ fits = false; break; }
+    }
+    if(fits) hi = mid; else lo = mid;
+  }
+  camD = saveD; camPhi = savePhi; camTheta = saveTheta; setCam();
+  return hi;
+}
+
+function fitBoardToScreen(force){
+  if(userZoomed && !force) return;
+  if(force) userZoomed = false;
+  fitD = fitDistanceFor(camPhi, camTheta);
+  camD = fitD;
+  setCam();
+}
+
 resize(); window.addEventListener('resize', resize);
+window.addEventListener('resize', function(){ fitBoardToScreen(false); });
+/* Trois passes : au chargement, une fois la mise en page stabilisee, puis
+   apres l'apparition de la barre d'adresse sur telephone. */
+setTimeout(function(){ fitBoardToScreen(true); }, 0);
+setTimeout(function(){ fitBoardToScreen(true); }, 300);
+setTimeout(function(){ fitBoardToScreen(true); }, 1200);
 
 scene.add(new THREE.AmbientLight(0xffffff, 0.45));
 var keyL = new THREE.DirectionalLight(0xfff8f0, 0.90);
@@ -1360,7 +1424,7 @@ function startSpectatorGame(state){
   gameReady=false; gameOver=false; isProcessing=false; resultSent=true;
   selectedPiece=null; validMoves=[]; moveSequence=[]; isSequenceActive=false; pendingTimerData=null;
   currentTurnCaptures=[];
-  camTheta=0; camPhi=0.72; camD=22; setCam();
+  camTheta=0; camPhi=0.72; fitBoardToScreen(true);
   initBoard();
   try {
     board = JSON.parse(state.boardState);
@@ -1387,7 +1451,7 @@ function startSpectatorGame(state){
 function startMultiGame(){
   gameReady=false; gameOver=false; isProcessing=false; resultSent=false;
   selectedPiece=null; validMoves=[]; currentPlayer=0; moveSequence=[]; isSequenceActive=false; pendingTimerData=null;
-  camTheta=MY_PLAYER===0?0:Math.PI; camPhi=0.72; camD=22; setCam();
+  camTheta=MY_PLAYER===0?0:Math.PI; camPhi=0.72; fitBoardToScreen(true);
   capturedBy=[0,0];
   initBoard(); syncPieces(); clearHighlights(); clearLastMove(); stopTimer(); stopGraceTimer();
   updateCapturedDisplay(); stopForfeitCountdown();
@@ -1482,7 +1546,7 @@ renderer.domElement.addEventListener('touchmove',function(e){
   }else if(e.touches.length===2){
     var dx=e.touches[0].clientX-e.touches[1].clientX, dy=e.touches[0].clientY-e.touches[1].clientY;
     var dist=Math.sqrt(dx*dx+dy*dy);
-    if(lastTouchDist>0){ var delta=(lastTouchDist-dist)*0.045; camD=Math.max(12,Math.min(38,camD+delta)); setCam(); }
+    if(lastTouchDist>0){ var delta=(lastTouchDist-dist)*0.045; camD=Math.max(fitD*0.45,Math.min(fitD*2.4,camD+delta)); userZoomed=true; setCam(); }
     lastTouchDist=dist;
   }
 },{passive:false});
@@ -1527,7 +1591,9 @@ document.getElementById('btn-topview').addEventListener('click',function(){
   if(topViewAnimating) return;
   camViewIdx=(camViewIdx+1)%camViews.length;
   var v=camViews[camViewIdx];
-  animCamTo(camD, v.phi, baseTheta()+v.toff, 720, null);
+  /* Changer d'angle change la place occupee : on recadre pour la nouvelle vue. */
+  fitD = fitDistanceFor(v.phi, baseTheta()+v.toff); userZoomed = false;
+  animCamTo(fitD, v.phi, baseTheta()+v.toff, 720, null);
   triggerShake(); autoRotate=false;
   document.getElementById('btn-cam').classList.remove('active-cam');
   document.getElementById('btn-topview').classList.toggle('active-top', camViewIdx!==0);
