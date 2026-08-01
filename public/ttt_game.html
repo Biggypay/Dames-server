@@ -1374,6 +1374,14 @@ if(IS_SPECTATOR){
   /* On previent l'application hote que la page est prete a recevoir le jeton. */
   try{window.parent.postMessage({type:'spectator:ready',game:'tictactoe',gameId:GAME_ID},'*');}catch(_){}
 }
+/* Les portraits sont connus des l'URL : on les peint au chargement plutot
+   qu'au premier coup, sinon le joueur fixe un symbole pendant la mise en
+   place. Le contenu deja present sert de repli. */
+try {
+  var _me = document.getElementById('avatar-human'), _op = document.getElementById('avatar-ai');
+  if(_me) setProfilePhoto('avatar-human', MY_SLOT === 1 ? P1_AVATAR : P2_AVATAR, _me.innerHTML);
+  if(_op) setProfilePhoto('avatar-ai', MY_SLOT === 1 ? P2_AVATAR : P1_AVATAR, _op.innerHTML);
+} catch(_) {}
 initSocket();
 
 })();

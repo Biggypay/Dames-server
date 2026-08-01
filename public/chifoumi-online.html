@@ -100,6 +100,8 @@ body{
   background:rgba(255,255,255,0.10);
 }
 
+/* La vraie photo du profil remplace le symbole autour du chronometre. */
+.profile-photo{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block}
 .timer-urgent .timer-arc{animation:urgentPulse 0.5s infinite alternate}
 @keyframes urgentPulse{from{opacity:1}to{opacity:0.4}}
 
@@ -552,6 +554,8 @@ var P1_ID     = P.get('p1Id')     || '';
 var P2_ID     = P.get('p2Id')     || '';
 var P1_NAME   = P.get('p1Name')   || 'Joueur 1';
 var P2_NAME   = P.get('p2Name')   || 'Joueur 2';
+var P1_AVATAR = P.get('p1Avatar') || '';
+var P2_AVATAR = P.get('p2Avatar') || '';
 var BET_AMOUNT = parseFloat(P.get('bet') || '0');
 var CURRENCY  = P.get('currency') || 'HTG';
 
@@ -649,6 +653,7 @@ var forfeitBar        = document.getElementById('forfeit-bar');
 ══════════════════════════════════════════ */
 document.getElementById('name-human').textContent = MY_NAME;
 document.getElementById('name-ai').textContent    = OP_NAME;
+try { updUI(); } catch(_) {}
 
 if (BET_AMOUNT > 0) {
   var betBadge = document.getElementById('betBadge');
@@ -1272,7 +1277,26 @@ function sendResult(outcome, reason) {
 closeBtn.addEventListener('click', function() { try { window.parent.postMessage({ type: 'close_game' }, '*'); } catch(e) {} gameOverModal.classList.remove('show'); });
 closeBtn.addEventListener('touchend', function(e) { e.preventDefault(); try { window.parent.postMessage({ type: 'close_game' }, '*'); } catch(e) {} gameOverModal.classList.remove('show'); });
 
-function updUI() { document.getElementById('name-human').textContent = MY_NAME; document.getElementById('name-ai').textContent = OP_NAME; }
+/* La photo du joueur prend la place du symbole. Si elle ne charge pas, le
+   symbole revient : jamais de trou a la place d'un visage. */
+function setProfilePhoto(hostId, url, fallbackHtml){
+  var host = document.getElementById(hostId);
+  if(!host) return;
+  if(!url){ host.removeAttribute('data-photo'); host.innerHTML = fallbackHtml; return; }
+  if(host.getAttribute('data-photo') === url) return;
+  host.setAttribute('data-photo', url);
+  var img = new Image();
+  img.className = 'profile-photo'; img.alt = ''; img.referrerPolicy = 'no-referrer';
+  img.onerror = function(){ host.removeAttribute('data-photo'); host.innerHTML = fallbackHtml; };
+  img.onload = function(){ host.innerHTML = ''; host.appendChild(img); };
+  img.src = url;
+}
+function updUI() {
+  document.getElementById('name-human').textContent = MY_NAME;
+  document.getElementById('name-ai').textContent = OP_NAME;
+  setProfilePhoto('avatar-human', MY_SLOT === 1 ? P1_AVATAR : P2_AVATAR, '👤');
+  setProfilePhoto('avatar-ai', MY_SLOT === 1 ? P2_AVATAR : P1_AVATAR, '👤');
+}
 
 if (document.readyState === 'complete' || document.readyState === 'interactive') { initSocket(); } 
 else { document.addEventListener('DOMContentLoaded', initSocket); }

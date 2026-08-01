@@ -25,6 +25,10 @@ body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%
 .timer-arc{fill:none;stroke-width:4;stroke-linecap:round;stroke-dasharray:163.4;stroke-dashoffset:163.4;transition:stroke 0.3s}
 .profile-avatar{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;border-radius:50%;-webkit-border-radius:50%;background-clip:padding-box;background:rgba(255,255,255,0.05);border:2px solid rgba(255,255,255,0.12);font-size:22px;transition:all 0.3s}
 .profile.active .profile-avatar{border-color:rgba(255,255,255,0.5)}
+/* La vraie photo du profil remplace le symbole autour du chronometre. */
+.profile-photo{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block}
+/* Ballon ou gants : le role du tour, pose sur le bord de la photo. */
+.role-badge{position:absolute;right:-2px;bottom:-2px;width:20px;height:20px;border-radius:50%;background:rgba(10,10,30,0.92);border:1px solid rgba(255,255,255,0.28);font-size:11px;line-height:18px;text-align:center;pointer-events:none;z-index:2}
 .profile.choosing .profile-avatar{border-color:rgba(251,191,36,0.8)}
 .profile.locked .profile-avatar{border-color:rgba(74,222,128,0.8)}
 
@@ -263,6 +267,8 @@ var P1_ID       = P.get('p1Id')     || '';
 var P2_ID       = P.get('p2Id')     || '';
 var P1_NAME     = P.get('p1Name')   || 'Joueur 1';
 var P2_NAME     = P.get('p2Name')   || 'Joueur 2';
+var P1_AVATAR   = P.get('p1Avatar') || '';
+var P2_AVATAR   = P.get('p2Avatar') || '';
 var BET_AMOUNT  = parseFloat(P.get('bet') || '0');
 var CURRENCY    = P.get('currency') || 'HTG';
 
@@ -1134,10 +1140,34 @@ function updateScores() {
 /* ══════════════════════════════════════
    TOUR / ROUND
 ══════════════════════════════════════ */
+/* La photo du joueur prend la place du symbole. Si elle ne charge pas, le
+   symbole revient : jamais de trou a la place d'un visage. */
+function setProfilePhoto(hostId, url, fallbackHtml){
+  var host = document.getElementById(hostId);
+  if(!host) return;
+  if(!url){ host.removeAttribute('data-photo'); host.innerHTML = fallbackHtml; return; }
+  if(host.getAttribute('data-photo') === url) return;
+  host.setAttribute('data-photo', url);
+  var img = new Image();
+  img.className = 'profile-photo'; img.alt = ''; img.referrerPolicy = 'no-referrer';
+  img.onerror = function(){ host.removeAttribute('data-photo'); host.innerHTML = fallbackHtml; };
+  img.onload = function(){ host.innerHTML = ''; host.appendChild(img); };
+  img.src = url;
+}
+/* Le ballon ou la cage se pose par-dessus la photo au lieu de la remplacer. */
+function setRoleBadge(hostId, emoji){
+  var host = document.getElementById(hostId);
+  if(!host || !host.getAttribute('data-photo')) return;
+  var badge = host.querySelector('.role-badge');
+  if(!badge){ badge = document.createElement('div'); badge.className = 'role-badge'; host.appendChild(badge); }
+  badge.textContent = emoji;
+}
 function updUI() {
   var iamShooter = isMyShooter(currentRound);
-  document.getElementById('avatar-me').textContent = iamShooter ? '⚽' : '🥅';
-  document.getElementById('avatar-op').textContent = iamShooter ? '🥅' : '⚽';
+  setProfilePhoto('avatar-me', MY_SLOT === 1 ? P1_AVATAR : P2_AVATAR, iamShooter ? '⚽' : '🥅');
+  setProfilePhoto('avatar-op', MY_SLOT === 1 ? P2_AVATAR : P1_AVATAR, iamShooter ? '🥅' : '⚽');
+  setRoleBadge('avatar-me', iamShooter ? '⚽' : '🥅');
+  setRoleBadge('avatar-op', iamShooter ? '🥅' : '⚽');
   document.getElementById('role-me').textContent   = iamShooter ? 'Tireur' : 'Gardien';
   document.getElementById('role-op').textContent   = iamShooter ? 'Gardien' : 'Tireur';
   document.getElementById('name-me').textContent   = MY_NAME;
@@ -1275,6 +1305,14 @@ function updateConfetti(){
 /* ══════════════════════════════════════
    DÉMARRAGE
 ══════════════════════════════════════ */
+/* Les portraits sont connus des l'URL : on les peint au chargement plutot
+   qu'au premier coup, sinon le joueur fixe un symbole pendant la mise en
+   place. Le contenu deja present sert de repli. */
+try {
+  var _me = document.getElementById('avatar-me'), _op = document.getElementById('avatar-op');
+  if(_me) setProfilePhoto('avatar-me', MY_SLOT === 1 ? P1_AVATAR : P2_AVATAR, _me.innerHTML);
+  if(_op) setProfilePhoto('avatar-op', MY_SLOT === 1 ? P2_AVATAR : P1_AVATAR, _op.innerHTML);
+} catch(_) {}
 initCanvas();
 initSocket();
 window.addEventListener('resize', function(){

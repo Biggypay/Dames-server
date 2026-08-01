@@ -25,6 +25,8 @@ body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%
 .timer-arc{fill:none;stroke-width:4;stroke-linecap:round;stroke-dasharray:163.4;stroke-dashoffset:163.4;transition:stroke 0.3s}
 .profile-avatar{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;border-radius:50%; -webkit-border-radius:50%; background-clip:padding-box; background:rgba(255,255,255,0.05);border:2px solid rgba(255,255,255,0.12);transition:border-color 0.3s, background 0.3s}
 .profile.active .profile-avatar{border-color:rgba(255,255,255,0.5);background:rgba(255,255,255,0.10)}
+/* La vraie photo du profil remplace le symbole autour du chronometre. */
+.profile-photo{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block}
 
 .av-white{width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#f5f5f5 0%,#ffffff 50%,#e0e0e0 100%);border:3px solid #c0c0c0;box-shadow:0 2px 8px rgba(255,255,255,0.4),inset 0 2px 4px rgba(255,255,255,0.8);position:relative}
 .av-white::after{content:'';position:absolute;top:20%;left:20%;width:35%;height:20%;border-radius:50%;background:rgba(255,255,255,0.9);transform:rotate(-45deg)}
@@ -180,6 +182,8 @@ var P1_ID = P.get('p1Id') || '';
 var P2_ID = P.get('p2Id') || '';
 var P1_NAME = P.get('p1Name') || 'Joueur 1';
 var P2_NAME = P.get('p2Name') || 'Joueur 2';
+var P1_AVATAR = P.get('p1Avatar') || '';
+var P2_AVATAR = P.get('p2Avatar') || '';
 var BET_AMOUNT = parseFloat(P.get('bet') || '0');
 var CURRENCY = P.get('currency') || 'HTG';
 
@@ -1057,11 +1061,26 @@ function handleGameEnd(winner, reason){
   showToast(winnerEmoji, title, sub, 4000, function(){ sendResult(humanWon?'win':'loss', reason||'normal'); });
 }
 
+/* La photo du joueur prend la place du symbole. Si elle ne charge pas, le
+   symbole revient : jamais de trou a la place d'un visage. */
+function setProfilePhoto(hostId, url, fallbackHtml){
+  var host = document.getElementById(hostId);
+  if(!host) return;
+  if(!url){ host.removeAttribute('data-photo'); host.innerHTML = fallbackHtml; return; }
+  if(host.getAttribute('data-photo') === url) return;
+  host.setAttribute('data-photo', url);
+  var img = new Image();
+  img.className = 'profile-photo'; img.alt = ''; img.referrerPolicy = 'no-referrer';
+  img.onerror = function(){ host.removeAttribute('data-photo'); host.innerHTML = fallbackHtml; };
+  img.onload = function(){ host.innerHTML = ''; host.appendChild(img); };
+  img.src = url;
+}
 function updUI(){
-  var ahEl=document.getElementById('avatar-human'), aaEl=document.getElementById('avatar-ai');
   var isHW = MY_PLAYER === 0;
-  ahEl.innerHTML='<div class="av-'+(isHW?'white':'red')+' av-king"></div>';
-  aaEl.innerHTML='<div class="av-'+(isHW?'red':'white')+' av-king"></div>';
+  /* Le roi blanc ou rouge sert de repli — la couleur reste lisible sur
+     l'echiquier et dans l'anneau du chronometre. */
+  setProfilePhoto('avatar-human', MY_SLOT === 1 ? P1_AVATAR : P2_AVATAR, '<div class="av-'+(isHW?'white':'red')+' av-king"></div>');
+  setProfilePhoto('avatar-ai', MY_SLOT === 1 ? P2_AVATAR : P1_AVATAR, '<div class="av-'+(isHW?'red':'white')+' av-king"></div>');
   document.getElementById('timer-arc-human').setAttribute('stroke', isHW?'#ffffff':'#e74c3c');
   document.getElementById('timer-arc-ai').setAttribute('stroke', isHW?'#e74c3c':'#ffffff');
   document.getElementById('profile-human').querySelector('.profile-name').textContent = MY_NAME;
@@ -1252,6 +1271,14 @@ function renderLoop(){
 }
 renderLoop();
 
+/* Les portraits sont connus des l'URL : on les peint au chargement plutot
+   qu'au premier coup, sinon le joueur fixe un symbole pendant la mise en
+   place. Le contenu deja present sert de repli. */
+try {
+  var _me = document.getElementById('avatar-human'), _op = document.getElementById('avatar-ai');
+  if(_me) setProfilePhoto('avatar-human', MY_SLOT === 1 ? P1_AVATAR : P2_AVATAR, _me.innerHTML);
+  if(_op) setProfilePhoto('avatar-ai', MY_SLOT === 1 ? P2_AVATAR : P1_AVATAR, _op.innerHTML);
+} catch(_) {}
 /* BOOT */
 if (document.readyState === 'complete' || document.readyState === 'interactive') { initSocket(); }
 else { document.addEventListener('DOMContentLoaded', initSocket); }
