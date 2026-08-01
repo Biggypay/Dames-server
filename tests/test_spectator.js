@@ -1,7 +1,16 @@
 const { spawn } = require('child_process');
+const fs = require('fs');
 const http = require('http');
 const path = require('path');
 const { io } = require('socket.io-client');
+
+/** Les pages qui implémentent le protocole spectateur. */
+const SPECTATOR_PAGES = [
+  'dames_multi.html',
+  'echecs_multi.html',
+  'quoridor-online.html',
+  'ttt_game.html',
+];
 
 const REPO_ROOT = path.join(__dirname, '..');
 const GAME_PORT = 3132;
@@ -112,6 +121,23 @@ async function main() {
     const spectator = await connectUser(SPECTATOR, 'Claire');
     sockets.push(p1, p2, spectator);
 
+    // ── Le spectateur arrive AVANT les joueurs ──────────────────────────────
+    //
+    // C'est le cas normal d'un match de tournoi : la partie est créée par la
+    // base de données, alors que la salle de ce serveur n'existe qu'à partir du
+    // moment où les deux joueurs ont ouvert leur plateau. Entre les deux, le
+    // direct n'est pas mort — il n'a pas commencé.
+    //
+    // Le serveur doit donc répondre « room_not_live », un refus explicitement
+    // temporaire, et non un code que le plateau prendrait pour un adieu. C'est
+    // sur cette distinction que repose la relance côté client ; sans elle, le
+    // plateau restait noir pour tout le reste du match.
+    const tooEarly = once(spectator, 'spectator:error');
+    spectator.emit('spectator_join', { gameId: GAME_ID });
+    const early = await tooEarly;
+    check('spectateur arrivé avant la salle : refus temporaire, pas définitif',
+      early.code === 'room_not_live', early);
+
     const start1 = once(p1, 'ttt_start');
     const start2 = once(p2, 'ttt_start');
     p1.emit('ttt_join', {
@@ -159,6 +185,44 @@ async function main() {
     anonymous.emit('spectator_join', { gameId: GAME_ID });
     const denial = await denied;
     check('anonymous spectator is rejected', denial.code === 'not_authenticated', denial);
+
+    // ── La table de décision embarquée dans les plateaux ─────────────────────
+    //
+    // Le serveur classe ses refus ; encore faut-il que chaque plateau les lise
+    // de la même façon. On extrait la fonction réellement livrée dans chaque
+    // page et on vérifie son verdict, code par code.
+    //
+    // Deux règles à ne pas perdre :
+    //   — « room_not_live » se réessaie SANS limite. C'est l'attente d'un match
+    //     de tournoi, qui peut durer plusieurs minutes.
+    //   — un refus d'identité ne se réessaie JAMAIS : marteler le serveur avec
+    //     une session invalide ne fait que remplir son compteur anti-abus.
+    for (const page of SPECTATOR_PAGES) {
+      const source = fs.readFileSync(path.join(REPO_ROOT, 'public', page), 'utf8');
+      const extracted = /function spectatorRetryable\(code\)\{[\s\S]*?\r?\n {2}\}/.exec(source);
+      if (!extracted) {
+        check(`${page} : table de décision présente`, false, 'fonction introuvable');
+        continue;
+      }
+      const build = new Function(
+        'SPECT_RETRY_MAX_TRIES',
+        'spectRetryTries',
+        `${extracted[0]}; return spectatorRetryable;`,
+      );
+      const fresh = build(10, 0);
+      const exhausted = build(10, 10);
+
+      check(`${page} : attend les joueurs sans limite de temps`,
+        fresh('room_not_live') === true && exhausted('room_not_live') === true);
+      check(`${page} : accident passager réessayé, puis abandonné`,
+        fresh('not_live') === true && exhausted('not_live') === false &&
+        fresh('verification_failed') === true && exhausted('verification_failed') === false);
+      check(`${page} : un refus d'identité n'est jamais réessayé`,
+        fresh('not_authenticated') === false &&
+        fresh('invalid_request') === false &&
+        fresh('unsupported_game') === false &&
+        fresh('') === false);
+    }
   } finally {
     for (const socket of sockets) socket.disconnect();
     server.kill('SIGKILL');

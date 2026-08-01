@@ -311,6 +311,8 @@ function initSocket(){
 
   /* ── Voie spectateur, strictement en lecture ───────────────────────── */
   socket.on('spectator:joined', function(data){
+    spectRetryTries = 0;
+    if(spectRetryTimer){ clearTimeout(spectRetryTimer); spectRetryTimer = null; }
     if(!IS_SPECTATOR) return;
     if(data && data.room) ROOM_ID = data.room;
     try { window.parent.postMessage({ type:'spectator:connected', game:'echecs', gameId:GAME_ID }, '*'); } catch(_){}
@@ -319,12 +321,46 @@ function initSocket(){
     if(!IS_SPECTATOR) return;
     try { window.parent.postMessage({ type:'spectator:count', game:'echecs', gameId:GAME_ID, count:(data && data.count) || 0 }, '*'); } catch(_){}
   });
+  /* Un direct qui n'a pas encore commence n'est pas un direct mort.
+     Un match de tournoi nait dans la base de donnees ; la salle de ce serveur
+     n'apparait qu'une fois les deux joueurs entres sur le plateau. Le
+     spectateur arrive donc souvent avant elle. On patiente, on redemande, et
+     le plateau s'ouvre tout seul le moment venu. */
+  var SPECT_RETRY_MAX_DELAY = 6000;
+  var SPECT_RETRY_MAX_TRIES = 10;
+  var spectRetryTimer = null;
+  var spectRetryTries = 0;
+  function spectatorRetryable(code){
+    /* « room_not_live » : les joueurs ne sont pas encore la. On attend
+       indefiniment — c'est exactement le cas d'un match de tournoi.
+       Les deux autres sont des accidents passagers : on borne les essais. */
+    if(code === 'room_not_live') return true;
+    if(code === 'verification_failed' || code === 'not_live') return spectRetryTries < SPECT_RETRY_MAX_TRIES;
+    return false;
+  }
+  function scheduleSpectatorRejoin(){
+    if(spectRetryTimer) return;
+    spectRetryTries++;
+    var delay = Math.min(SPECT_RETRY_MAX_DELAY, 1200 * spectRetryTries);
+    spectRetryTimer = setTimeout(function(){
+      spectRetryTimer = null;
+      if(socket && socket.connected) socket.emit('spectator_join', { gameId: GAME_ID });
+    }, delay);
+  }
+
   socket.on('spectator:error', function(data){
     if(!IS_SPECTATOR) return;
-    var message = (data && data.message) || 'Direct indisponible.';
-    var loadingText = document.querySelector('#loading p');
-    if(loadingText) loadingText.textContent = message;
-    try { window.parent.postMessage({ type:'spectator:error', game:'echecs', gameId:GAME_ID, message:message }, '*'); } catch(_){}
+    var code = (data && data.code) || '';
+    var retrying = spectatorRetryable(code);
+    var message = (data && data.message) || 'Ce direct n\u2019est plus disponible.';
+    if(retrying){
+      message = code === 'room_not_live'
+        ? 'En attente des joueurs sur le plateau\u2026'
+        : 'Reconnexion au direct\u2026';
+      scheduleSpectatorRejoin();
+    }
+    var loadingText = document.querySelector('#loading p'); if(loadingText) loadingText.textContent = message;
+    try { window.parent.postMessage({ type:'spectator:error', game:'echecs', gameId:GAME_ID, code:code, retrying:retrying, message:message }, '*'); } catch(_){}
   });
   socket.on('spectator_state', function(snapshot){
     if(!IS_SPECTATOR || !snapshot || snapshot.gameType !== 'chess' || !snapshot.state) return;
