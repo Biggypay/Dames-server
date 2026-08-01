@@ -228,6 +228,10 @@ function rejectSocket(socket, message) {
 }
 function bindDatabaseGame(room, gameId) {
   if (!isUuid(gameId)) return true; // Legacy rooms may not have a database game yet.
+  // A database match has exactly one authoritative socket room. Allowing a
+  // client to choose another room id for the same games.id could create two
+  // independent boards racing to settle one escrow.
+  if (!room || room.id !== gameId) return false;
   if (room.databaseGameId && room.databaseGameId !== gameId) return false;
   room.databaseGameId = gameId;
   return true;
@@ -235,7 +239,12 @@ function bindDatabaseGame(room, gameId) {
 
 const DB_GAME_TYPES = { dames: 'checkers', tictactoe: 'tictactoe', quoridor: 'quoridor', penalty: 'penalty_shootout', chifoumi: 'rock_paper_scissors', echecs: 'chess', ludo: 'ludo' };
 const ROOM_MAPS = { dames: damesRooms, tictactoe: tttRooms, quoridor: quoriRooms, penalty: penaltyRooms, chifoumi: chifoumiRooms, echecs: echecsRooms, ludo: ludoRooms };
-const ROOM_PERSIST_INTERVAL = 3000;
+// Room snapshots are persisted after actual state changes. The periodic loop is
+// only a crash-safety fallback and the fingerprint below makes unchanged rooms
+// a no-op. Persisting every room every three seconds generated unnecessary WAL
+// and could let two concurrent HTTP requests save snapshots out of order.
+const ROOM_PERSIST_INTERVAL = Math.max(5000, Number(process.env.ROOM_PERSIST_INTERVAL_MS) || 15000);
+const ROOM_PERSIST_DEBOUNCE_MS = Math.max(100, Number(process.env.ROOM_PERSIST_DEBOUNCE_MS) || 500);
 const ROOM_RETENTION_MS = 10 * 60 * 1000;
 const SETTLEMENT_RETRY_MAX_DELAY_MS = 60 * 1000;
 let roomPersistenceInFlight = false;
@@ -265,7 +274,11 @@ async function callServerStateRpc(name, payload) {
 }
 
 function serializableRoomState(room) {
-  const ignored = new Set(['turnTimer', 'graceTimer', 'revealTimer', 'disconnectTimer', 'settlementPromise', 'settlementRetryTimer', 'persistTimer', 'cleanupTimer']);
+  const ignored = new Set([
+    'turnTimer', 'graceTimer', 'revealTimer', 'nextRoundTimer', 'disconnectTimer',
+    'settlementPromise', 'settlementRetryTimer', 'persistTimer', 'cleanupTimer',
+    '_persistPromise', '_batchPersistPromise', '_lastPersistedFingerprint'
+  ]);
   const state = JSON.parse(JSON.stringify(room, (key, value) => {
     if (ignored.has(key)) return undefined;
     if (value instanceof Set) return [...value];
@@ -300,33 +313,81 @@ function persistedRoomPayload(gameName, room) {
 }
 
 async function persistRoomState(gameName, room) {
-  const payload = persistedRoomPayload(gameName, room);
-  if (!payload) return;
-  await callServerStateRpc('save_game_server_room_states', { p_rooms: [payload] });
+  if (!room) return false;
+
+  // Serialize writes per room. Besides reducing calls, this prevents a slower
+  // old request from overwriting a newer board snapshot in Supabase.
+  const blockers = [room._persistPromise, room._batchPersistPromise].filter(Boolean);
+  const previous = blockers.length ? Promise.allSettled(blockers) : Promise.resolve();
+  let operation;
+  operation = previous.catch(() => undefined).then(async () => {
+    const payload = persistedRoomPayload(gameName, room);
+    if (!payload) return false;
+    const fingerprint = JSON.stringify(payload);
+    if (room._lastPersistedFingerprint === fingerprint) return false;
+    await callServerStateRpc('save_game_server_room_states', { p_rooms: [payload] });
+    room._lastPersistedFingerprint = fingerprint;
+    return true;
+  }).finally(() => {
+    if (room._persistPromise === operation) room._persistPromise = null;
+  });
+  room._persistPromise = operation;
+  return operation;
 }
 
 function persistRoomSoon(gameName, room) {
-  void persistRoomState(gameName, room).catch(error => {
-    console.error('[persistence] immediate save failed', gameName, room?.id, error.message);
-  });
+  if (!room || room.persistTimer) return;
+  room.persistTimer = setTimeout(() => {
+    room.persistTimer = null;
+    void persistRoomState(gameName, room).catch(error => {
+      console.error('[persistence] debounced save failed', gameName, room?.id, error.message);
+    });
+  }, ROOM_PERSIST_DEBOUNCE_MS);
+  if (room.persistTimer.unref) room.persistTimer.unref();
 }
 
 async function persistAllRoomStates() {
   if (roomPersistenceInFlight || !SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return;
-  const rooms = [];
+  roomPersistenceInFlight = true;
+  const candidates = [];
   for (const [gameName, roomMap] of Object.entries(ROOM_MAPS)) {
     for (const room of roomMap.values()) {
-      const payload = persistedRoomPayload(gameName, room);
-      if (payload && (room.status !== 'finished' || room.pendingSettlement)) rooms.push(payload);
+      if (room.status !== 'finished' || room.pendingSettlement) {
+        candidates.push({ gameName, room });
+      }
     }
   }
-  if (!rooms.length) return;
-  roomPersistenceInFlight = true;
+  if (!candidates.length) {
+    roomPersistenceInFlight = false;
+    return;
+  }
+  const previousWrites = candidates.map(({ room }) => room._persistPromise).filter(Boolean);
+  let releaseBatchGate;
+  const batchGate = new Promise(resolve => { releaseBatchGate = resolve; });
+  for (const { room } of candidates) room._batchPersistPromise = batchGate;
   try {
-    await callServerStateRpc('save_game_server_room_states', { p_rooms: rooms });
+    // Let any earlier per-room state transition finish first, then take one
+    // consistent batch snapshot. `save_game_server_room_states` performs a SQL
+    // no-op for identical JSON but still refreshes server_live_at every 15 s.
+    // That liveness pulse is required for tournament/live spectator listings.
+    await Promise.allSettled(previousWrites);
+    const snapshots = candidates.map(({ gameName, room }) => {
+      const payload = persistedRoomPayload(gameName, room);
+      return payload ? { room, payload, fingerprint: JSON.stringify(payload) } : null;
+    }).filter(Boolean);
+    if (!snapshots.length) return;
+
+    await callServerStateRpc('save_game_server_room_states', {
+      p_rooms: snapshots.map(snapshot => snapshot.payload)
+    });
+    for (const snapshot of snapshots) snapshot.room._lastPersistedFingerprint = snapshot.fingerprint;
   } catch (error) {
-    console.error('[persistence] save failed', error.message);
+    console.error('[persistence] periodic save failed', error.message);
   } finally {
+    releaseBatchGate();
+    for (const { room } of candidates) {
+      if (room._batchPersistPromise === batchGate) room._batchPersistPromise = null;
+    }
     roomPersistenceInFlight = false;
   }
 }
@@ -363,8 +424,14 @@ function hydratePersistedRoom(record) {
     player.socketId = null;
     player.userId = null;
   }
-  room.turnTimer = null; room.graceTimer = null; room.revealTimer = null; room.disconnectTimer = null;
+  room.turnTimer = null; room.graceTimer = null; room.revealTimer = null; room.nextRoundTimer = null; room.disconnectTimer = null;
   if (record.game_type === 'chifoumi') room.revealPending = false;
+  if (record.game_type === 'quoridor') {
+    room.gameState = room.gameState && typeof room.gameState === 'object' ? room.gameState : quoriInitialState();
+    room.stateVersion = Math.max(0, Number(room.stateVersion ?? room.gameState.stateVersion) || 0);
+    room.gameState.currentSlot = validPlayerSlot(room.currentSlot) ? room.currentSlot : (validPlayerSlot(room.gameState.currentSlot) ? room.gameState.currentSlot : 1);
+    room.currentSlot = room.gameState.currentSlot;
+  }
   if (record.game_type === 'tictactoe') {
     room.totalManches = TTT_TOTAL_ROUNDS;
     room.gameState = room.gameState && typeof room.gameState === 'object' ? room.gameState : tttState();
@@ -387,6 +454,7 @@ function hydratePersistedRoom(record) {
     }
   }
   room.settlementPromise = null; room.settlementRetryTimer = null; room.cleanupTimer = null; room.reconnectDeadline = null;
+  room._persistPromise = null; room._batchPersistPromise = null; room._lastPersistedFingerprint = null;
   room.mutualQuitRequests = new Set(Array.isArray(room.mutualQuitRequests) ? room.mutualQuitRequests : []);
   if (room.status !== 'finished') {
     const playerCount = [room.players[1], room.players[2]].filter(Boolean).length;
@@ -495,7 +563,8 @@ async function settleRoomInSupabase(room, game, winnerSlot, reason) {
     // outcome. This is the idempotent retry path when an HTTP response was lost.
     const expectedResult = databaseResult(winnerSlot, reason);
     const expectedWinner = winnerSlot ? room.players[winnerSlot].supabaseId : null;
-    if (dbGame.status === 'completed') {
+    const alreadyCompleted = dbGame.status === 'completed';
+    if (alreadyCompleted) {
       if (dbGame.result !== expectedResult || dbGame.winner_id !== expectedWinner) {
         throw new Error('Completed database game conflicts with the authoritative room outcome');
       }
@@ -511,14 +580,21 @@ async function settleRoomInSupabase(room, game, winnerSlot, reason) {
       p_platform_fee: winnerSlot ? Number(room.betAmount || 0) * 0.2 : 0,
       p_duration_seconds: Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
     };
-    const settled = await fetch(SUPABASE_URL + '/rest/v1/rpc/submit_game_result', { method: 'POST', headers, body: JSON.stringify(payload) });
-    if (!settled.ok) throw new Error('Settlement RPC failed: ' + settled.status + ' ' + (await settled.text()).slice(0, 400));
+    if (!alreadyCompleted) {
+      const settled = await fetch(SUPABASE_URL + '/rest/v1/rpc/submit_game_result', { method: 'POST', headers, body: JSON.stringify(payload) });
+      if (!settled.ok) throw new Error('Settlement RPC failed: ' + settled.status + ' ' + (await settled.text()).slice(0, 400));
+    }
     room.settledAt = Date.now();
     room.pendingSettlement = null;
     room.settlementRetryCount = 0;
     if (room.settlementRetryTimer) clearTimeout(room.settlementRetryTimer);
     room.settlementRetryTimer = null;
     await deletePersistedRoom(game, room.id);
+    // Once the database confirms the terminal result there is nothing left to
+    // reconnect to. Keeping the room for ten minutes made /health advertise a
+    // phantom live game and allowed the persistence loop to retain stale state.
+    const roomMap = ROOM_MAPS[game];
+    if (roomMap?.get(room.id) === room) roomMap.delete(room.id);
     // A persistence batch that started just before pendingSettlement was
     // cleared can finish after the deletion and reinsert a stale terminal
     // snapshot. Delete once more after two persistence intervals.
@@ -526,7 +602,6 @@ async function settleRoomInSupabase(room, game, winnerSlot, reason) {
       void deletePersistedRoom(game, room.id);
     }, ROOM_PERSIST_INTERVAL * 2);
     if (finalPersistedCleanup.unref) finalPersistedCleanup.unref();
-    scheduleRoomCleanup(game, room.id, room);
     console.info('[settlement] completed', room.databaseGameId, game, payload.p_result);
   })().catch(error => {
     room.settlementPromise = null;
@@ -541,6 +616,7 @@ async function settleRoomInSupabase(room, game, winnerSlot, reason) {
 // same account is allowed; replacing another player is not.
 function joinRoomAsAuthenticatedPlayer(socket, roomState, roomId, player, claimedSupabaseId, claimedName) {
   if (!validRoom(roomId) || !validPlayerSlot(player)) return rejectSocket(socket, 'Room ou joueur invalide.');
+  if (!roomState || roomState.status === 'finished') return rejectSocket(socket, 'Cette partie est déjà terminée.');
   const user = authenticatedSocketUser(socket);
   if (!user || !user.supabaseId) return rejectSocket(socket, 'Authentification requise.');
   if (claimedSupabaseId && claimedSupabaseId !== user.supabaseId) return rejectSocket(socket, 'Identité de joueur invalide.');
@@ -603,9 +679,12 @@ async function loadDatabaseGameForJoin(gameId) {
   }
 }
 
-async function verifyDatabaseGameForJoin(socket, gameId, gameName, player, bet) {
+async function verifyDatabaseGameForJoin(socket, gameId, gameName, player, bet, roomId) {
   const user = authenticatedSocketUser(socket);
   if (!user?.supabaseId) return { ok: false, message: 'Authentification requise.' };
+  if (isUuid(gameId) && roomId !== gameId) {
+    return { ok: false, message: 'La room ne correspond pas à cette partie.' };
+  }
   if (!isUuid(gameId)) {
     if (process.env.NODE_ENV !== 'production' && !SUPABASE_SERVICE_ROLE_KEY) return { ok: true };
     return { ok: false, message: 'Identifiant de partie manquant ou invalide.' };
@@ -706,6 +785,7 @@ function spectatorRoomSnapshot(gameName, room) {
         scores: Array.isArray(room.scores) ? [...room.scores] : [0, 0],
         currentRound: room.currentRound,
         history: Array.isArray(room.history) ? room.history.map(item => ({ ...item })) : [],
+        awaitingNextRound: room.awaitingNextRound === true,
         revealPending: room.revealPending === true,
         revealStartTime: room.revealStartTime || null,
         revealDuration: CHIFOUMI_REVEAL_DURATION,
@@ -1164,19 +1244,19 @@ function clearDamesTurnTimers(droom) {
 
 function startDamesTurnTimer(droom, roomId, playerSlot) {
   clearDamesTurnTimers(droom);
-  if (droom.status === 'finished') return;
+  if (droom.status !== 'playing' || droom.currentPlayer + 1 !== playerSlot) return;
   const now = Date.now();
   droom.turnPlayer = playerSlot; droom.turnStartTime = now; droom.graceStartTime = null;
   io.to(roomId).emit('dames_turn_start', { player: playerSlot, startTime: now, duration: TURN_DURATION });
   droom.turnTimer = setTimeout(() => {
     droom.turnTimer = null;
-    if (droom.status === 'finished') return;
+    if (droom.status !== 'playing' || droom.currentPlayer + 1 !== playerSlot || droom.turnPlayer !== playerSlot) return;
     const graceNow = Date.now();
     droom.graceStartTime = graceNow;
     io.to(roomId).emit('dames_turn_warning', { player: playerSlot, startTime: graceNow, duration: GRACE_DURATION });
     droom.graceTimer = setTimeout(() => {
       droom.graceTimer = null;
-      if (droom.status === 'finished') return;
+      if (droom.status !== 'playing' || droom.currentPlayer + 1 !== playerSlot || droom.turnPlayer !== playerSlot) return;
       const winnerSlot = playerSlot === 1 ? 2 : 1;
       notifyDamesRoomOver(droom, roomId, winnerSlot, 'timeout');
     }, GRACE_DURATION);
@@ -1226,19 +1306,19 @@ function clearEchecsTurnTimers(eroom) {
 
 function startEchecsTurnTimer(eroom, roomId, playerSlot) {
   clearEchecsTurnTimers(eroom);
-  if (eroom.status === 'finished') return;
+  if (eroom.status !== 'playing' || eroom.currentPlayer + 1 !== playerSlot) return;
   const now = Date.now();
   eroom.turnPlayer = playerSlot; eroom.turnStartTime = now; eroom.graceStartTime = null;
   io.to(roomId).emit('echecs_turn_start', { player: playerSlot, startTime: now, duration: TURN_DURATION });
   eroom.turnTimer = setTimeout(() => {
     eroom.turnTimer = null;
-    if (eroom.status === 'finished') return;
+    if (eroom.status !== 'playing' || eroom.currentPlayer + 1 !== playerSlot || eroom.turnPlayer !== playerSlot) return;
     const graceNow = Date.now();
     eroom.graceStartTime = graceNow;
     io.to(roomId).emit('echecs_turn_warning', { player: playerSlot, startTime: graceNow, duration: GRACE_DURATION });
     eroom.graceTimer = setTimeout(() => {
       eroom.graceTimer = null;
-      if (eroom.status === 'finished') return;
+      if (eroom.status !== 'playing' || eroom.currentPlayer + 1 !== playerSlot || eroom.turnPlayer !== playerSlot) return;
       const winnerSlot = playerSlot === 1 ? 2 : 1;
       notifyEchecsRoomOver(eroom, roomId, winnerSlot, 'timeout');
     }, GRACE_DURATION);
@@ -1349,21 +1429,56 @@ function clearQuoriTurnTimers(qroom) {
   qroom.turnStartTime = null; qroom.graceStartTime = null; qroom.turnPlayer = null;
 }
 
+function quoriSnapshot(qroom) {
+  const state = qroom.gameState || quoriInitialState();
+  const gameState = {
+    s1Pos: { r: Number(state.s1Pos?.r), c: Number(state.s1Pos?.c) },
+    s2Pos: { r: Number(state.s2Pos?.r), c: Number(state.s2Pos?.c) },
+    s1Walls: Number(state.s1Walls),
+    s2Walls: Number(state.s2Walls),
+    hW: Array.isArray(state.hW) ? state.hW.map(row => Array.isArray(row) ? [...row] : []) : [],
+    vW: Array.isArray(state.vW) ? state.vW.map(row => Array.isArray(row) ? [...row] : []) : [],
+    currentSlot: validPlayerSlot(qroom.currentSlot) ? qroom.currentSlot : 1
+  };
+  const snap = {
+    room: qroom.id,
+    version: Math.max(0, Number(qroom.stateVersion) || 0),
+    gameState,
+    currentSlot: gameState.currentSlot,
+    status: qroom.status,
+    serverTime: Date.now(),
+    turnPlayer: qroom.turnPlayer
+  };
+  if (qroom.status === 'playing' && qroom.turnPlayer !== null) {
+    if (qroom.graceStartTime) { snap.graceStartTime = qroom.graceStartTime; snap.graceDuration = GRACE_DURATION; }
+    else if (qroom.turnStartTime) { snap.turnStartTime = qroom.turnStartTime; snap.turnDuration = TURN_DURATION; }
+  }
+  return snap;
+}
+
+const _quoriSyncLoop = setInterval(() => {
+  for (const [roomId, qroom] of quoriRooms) {
+    if (qroom.status !== 'playing') continue;
+    io.to(roomId).emit('quoridor_state_sync', quoriSnapshot(qroom));
+  }
+}, DAMES_SYNC_INTERVAL);
+if (_quoriSyncLoop.unref) _quoriSyncLoop.unref();
+
 function startQuoriTurnTimer(qroom, roomId, playerSlot) {
   clearQuoriTurnTimers(qroom);
-  if (qroom.status === 'finished') return;
+  if (qroom.status !== 'playing' || qroom.currentSlot !== playerSlot) return;
   const now = Date.now();
   qroom.turnPlayer = playerSlot; qroom.turnStartTime = now; qroom.graceStartTime = null;
   io.to(roomId).emit('quoridor_turn_start', { player: playerSlot, startTime: now, duration: TURN_DURATION });
   qroom.turnTimer = setTimeout(() => {
     qroom.turnTimer = null;
-    if (qroom.status === 'finished') return;
+    if (qroom.status !== 'playing' || qroom.currentSlot !== playerSlot || qroom.turnPlayer !== playerSlot) return;
     const graceNow = Date.now();
     qroom.graceStartTime = graceNow;
     io.to(roomId).emit('quoridor_turn_warning', { player: playerSlot, startTime: graceNow, duration: GRACE_DURATION });
     qroom.graceTimer = setTimeout(() => {
       qroom.graceTimer = null;
-      if (qroom.status === 'finished') return;
+      if (qroom.status !== 'playing' || qroom.currentSlot !== playerSlot || qroom.turnPlayer !== playerSlot) return;
       const winnerSlot = playerSlot === 1 ? 2 : 1;
       notifyQuoriRoomOver(qroom, roomId, winnerSlot, 'timeout');
     }, GRACE_DURATION);
@@ -1382,14 +1497,15 @@ function clearPenaltyTurnTimers(proom) {
 
 function startPenaltyTurnTimer(proom, roomId) {
   clearPenaltyTurnTimers(proom);
-  if (proom.status === 'finished') return;
+  if (proom.status !== 'playing') return;
+  const round = proom.currentRound;
   const now = Date.now();
   proom.turnStartTime = now; proom.graceStartTime = null;
   io.to(roomId).emit('penalty_turn_start', { startTime: now, duration: PENALTY_TURN_DURATION });
 
   proom.turnTimer = setTimeout(() => {
     proom.turnTimer = null;
-    if (proom.status === 'finished') return;
+    if (proom.status !== 'playing' || proom.currentRound !== round) return;
 
     const hp1 = proom.choices[1] !== undefined;
     const hp2 = proom.choices[2] !== undefined;
@@ -1405,7 +1521,7 @@ function startPenaltyTurnTimer(proom, roomId) {
 
     proom.graceTimer = setTimeout(() => {
       proom.graceTimer = null;
-      if (proom.status === 'finished') return;
+      if (proom.status !== 'playing' || proom.currentRound !== round) return;
 
       const hp1Grace = proom.choices[1] !== undefined;
       const hp2Grace = proom.choices[2] !== undefined;
@@ -1475,13 +1591,15 @@ function clearChifoumiTurnTimers(croom) {
   if (croom.turnTimer)  { clearTimeout(croom.turnTimer);  croom.turnTimer  = null; }
   if (croom.graceTimer) { clearTimeout(croom.graceTimer); croom.graceTimer = null; }
   if (croom.revealTimer) { clearTimeout(croom.revealTimer); croom.revealTimer = null; }
+  if (croom.nextRoundTimer) { clearTimeout(croom.nextRoundTimer); croom.nextRoundTimer = null; }
   croom.revealPending = false;
-  croom.turnStartTime = null; croom.graceStartTime = null;
+  croom.revealStartTime = null; croom.turnStartTime = null; croom.graceStartTime = null;
 }
 
 function startChifoumiTurnTimer(croom, roomId) {
-  if (croom.status === 'finished' || croom.revealPending) return;
+  if (croom.status !== 'playing' || croom.revealPending || croom.awaitingNextRound) return;
   clearChifoumiTurnTimers(croom);
+  const round = croom.currentRound;
   const now = Date.now();
   croom.turnStartTime = now; croom.graceStartTime = null;
 
@@ -1489,7 +1607,7 @@ function startChifoumiTurnTimer(croom, roomId) {
 
   croom.turnTimer = setTimeout(() => {
     croom.turnTimer = null;
-    if (croom.status === 'finished') return;
+    if (croom.status !== 'playing' || croom.currentRound !== round || croom.revealPending || croom.awaitingNextRound) return;
 
     const hp1 = croom.choices[1] !== undefined;
     const hp2 = croom.choices[2] !== undefined;
@@ -1505,7 +1623,7 @@ function startChifoumiTurnTimer(croom, roomId) {
 
     croom.graceTimer = setTimeout(() => {
       croom.graceTimer = null;
-      if (croom.status === 'finished') return;
+      if (croom.status !== 'playing' || croom.currentRound !== round || croom.revealPending || croom.awaitingNextRound) return;
       
       const hp1Grace = croom.choices[1] !== undefined;
       const hp2Grace = croom.choices[2] !== undefined;
@@ -1525,6 +1643,30 @@ function chifoumiWinnerSlot(choice1, choice2) {
   return (choice1 === 'pierre' && choice2 === 'ciseaux') ||
     (choice1 === 'feuille' && choice2 === 'pierre') ||
     (choice1 === 'ciseaux' && choice2 === 'feuille') ? 1 : 2;
+}
+
+function advanceChifoumiRound(croom, roomId, expectedRound) {
+  if (!croom || croom.status !== 'playing' || croom.awaitingNextRound !== true) return false;
+  const nextRound = croom.currentRound + 1;
+  if (Number.isInteger(expectedRound) && expectedRound !== nextRound) return false;
+  if (croom.history.length !== croom.currentRound || nextRound > 5) return false;
+  clearChifoumiTurnTimers(croom);
+  croom.currentRound = nextRound;
+  croom.choices = {};
+  croom.awaitingNextRound = false;
+  persistRoomSoon('chifoumi', croom);
+  io.to(roomId).emit('chifoumi_round_ready', { round: nextRound, scores: [...croom.scores] });
+  startChifoumiTurnTimer(croom, roomId);
+  return true;
+}
+
+function scheduleNextChifoumiRound(croom, roomId) {
+  if (!croom || croom.status !== 'playing' || croom.awaitingNextRound !== true || croom.nextRoundTimer) return;
+  croom.nextRoundTimer = setTimeout(() => {
+    croom.nextRoundTimer = null;
+    advanceChifoumiRound(croom, roomId);
+  }, 4500);
+  if (croom.nextRoundTimer.unref) croom.nextRoundTimer.unref();
 }
 
 function resolveChifoumiRound(croom, roomId) {
@@ -1567,6 +1709,10 @@ function resolveChifoumiRound(croom, roomId) {
     }, 3000);
   }
   croom.awaitingNextRound = true;
+  persistRoomSoon('chifoumi', croom);
+  // A backgrounded browser can miss its legacy round_start callback. The
+  // authoritative server advances the round after a short compatibility delay.
+  scheduleNextChifoumiRound(croom, roomId);
 }
 
 function scheduleChifoumiReveal(croom, roomId) {
@@ -1691,6 +1837,7 @@ function startLudoTurnTimer(room, roomId) {
   clearLudoTurnTimers(room);
   if (room.status !== 'playing') return;
   const state = ensureLudoState(room);
+  const player = state.currentPlayer;
   room.turnStartTime = Date.now();
   io.to(roomId).emit('ludo_turn_start', {
     player: state.currentPlayer,
@@ -1701,7 +1848,7 @@ function startLudoTurnTimer(room, roomId) {
   persistRoomSoon('ludo', room);
   room.turnTimer = setTimeout(() => {
     room.turnTimer = null;
-    if (room.status !== 'playing') return;
+    if (room.status !== 'playing' || state.currentPlayer !== player) return;
     room.graceStartTime = Date.now();
     io.to(roomId).emit('ludo_turn_warning', {
       player: state.currentPlayer,
@@ -1711,8 +1858,8 @@ function startLudoTurnTimer(room, roomId) {
     });
     room.graceTimer = setTimeout(() => {
       room.graceTimer = null;
-      if (room.status !== 'playing') return;
-      notifyLudoRoomOver(room, roomId, state.currentPlayer === 1 ? 2 : 1, 'timeout');
+      if (room.status !== 'playing' || state.currentPlayer !== player) return;
+      notifyLudoRoomOver(room, roomId, player === 1 ? 2 : 1, 'timeout');
     }, LUDO_GRACE_DURATION);
     if (room.graceTimer.unref) room.graceTimer.unref();
   }, LUDO_TURN_DURATION);
@@ -2632,7 +2779,7 @@ io.on('connection', (socket) => {
   // ══════════════════════════════════════════════════════
   socket.on('dames_join', async ({ room, player, supabaseId, name, bet, currency, gameId }) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return rejectSocket(socket, 'Room ou joueur invalide.');
-    const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'dames', player, bet);
+    const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'dames', player, bet, room);
     if (!databaseCheck.ok) return rejectSocket(socket, databaseCheck.message);
     let droom = damesRooms.get(room);
     if (!droom) {
@@ -2693,7 +2840,12 @@ io.on('connection', (socket) => {
       const p1 = droom.players[1], p2 = droom.players[2];
       io.to(p1.socketId).emit('dames_start', { room, yourSlot: 1, opponentName: p2.name, bet: droom.betAmount, currency: droom.currency, reconnected: false });
       io.to(p2.socketId).emit('dames_start', { room, yourSlot: 2, opponentName: p1.name, bet: droom.betAmount, currency: droom.currency, reconnected: false });
-      setTimeout(() => { if (droom.status === 'playing') startDamesTurnTimer(droom, room, 1); }, 3000);
+      const initialVersion = droom.stateVersion;
+      setTimeout(() => {
+        if (droom.status === 'playing' && droom.stateVersion === initialVersion && !droom.turnStartTime) {
+          startDamesTurnTimer(droom, room, 1);
+        }
+      }, 3000);
     }
   });
 
@@ -2745,7 +2897,7 @@ io.on('connection', (socket) => {
   // ══════════════════════════════════════════════════════
   socket.on('echecs_join', async ({ room, player, supabaseId, name, bet, currency, gameId }) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return rejectSocket(socket, 'Room ou joueur invalide.');
-    const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'echecs', player, bet);
+    const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'echecs', player, bet, room);
     if (!databaseCheck.ok) return rejectSocket(socket, databaseCheck.message);
     let eroom = echecsRooms.get(room);
     if (!eroom) {
@@ -2807,7 +2959,12 @@ io.on('connection', (socket) => {
       const p1 = eroom.players[1], p2 = eroom.players[2];
       io.to(p1.socketId).emit('echecs_start', { room, yourSlot: 1, opponentName: p2.name, bet: eroom.betAmount, currency: eroom.currency, reconnected: false });
       io.to(p2.socketId).emit('echecs_start', { room, yourSlot: 2, opponentName: p1.name, bet: eroom.betAmount, currency: eroom.currency, reconnected: false });
-      setTimeout(() => { if (eroom.status === 'playing') startEchecsTurnTimer(eroom, room, 1); }, 3000);
+      const initialVersion = eroom.stateVersion;
+      setTimeout(() => {
+        if (eroom.status === 'playing' && eroom.stateVersion === initialVersion && !eroom.turnStartTime) {
+          startEchecsTurnTimer(eroom, room, 1);
+        }
+      }, 3000);
     }
   });
 
@@ -2873,7 +3030,7 @@ io.on('connection', (socket) => {
   // ══════════════════════════════════════════════════════
   socket.on('ttt_join', async ({ room, player, supabaseId, name, bet, currency, gameId }) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return rejectSocket(socket, 'Room ou joueur invalide.');
-    const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'tictactoe', player, bet);
+    const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'tictactoe', player, bet, room);
     if (!databaseCheck.ok) return rejectSocket(socket, databaseCheck.message);
     let troom = tttRooms.get(room);
     if (!troom) {
@@ -2978,11 +3135,11 @@ io.on('connection', (socket) => {
   // ══════════════════════════════════════════════════════
   socket.on('quoridor_join', async ({ room, player, supabaseId, name, bet, currency, gameId }) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return rejectSocket(socket, 'Room ou joueur invalide.');
-    const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'quoridor', player, bet);
+    const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'quoridor', player, bet, room);
     if (!databaseCheck.ok) return rejectSocket(socket, databaseCheck.message);
     let qroom = quoriRooms.get(room);
     if (!qroom) {
-      qroom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, gameState: quoriInitialState(), currentSlot: 1, turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null, turnPlayer: null };
+      qroom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, gameState: quoriInitialState(), currentSlot: 1, stateVersion: 0, turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null, turnPlayer: null };
       quoriRooms.set(room, qroom);
     }
     if (!bindDatabaseGame(qroom, gameId)) return rejectSocket(socket, 'Cette room est déjà liée à une autre partie.');
@@ -3017,7 +3174,7 @@ io.on('connection', (socket) => {
       socket.to(room).emit('quoridor_player_status', { slot: player, connected: true, name });
       socket.to(room).emit('player:reconnected', { message: `${name} est de retour !` });
       const opponentName = player === 1 ? (qroom.players[2]?.name || 'Adversaire') : (qroom.players[1]?.name || 'Adversaire');
-      socket.emit('quoridor_start', { room, yourSlot: player, opponentName, bet: qroom.betAmount, currency: qroom.currency, reconnected: true, paused: qroom.status === 'paused', gameState: qroom.gameState || null, currentSlot: qroom.currentSlot, turnPlayer: qroom.turnPlayer, turnStartTime: qroom.turnStartTime, graceStartTime: qroom.graceStartTime });
+      socket.emit('quoridor_start', { room, yourSlot: player, opponentName, bet: qroom.betAmount, currency: qroom.currency, reconnected: true, paused: qroom.status === 'paused', gameState: qroom.gameState || null, stateVersion: qroom.stateVersion || 0, currentSlot: qroom.currentSlot, turnPlayer: qroom.turnPlayer, turnStartTime: qroom.turnStartTime, graceStartTime: qroom.graceStartTime });
       if (qroom.turnPlayer !== null && qroom.status === 'playing') {
         const now = Date.now();
         if (qroom.graceStartTime) socket.emit('quoridor_turn_sync', { serverTime: now, turnPlayer: qroom.turnPlayer, graceStartTime: qroom.graceStartTime, duration: GRACE_DURATION });
@@ -3033,7 +3190,12 @@ io.on('connection', (socket) => {
       const p1 = qroom.players[1], p2 = qroom.players[2];
       io.to(p1.socketId).emit('quoridor_start', { room, yourSlot: 1, opponentName: p2.name, bet: qroom.betAmount, currency: qroom.currency, reconnected: false });
       io.to(p2.socketId).emit('quoridor_start', { room, yourSlot: 2, opponentName: p1.name, bet: qroom.betAmount, currency: qroom.currency, reconnected: false });
-      setTimeout(() => { if (qroom.status === 'playing') { qroom.currentSlot = 1; startQuoriTurnTimer(qroom, room, 1); } }, 3000);
+      const initialVersion = qroom.stateVersion;
+      setTimeout(() => {
+        if (qroom.status === 'playing' && qroom.stateVersion === initialVersion && !qroom.turnStartTime) {
+          startQuoriTurnTimer(qroom, room, 1);
+        }
+      }, 3000);
     }
   });
 
@@ -3041,23 +3203,28 @@ io.on('connection', (socket) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return;
     const qroom = quoriRooms.get(room), state = qroom?.gameState;
     if (!qroom || !state || qroom.status !== 'playing' || qroom.players[player]?.socketId !== socket.id) return;
-    if (qroom.currentSlot !== player) return rejectSocket(socket, 'Ce n’est pas votre tour.');
+    const rejectMove = message => {
+      rejectSocket(socket, message);
+      socket.emit('quoridor_state_sync', quoriSnapshot(qroom));
+    };
+    if (qroom.currentSlot !== player) return rejectMove('Ce n’est pas votre tour.');
     const ownPos = player === 1 ? state.s1Pos : state.s2Pos, otherPos = player === 1 ? state.s2Pos : state.s1Pos;
-    if (!data || !Number.isInteger(data.r) || !Number.isInteger(data.c)) return rejectSocket(socket, 'Coup Quoridor invalide.');
+    if (!data || !Number.isInteger(data.r) || !Number.isInteger(data.c)) return rejectMove('Coup Quoridor invalide.');
     if (moveType === 'move') {
       const legal = quoriMoves(state, ownPos, otherPos).some(move => move.r === data.r && move.c === data.c);
-      if (!legal) return rejectSocket(socket, 'Déplacement Quoridor invalide.');
+      if (!legal) return rejectMove('Déplacement Quoridor invalide.');
       if (player === 1) state.s1Pos = { r: data.r, c: data.c }; else state.s2Pos = { r: data.r, c: data.c };
     } else if (moveType === 'wallH' || moveType === 'wallV') {
       const walls = player === 1 ? state.s1Walls : state.s2Walls;
-      if (walls <= 0 || !quoriCanPlaceWall(state, moveType, data.r, data.c)) return rejectSocket(socket, 'Mur Quoridor invalide.');
+      if (walls <= 0 || !quoriCanPlaceWall(state, moveType, data.r, data.c)) return rejectMove('Mur Quoridor invalide.');
       (moveType === 'wallH' ? state.hW : state.vW)[data.r][data.c] = true;
       if (player === 1) state.s1Walls--; else state.s2Walls--;
-    } else return rejectSocket(socket, 'Action Quoridor invalide.');
+    } else return rejectMove('Action Quoridor invalide.');
     const winnerSlot = (player === 1 && state.s1Pos.r === 0) || (player === 2 && state.s2Pos.r === 8) ? player : 0;
     qroom.currentSlot = player === 1 ? 2 : 1;
     state.currentSlot = qroom.currentSlot;
-    socket.to(room).emit('quoridor_move', { room, player, moveType, data: { r: data.r, c: data.c }, gameState: JSON.stringify(state), nextPlayer: qroom.currentSlot - 1 });
+    qroom.stateVersion = Math.max(0, Number(qroom.stateVersion) || 0) + 1;
+    io.to(room).emit('quoridor_move', { room, player, moveType, data: { r: data.r, c: data.c }, gameState: JSON.stringify(state), version: qroom.stateVersion, nextPlayer: qroom.currentSlot - 1 });
     persistRoomSoon('quoridor', qroom);
     if (winnerSlot) return notifyQuoriRoomOver(qroom, room, winnerSlot, 'normal');
     startQuoriTurnTimer(qroom, room, qroom.currentSlot);
@@ -3074,7 +3241,7 @@ io.on('connection', (socket) => {
   // ══════════════════════════════════════════════════════
   socket.on('penalty_join', async ({ room, player, supabaseId, name, bet, currency, gameId }) => {
     if (!validRoom(room) || !validPlayerSlot(player)) { socket.emit('penalty_error', { message: 'room_or_player_invalid', detail: 'Room ou joueur invalide.' }); return; }
-    const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'penalty', player, bet);
+    const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'penalty', player, bet, room);
     if (!databaseCheck.ok) return rejectSocket(socket, databaseCheck.message);
     let proom = penaltyRooms.get(room);
 
@@ -3123,7 +3290,7 @@ io.on('connection', (socket) => {
       socket.to(room).emit('penalty_player_status', { slot: player, connected: true, name });
       socket.to(room).emit('player:reconnected', { message: `${name} est de retour !` });
       const opponentName = player === 1 ? (proom.players[2]?.name || 'Adversaire') : (proom.players[1]?.name || 'Adversaire');
-      socket.emit('penalty_start', { room, yourSlot: player, opponentName, bet: proom.betAmount, currency: proom.currency, reconnected: true, paused: proom.status === 'paused', gameState: { round: proom.currentRound, scores: proom.scores, phase: 'choosing' } });
+      socket.emit('penalty_start', { room, yourSlot: player, opponentName, bet: proom.betAmount, currency: proom.currency, reconnected: true, paused: proom.status === 'paused', gameState: { round: proom.currentRound, scores: proom.scores, phase: 'choosing', yourChoice: proom.choices[player] ?? null, opponentHasChosen: proom.choices[player === 1 ? 2 : 1] !== undefined } });
       
       if (proom.status === 'playing') {
         const now = Date.now();
@@ -3140,7 +3307,12 @@ io.on('connection', (socket) => {
       const p1 = proom.players[1], p2 = proom.players[2];
       io.to(p1.socketId).emit('penalty_start', { room, yourSlot: 1, opponentName: p2.name, bet: proom.betAmount, currency: proom.currency, reconnected: false });
       io.to(p2.socketId).emit('penalty_start', { room, yourSlot: 2, opponentName: p1.name, bet: proom.betAmount, currency: proom.currency, reconnected: false });
-      setTimeout(() => { if (proom.status === 'playing') startPenaltyTurnTimer(proom, room); }, 2800);
+      const initialRound = proom.currentRound;
+      setTimeout(() => {
+        if (proom.status === 'playing' && proom.currentRound === initialRound && !proom.turnStartTime) {
+          startPenaltyTurnTimer(proom, room);
+        }
+      }, 2800);
     }
   });
 
@@ -3173,11 +3345,11 @@ io.on('connection', (socket) => {
   // ══════════════════════════════════════════════════════
   socket.on('chifoumi_join', async ({ room, player, supabaseId, name, bet, currency, gameId }) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return rejectSocket(socket, 'Room ou joueur invalide.');
-    const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'chifoumi', player, bet);
+    const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'chifoumi', player, bet, room);
     if (!databaseCheck.ok) return rejectSocket(socket, databaseCheck.message);
     let croom = chifoumiRooms.get(room);
     if (!croom) {
-      croom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, currentRound: 1, scores: [0, 0], choices: {}, history: [], turnTimer: null, graceTimer: null, revealTimer: null, revealPending: false, revealStartTime: null, turnStartTime: null, graceStartTime: null };
+      croom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, currentRound: 1, scores: [0, 0], choices: {}, history: [], turnTimer: null, graceTimer: null, revealTimer: null, nextRoundTimer: null, awaitingNextRound: false, revealPending: false, revealStartTime: null, turnStartTime: null, graceStartTime: null };
       chifoumiRooms.set(room, croom);
     }
     if (!bindDatabaseGame(croom, gameId)) return rejectSocket(socket, 'Cette room est déjà liée à une autre partie.');
@@ -3190,7 +3362,8 @@ io.on('connection', (socket) => {
       const bothBack = p1?.connected && p2?.connected;
       if (bothBack && croom.disconnectTimer) {
         clearTimeout(croom.disconnectTimer); croom.disconnectTimer = null; croom.reconnectDeadline = null; croom.status = 'playing';
-        if (croom.choices[1] !== undefined && croom.choices[2] !== undefined) scheduleChifoumiReveal(croom, room);
+        if (croom.awaitingNextRound === true) scheduleNextChifoumiRound(croom, room);
+        else if (croom.choices[1] !== undefined && croom.choices[2] !== undefined) scheduleChifoumiReveal(croom, room);
         else startChifoumiTurnTimer(croom, room);
         io.to(room).emit('chifoumi_game_resumed', { message: 'Les deux joueurs sont de retour !' });
       } else if (croom.disconnectTimer) {
@@ -3222,7 +3395,8 @@ io.on('connection', (socket) => {
           history: croom.history,
           currentChoice: croom.choices[player] ?? null,
           opponentHasChosen: croom.choices[player === 1 ? 2 : 1] !== undefined,
-          revealPending: croom.revealPending === true
+          revealPending: croom.revealPending === true,
+          awaitingNextRound: croom.awaitingNextRound === true
         }
       });
       
@@ -3240,7 +3414,13 @@ io.on('connection', (socket) => {
       persistRoomSoon('chifoumi', croom);
       io.to(p1.socketId).emit('chifoumi_start', { room, yourSlot: 1, opponentName: p2.name, bet: croom.betAmount, currency: croom.currency, reconnected: false });
       io.to(p2.socketId).emit('chifoumi_start', { room, yourSlot: 2, opponentName: p1.name, bet: croom.betAmount, currency: croom.currency, reconnected: false });
-      setTimeout(() => { if (croom.status === 'playing' && !croom.revealPending) startChifoumiTurnTimer(croom, room); }, 3000);
+      const initialRound = croom.currentRound;
+      setTimeout(() => {
+        if (croom.status === 'playing' && croom.currentRound === initialRound &&
+            !croom.revealPending && !croom.awaitingNextRound && !croom.turnStartTime) {
+          startChifoumiTurnTimer(croom, room);
+        }
+      }, 3000);
     }
   });
 
@@ -3261,15 +3441,8 @@ io.on('connection', (socket) => {
 
   socket.on('chifoumi_round_start', ({ room, player, round }) => {
     const croom = chifoumiRooms.get(room);
-    if (croom && croom.status === 'playing' && validPlayerSlot(player) && croom.players[player]?.socketId === socket.id && croom.awaitingNextRound === true && Number.isInteger(round) && round === croom.currentRound + 1 && croom.history.length === croom.currentRound) {
-      croom.currentRound = round;
-      croom.choices = {};
-      croom.awaitingNextRound = false;
-      croom.revealPending = false;
-      croom.revealStartTime = null;
-      persistRoomSoon('chifoumi', croom);
-      startChifoumiTurnTimer(croom, room);
-    }
+    if (!croom || !validPlayerSlot(player) || croom.players[player]?.socketId !== socket.id) return;
+    advanceChifoumiRound(croom, room, round);
   });
 
   socket.on('chifoumi_round_result', () => {});
@@ -3284,11 +3457,18 @@ io.on('connection', (socket) => {
     if (safeReason(data.reason) !== 'normal' && safeReason(data.reason) !== 'draw') return;
   });
 
+  socket.on('quoridor_request_state', ({ room }) => {
+    if (!validRoom(room)) return;
+    const qroom = quoriRooms.get(room);
+    if (!qroom || !socketIsPlayer(qroom, socket.id)) return;
+    socket.emit('quoridor_state_sync', quoriSnapshot(qroom));
+  });
+
   // LUDO MULTIJOUEUR - état et règles autoritatifs côté serveur.
   socket.on('ludo_join', async ({ room, player, supabaseId, name, bet, currency, gameId }) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return rejectSocket(socket, 'Room ou joueur Ludo invalide.');
     if (isUuid(gameId) && room !== gameId) return rejectSocket(socket, 'La room Ludo ne correspond pas à cette partie.');
-    const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'ludo', player, bet);
+    const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'ludo', player, bet, room);
     if (!databaseCheck.ok) return rejectSocket(socket, databaseCheck.message);
     let lroom = ludoRooms.get(room);
     if (!lroom) {
@@ -3348,7 +3528,11 @@ io.on('connection', (socket) => {
       io.to(p1.socketId).emit('ludo_start', { ...common, yourSlot: 1, opponentName: p2.name });
       io.to(p2.socketId).emit('ludo_start', { ...common, yourSlot: 2, opponentName: p1.name });
       emitLudoState(lroom, room, { type: 'start' });
-      const timer = setTimeout(() => { if (lroom.status === 'playing') startLudoTurnTimer(lroom, room); }, 1200);
+      const timer = setTimeout(() => {
+        if (lroom.status === 'playing' && !lroom.turnStartTime && !lroom.graceStartTime) {
+          startLudoTurnTimer(lroom, room);
+        }
+      }, 1200);
       if (timer.unref) timer.unref();
     }
   });
@@ -3579,7 +3763,6 @@ io.on('connection', (socket) => {
       const dcName = proom.players[disconnectedSlot]?.name || `Joueur ${disconnectedSlot}`;
       socket.to(roomId).emit('penalty_player_status', { slot: disconnectedSlot, connected: false, name: dcName });
       socket.to(roomId).emit('penalty_opponent_disconnected', { slot: disconnectedSlot, message: `${dcName} s'est déconnecté.` });
-      proom.choices = {};
       clearPenaltyTurnTimers(proom);
       pauseAndWatch({
         room: proom, roomId, gameName: 'penalty',
@@ -3605,7 +3788,11 @@ io.on('connection', (socket) => {
         room: croom, roomId, gameName: 'chifoumi',
         getP1: () => croom.players[1], getP2: () => croom.players[2],
         winFn: (winnerIsP1) => notifyChifoumiRoomOver(croom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'),
-        onResume: () => startChifoumiTurnTimer(croom, roomId)
+        onResume: () => {
+          if (croom.awaitingNextRound === true) scheduleNextChifoumiRound(croom, roomId);
+          else if (croom.choices[1] !== undefined && croom.choices[2] !== undefined) scheduleChifoumiReveal(croom, roomId);
+          else startChifoumiTurnTimer(croom, roomId);
+        }
       });
       break;
     }

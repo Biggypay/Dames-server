@@ -292,6 +292,7 @@ var mode;
 var vmoves, vhw, vvw;
 var gameOver = false, gameReady = false, resultSent = false;
 var isProcessing = false;
+var lastStateVersion = -1;
 
 var pendingTimerData = null;
 var forfeitTimer = null, forfeitCountdown = 0;
@@ -761,7 +762,7 @@ function getCanvasXY(e) {
 }
 
 canvas.addEventListener('click',    function(e){ if (IS_SPECTATOR) return; handleTap(getCanvasXY(e)); });
-canvas.addEventListener('touchend', function(e){ e.preventDefault(); handleTap(getCanvasXY(e)); }, {passive:false});
+canvas.addEventListener('touchend', function(e){ e.preventDefault(); if (IS_SPECTATOR) return; handleTap(getCanvasXY(e)); }, {passive:false});
 
 function handleTap(pt) {
   if (!gameReady || gameOver || isProcessing) return;
@@ -825,9 +826,8 @@ function nearestVWSlot(x, y) {
 function doMyMove(r, c) {
   stopTimer();
   if (IS_P1) s1Pos = {r:r, c:c}; else s2Pos = {r:r, c:c};
-  var goalRow = IS_P1 ? 0 : 8;
   emitMyMove('move', {r:r, c:c});
-  if (r === goalRow) { handleGameEnd(MY_SLOT, 'normal'); return; }
+  /* Le serveur confirme seul la victoire et le règlement du match. */
   endMyTurn();
 }
 
@@ -1042,6 +1042,24 @@ function initSocket() {
     } catch (e) {}
   }
 
+  function applyAuthoritativeState(payload) {
+    if (!payload) return;
+    var version = Number(payload.version);
+    if (Number.isFinite(version) && version < lastStateVersion) return;
+    var raw = payload.gameState !== undefined ? payload.gameState : payload;
+    try {
+      var gs = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (!gs || !gs.s1Pos || !gs.s2Pos) return;
+      restoreFromState(gs);
+      if (Number.isFinite(version)) lastStateVersion = version;
+      isProcessing = false;
+      vmoves = []; vhw = []; vvw = [];
+      if (!IS_SPECTATOR && !gameReady) gameReady = true;
+      draw();
+      if (gameReady && !gameOver) updUI();
+    } catch (_) {}
+  }
+
   socket.on('spectator:joined', function() {
     hideSpectatorOverlay();
     gameReady = false;
@@ -1080,22 +1098,13 @@ function initSocket() {
     overlay.style.transition = 'opacity 0.4s';
     setTimeout(function() { overlay.style.display = 'none'; }, 400);
 
-    if (data.reconnected && gameReady && !data.paused) {
-      gameOver = false; isProcessing = false;
-      stopForfeitCountdown();
-      showToast('📶', 'Connexion rétablie', 'La partie reprend !', 2000, function() {
-        updUI();
-      });
-
-    } else if (data.reconnected && !gameReady && !data.gameState) {
-      startNewGame();
-
-    } else if (data.reconnected && data.gameState) {
+    if (data.reconnected && data.gameState) {
       gameReady = false; gameOver = false; isProcessing = false; resultSent = false;
       stopForfeitCountdown();
       try {
-        var gs = JSON.parse(data.gameState);
+        var gs = typeof data.gameState === 'string' ? JSON.parse(data.gameState) : data.gameState;
         restoreFromState(gs);
+        lastStateVersion = Math.max(lastStateVersion, Number(data.stateVersion) || 0);
         draw();
         showToast('📶', 'Partie restaurée', 'Reprise là où vous étiez !', 2400, function() {
           gameReady = true;
@@ -1103,8 +1112,17 @@ function initSocket() {
           applyPendingTimer();
         });
       } catch(e) {
-        startNewGame();
+        if (socket && socket.connected) socket.emit('quoridor_request_state', { room: ROOM_ID });
       }
+
+    } else if (data.reconnected && gameReady && !data.paused) {
+      gameOver = false; isProcessing = false;
+      stopForfeitCountdown();
+      if (socket && socket.connected) socket.emit('quoridor_request_state', { room: ROOM_ID });
+      showToast('📶', 'Connexion rétablie', 'Synchronisation du plateau…', 1600, function() { updUI(); });
+
+    } else if (data.reconnected && !gameReady) {
+      if (socket && socket.connected) socket.emit('quoridor_request_state', { room: ROOM_ID });
 
     } else {
       startNewGame();
@@ -1147,18 +1165,29 @@ function initSocket() {
 
   socket.on('quoridor_move', function(data) {
     if (IS_SPECTATOR) { applySpectatorState(data.gameState); return; }
-    if (data.player === MY_SLOT) return;
-    if (data.gameState) {
-      try {
-        var gs = JSON.parse(data.gameState);
-        hW      = gs.hW;
-        vW      = gs.vW;
-        s1Walls = gs.s1Walls !== undefined ? gs.s1Walls : s1Walls;
-        s2Walls = gs.s2Walls !== undefined ? gs.s2Walls : s2Walls;
-      } catch(e) {}
+    if (data.player !== MY_SLOT) {
+      isProcessing = true;
+      applyOpponentMove(data.moveType, data.data);
     }
-    isProcessing = true;
-    applyOpponentMove(data.moveType, data.data);
+    applyAuthoritativeState(data);
+  });
+
+  socket.on('quoridor_state_sync', function(data) {
+    if (IS_SPECTATOR) { applySpectatorState(data && data.gameState); return; }
+    applyAuthoritativeState(data);
+    if (data && data.serverTime && (data.graceStartTime || data.turnStartTime)) {
+      var offset = Date.now() - data.serverTime;
+      var isMe = data.turnPlayer === MY_SLOT;
+      if (data.graceStartTime) startGraceTimer(isMe, data.graceStartTime + offset, data.graceDuration || 60000);
+      else startTimer(isMe, data.turnStartTime + offset);
+    }
+  });
+
+  socket.on('game:error', function(data) {
+    if (IS_SPECTATOR) return;
+    var message = data && data.message ? data.message : 'Le serveur a refusé cette action.';
+    showToast('⚠️', 'Synchronisation', message, 1800);
+    if (!gameOver && socket && socket.connected) socket.emit('quoridor_request_state', { room: ROOM_ID });
   });
 
   socket.on('quoridor_player_status', function(data) {

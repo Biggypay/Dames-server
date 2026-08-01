@@ -149,8 +149,9 @@ async function main() {
 
     // ── 5. Diffusion périodique ───────────────────────────
     console.log('\n— Diffusion périodique (attente ≤ 6,5 s) —');
-    let periodic1 = 0, periodic2 = 0;
-    const h1 = () => periodic1++, h2 = () => periodic2++;
+    let periodic1 = 0, periodic2 = 0, lastPeriodic1 = null, lastPeriodic2 = null;
+    const h1 = data => { periodic1++; lastPeriodic1 = data; };
+    const h2 = data => { periodic2++; lastPeriodic2 = data; };
     p1.socket.on('dames_state_sync', h1);
     p2.socket.on('dames_state_sync', h2);
     await sleep(6500);
@@ -158,6 +159,7 @@ async function main() {
     p2.socket.off('dames_state_sync', h2);
     check('P1 a reçu au moins une sync périodique', periodic1 >= 1, periodic1);
     check('P2 a reçu au moins une sync périodique', periodic2 >= 1, periodic2);
+    check('Le démarrage différé ne remet jamais l’horloge à P1 après son coup', lastPeriodic1?.turnPlayer === 2 && lastPeriodic2?.turnPlayer === 2, { lastPeriodic1, lastPeriodic2 });
 
     // ── Coup légal P2 pour passer en version 2 ────────────
     console.log('\n— Coup légal (P2 noir 3,0 → 4,1) —');
@@ -205,7 +207,7 @@ async function main() {
     // Compare the authoritative startTime, not the local receive time: on a
     // fast runner the legitimate initial timer and the move can be received in
     // the same millisecond.
-    const lateWrongTimer = tttTurnEvents.find(event => event.startTime >= firstMoveAt && event.player === 1);
+    const lateWrongTimer = tttTurnEvents.find(event => event.startTime > firstMoveAt && event.player === 1);
     check('TTT never restores the clock to player 1 after the first move', !lateWrongTimer, tttTurnEvents);
     check('TTT starts player 2 clock after player 1 move', tttTurnEvents.some(event => event.startTime >= firstMoveAt && event.player === 2), tttTurnEvents);
     await emitAndWait(p2b.socket, p1.socket, 'ttt_move', { room: tttRoom, player: 2, row: 1, col: 0, symbol: 'O' }, 'ttt_move');
@@ -227,14 +229,48 @@ async function main() {
     await Promise.all([quoriStart1, quoriStart2]);
     const p1Path = [{r:7,c:4},{r:6,c:4},{r:5,c:4},{r:4,c:4},{r:3,c:4},{r:2,c:4},{r:1,c:4}];
     const p2Path = [{r:0,c:3},{r:0,c:2},{r:0,c:1},{r:0,c:0},{r:1,c:0},{r:1,c:1},{r:1,c:2}];
-    for (let i = 0; i < p1Path.length; i++) {
-      await emitAndWait(p1.socket, p2b.socket, 'quoridor_move', { room: quoriRoom, player: 1, moveType: 'move', data: p1Path[i] }, 'quoridor_move');
-      await emitAndWait(p2b.socket, p1.socket, 'quoridor_move', { room: quoriRoom, player: 2, moveType: 'move', data: p2Path[i] }, 'quoridor_move');
+    const quoriWrongTurnError = once(p2b.socket, 'game:error');
+    const quoriWrongTurnRepair = once(p2b.socket, 'quoridor_state_sync');
+    p2b.socket.emit('quoridor_move', { room: quoriRoom, player: 2, moveType: 'move', data: { r: 1, c: 4 } });
+    const [quoriError, quoriRepair] = await Promise.all([quoriWrongTurnError, quoriWrongTurnRepair]);
+    check('Quoridor rejects an out-of-turn move', typeof quoriError.message === 'string', quoriError);
+    check('Quoridor repairs a rejected optimistic client', quoriRepair.version === 0 && quoriRepair.gameState.s2Pos.r === 0, quoriRepair);
+
+    const quoriAck1 = once(p1.socket, 'quoridor_move');
+    const quoriMove1 = once(p2b.socket, 'quoridor_move');
+    p1.socket.emit('quoridor_move', { room: quoriRoom, player: 1, moveType: 'move', data: p1Path[0] });
+    const [quoriOwnAck, quoriOpponentMove] = await Promise.all([quoriAck1, quoriMove1]);
+    check('Quoridor acknowledges the accepted move to its sender', quoriOwnAck.version === 1 && JSON.parse(quoriOwnAck.gameState).s1Pos.r === 7, quoriOwnAck);
+    check('Quoridor streams the same authoritative version to the opponent', quoriOpponentMove.version === 1, quoriOpponentMove);
+    // The introductory 3-second delay must not restore player 1 after a fast
+    // first move. That race made Quoridor appear frozen or reject player 2.
+    await sleep(3200);
+    const quoriAfterIntro = once(p2b.socket, 'quoridor_state_sync');
+    p2b.socket.emit('quoridor_request_state', { room: quoriRoom });
+    const quoriAfterIntroSnapshot = await quoriAfterIntro;
+    check('Quoridor keeps player 2 active after the delayed intro timer', quoriAfterIntroSnapshot.currentSlot === 2 && quoriAfterIntroSnapshot.turnPlayer === 2, quoriAfterIntroSnapshot);
+    await emitAndWait(p2b.socket, p1.socket, 'quoridor_move', { room: quoriRoom, player: 2, moveType: 'move', data: p2Path[0] }, 'quoridor_move');
+    const requestedQuoriState = once(p1.socket, 'quoridor_state_sync');
+    p1.socket.emit('quoridor_request_state', { room: quoriRoom });
+    const quoriSnapshot = await requestedQuoriState;
+    check('Quoridor state can be resynchronised on demand', quoriSnapshot.version === 2 && quoriSnapshot.currentSlot === 1, quoriSnapshot);
+
+    for (let i = 1; i < p1Path.length; i++) {
+      const p1MoveForP1 = once(p1.socket, 'quoridor_move');
+      const p1MoveForP2 = once(p2b.socket, 'quoridor_move');
+      p1.socket.emit('quoridor_move', { room: quoriRoom, player: 1, moveType: 'move', data: p1Path[i] });
+      await Promise.all([p1MoveForP1, p1MoveForP2]);
+      const p2MoveForP1 = once(p1.socket, 'quoridor_move');
+      const p2MoveForP2 = once(p2b.socket, 'quoridor_move');
+      p2b.socket.emit('quoridor_move', { room: quoriRoom, player: 2, moveType: 'move', data: p2Path[i] });
+      await Promise.all([p2MoveForP1, p2MoveForP2]);
     }
     const quoriOver1 = once(p1.socket, 'game:over');
     const quoriOver2 = once(p2b.socket, 'game:over');
+    const quoriFinalMove1 = once(p1.socket, 'quoridor_move');
+    const quoriFinalMove2 = once(p2b.socket, 'quoridor_move');
     p1.socket.emit('quoridor_move', { room: quoriRoom, player: 1, moveType: 'move', data: { r: 0, c: 4 } });
-    const [quoriResult1, quoriResult2] = await Promise.all([quoriOver1, quoriOver2]);
+    const [quoriResult1, quoriResult2] = await Promise.all([quoriOver1, quoriOver2, quoriFinalMove1, quoriFinalMove2]);
     check('Quoridor winner receives only a win', quoriResult1.game === 'quoridor' && quoriResult1.result === 'win' && quoriResult1.myResult > 0, quoriResult1);
     check('Quoridor loser receives only a loss', quoriResult2.game === 'quoridor' && quoriResult2.result === 'loss' && quoriResult2.myResult < 0, quoriResult2);
     check('Sync de reprise diffusée à la reconnexion (version 2)', rsync.version === 2, rsync.version);

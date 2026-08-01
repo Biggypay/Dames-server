@@ -261,8 +261,11 @@ var P           = new URLSearchParams(window.location.search);
 var TOKEN_FRAGMENT = new URLSearchParams(window.location.hash.slice(1));
 var GAME_AUTH_TOKEN = TOKEN_FRAGMENT.get('token') || P.get('token') || '';
 if (TOKEN_FRAGMENT.has('token')) { try { history.replaceState(null, '', location.pathname + location.search); } catch (_) {} }
+var IS_SPECTATOR = P.get('spectate') === '1' || P.get('spectator') === '1';
+var SPECTATOR_TOKEN = '';
+var spectatorInitReceived = false;
 var ROOM_ID     = P.get('room')     || '';
-var MY_SLOT     = parseInt(P.get('player') || '1', 10);  /* 1 ou 2 */
+var MY_SLOT     = IS_SPECTATOR ? 1 : parseInt(P.get('player') || '1', 10);  /* 1 ou 2 */
 var P1_ID       = P.get('p1Id')     || '';
 var P2_ID       = P.get('p2Id')     || '';
 var P1_NAME     = P.get('p1Name')   || 'Joueur 1';
@@ -277,14 +280,38 @@ if (!ROOM_ID && P1_ID && P2_ID) {
   var ids = [P1_ID, P2_ID].sort();
   ROOM_ID = 'penalty-' + ids[0].slice(-8) + '-' + ids[1].slice(-8);
 }
-if (!ROOM_ID) ROOM_ID = P.get('gameId') || P.get('matchId') || ('penalty-' + Date.now());
+if (!ROOM_ID) ROOM_ID = P.get('gameId') || P.get('matchId') || (IS_SPECTATOR ? '' : ('penalty-' + Date.now()));
 var GAME_ID = P.get('gameId') || P.get('matchId') || '';
-window.addEventListener('message', function(e) { if (e.data && e.data.type === 'client:mutual_quit' && socket && socket.connected) socket.emit('game_mutual_quit', { room: ROOM_ID, game: 'penalty', player: MY_SLOT }); });
+window.addEventListener('message', function(e) {
+  if (!e.data) return;
+  if (IS_SPECTATOR && e.data.type === 'spectator:init') {
+    if (e.data.gameId && GAME_ID && e.data.gameId !== GAME_ID) return;
+    SPECTATOR_TOKEN = typeof e.data.token === 'string' ? e.data.token : '';
+    if (typeof e.data.player1Name === 'string' && e.data.player1Name.trim()) P1_NAME = e.data.player1Name.trim().slice(0, 40);
+    if (typeof e.data.player2Name === 'string' && e.data.player2Name.trim()) P2_NAME = e.data.player2Name.trim().slice(0, 40);
+    if (typeof e.data.player1Avatar === 'string') P1_AVATAR = e.data.player1Avatar;
+    if (typeof e.data.player2Avatar === 'string') P2_AVATAR = e.data.player2Avatar;
+    MY_NAME = P1_NAME; OP_NAME = P2_NAME;
+    var nameMe = document.getElementById('name-me'), nameOp = document.getElementById('name-op');
+    if (nameMe) nameMe.textContent = MY_NAME;
+    if (nameOp) nameOp.textContent = OP_NAME;
+    try {
+      var avatarMe = document.getElementById('avatar-me'), avatarOp = document.getElementById('avatar-op');
+      if (avatarMe) setProfilePhoto('avatar-me', P1_AVATAR, avatarMe.innerHTML);
+      if (avatarOp) setProfilePhoto('avatar-op', P2_AVATAR, avatarOp.innerHTML);
+    } catch (_) {}
+    spectatorInitReceived = true;
+    if (!socket) initSocket();
+    return;
+  }
+  if (!IS_SPECTATOR && e.data.type === 'client:mutual_quit' && socket && socket.connected) socket.emit('game_mutual_quit', { room: ROOM_ID, game: 'penalty', player: MY_SLOT });
+});
 
 var MY_SUPABASE_ID = MY_SLOT === 1 ? P1_ID : P2_ID;
 var OP_SUPABASE_ID = MY_SLOT === 1 ? P2_ID : P1_ID;
 var MY_NAME        = MY_SLOT === 1 ? P1_NAME : P2_NAME;
 var OP_NAME        = MY_SLOT === 1 ? P2_NAME : P1_NAME;
+if (IS_SPECTATOR) try { document.body.classList.add('spectator'); } catch (_) {}
 
 /* ══════════════════════════════════════
    CONSTANTES
@@ -352,11 +379,12 @@ function hideLoading() {
 }
 
 function initSocket() {
-  document.getElementById('loading-txt').textContent = 'ROOM: ' + ROOM_ID + ' | SLOT: ' + MY_SLOT;
+  if (IS_SPECTATOR && !spectatorInitReceived) return;
+  document.getElementById('loading-txt').textContent = IS_SPECTATOR ? 'CONNEXION AU DIRECT…' : 'ROOM: ' + ROOM_ID + ' | SLOT: ' + MY_SLOT;
 
   socket = io({
     transports: ['websocket', 'polling'],
-    auth: { token: GAME_AUTH_TOKEN },
+    auth: { token: IS_SPECTATOR ? SPECTATOR_TOKEN : GAME_AUTH_TOKEN },
     reconnection: true,
     reconnectionAttempts: Infinity,
     reconnectionDelay: 1000,
@@ -366,16 +394,61 @@ function initSocket() {
 
   socket.on('connect', function() {
     document.getElementById('reconn-bar').classList.remove('show');
-    emitJoin();
+    if (IS_SPECTATOR) socket.emit('spectator_join', { gameId: GAME_ID });
+    else emitJoin();
   });
 
   socket.on('disconnect', function() {
     if (!gameOver) document.getElementById('reconn-bar').classList.add('show');
+    if (IS_SPECTATOR) try { window.parent.postMessage({ type:'spectator:reconnecting', game:'penalty', gameId:GAME_ID }, '*'); } catch (_) {}
   });
 
-  socket.on('connect_error', function() {
+  socket.on('connect_error', function(error) {
     var lt = document.getElementById('loading-txt');
     if (lt && !gameReady) lt.textContent = 'CONNEXION IMPOSSIBLE — Vérifiez votre réseau';
+    if (IS_SPECTATOR) try { window.parent.postMessage({ type:'spectator:error', game:'penalty', gameId:GAME_ID, message:(error && error.message) || 'Connexion au direct impossible.' }, '*'); } catch (_) {}
+  });
+
+  socket.on('spectator:joined', function() {
+    if (!IS_SPECTATOR) return;
+    hideLoading();
+    document.getElementById('waiting-overlay').classList.remove('show');
+    gameReady = true;
+    phase = 'choosing';
+    hideZones();
+    try { window.parent.postMessage({ type:'spectator:connected', game:'penalty', gameId:GAME_ID }, '*'); } catch (_) {}
+  });
+
+  socket.on('spectator_state', function(snapshot) {
+    if (!IS_SPECTATOR || !snapshot || !snapshot.state) return;
+    hideLoading();
+    if (snapshot.players) {
+      if (snapshot.players[1] && snapshot.players[1].name) P1_NAME = snapshot.players[1].name;
+      if (snapshot.players[2] && snapshot.players[2].name) P2_NAME = snapshot.players[2].name;
+      MY_NAME = P1_NAME; OP_NAME = P2_NAME;
+    }
+    BET_AMOUNT = Number(snapshot.betAmount || 0);
+    CURRENCY = snapshot.currency || CURRENCY;
+    currentRound = Number(snapshot.state.round) || 1;
+    scores.me = Number(snapshot.state.scores && snapshot.state.scores.p1) || 0;
+    scores.op = Number(snapshot.state.scores && snapshot.state.scores.p2) || 0;
+    gameReady = true;
+    phase = 'choosing';
+    updateScores(); updUI(); hideZones();
+    var status = document.getElementById('status-bar');
+    status.className = 'show'; status.textContent = '👁 Match en direct — choix secrets';
+    if (snapshot.state.graceStartTime || snapshot.state.turnStartTime) {
+      var offset = Date.now() - (snapshot.serverTime || Date.now());
+      if (snapshot.state.graceStartTime) startGraceTimer(snapshot.state.graceStartTime + offset, snapshot.state.graceDuration || 60000);
+      else startTimer(snapshot.state.turnStartTime + offset);
+    }
+  });
+
+  socket.on('spectator:error', function(data) {
+    if (!IS_SPECTATOR) return;
+    var message = data && data.message ? data.message : 'Ce direct n’est plus disponible.';
+    var lt = document.getElementById('loading-txt'); if (lt) lt.textContent = message;
+    try { window.parent.postMessage({ type:'spectator:error', game:'penalty', gameId:GAME_ID, message:message }, '*'); } catch (_) {}
   });
 
   /* ── Partie démarrée ── */
@@ -400,6 +473,8 @@ function initSocket() {
       showToast('📶', 'Reconnecté !', 'Reprise de la manche ' + currentRound + ' / ' + TOTAL_ROUNDS, 2200, function(){
         gameReady = true;
         startRound();
+        restoreRoundSelection(data.gameState.yourChoice, data.gameState.opponentHasChosen === true);
+        applyPendingTimer();
       });
     } else {
       /* Nouvelle partie */
@@ -415,6 +490,7 @@ function initSocket() {
         2500, function(){
           gameReady = true;
           startRound();
+          applyPendingTimer();
         }
       );
     }
@@ -428,6 +504,12 @@ function initSocket() {
 
   /* ── Adversaire a confirmé son choix ── */
   socket.on('penalty_choice_received', function(data) {
+    if (IS_SPECTATOR) {
+      var liveBadge = document.getElementById('waiting-badge');
+      liveBadge.className = 'show waiting';
+      liveBadge.textContent = '🔒 Un choix est verrouillé';
+      return;
+    }
     if (data.player === MY_SLOT) return; /* c'est nous, ignorer */
     opLocked = true;
     document.getElementById('profile-op').classList.remove('choosing');
@@ -468,7 +550,7 @@ function initSocket() {
   socket.on('penalty_turn_start', function(data) {
     if (gameOver) return;
     pendingTimerData = { type: 'turn_start', startTime: data.startTime };
-    if (!gameReady) return;
+    if (!gameReady || phase !== 'choosing') return;
     pendingTimerData = null;
     startTimer(data.startTime);
   });
@@ -476,13 +558,16 @@ function initSocket() {
   socket.on('penalty_turn_warning', function(data) {
     if (gameOver) return;
     pendingTimerData = { type: 'turn_warning', startTime: data.startTime, duration: data.duration };
-    if (!gameReady) return;
+    if (!gameReady || phase !== 'choosing') return;
     pendingTimerData = null;
     startGraceTimer(data.startTime, data.duration);
   });
 
   socket.on('penalty_turn_sync', function(data) {
-    if (gameOver || phase !== 'choosing') return;
+    if (gameOver) return;
+    pendingTimerData = { type: 'sync', serverTime: data.serverTime, graceStartTime: data.graceStartTime || null, turnStartTime: data.turnStartTime || null, duration: data.duration };
+    if (!gameReady || phase !== 'choosing') return;
+    pendingTimerData = null;
     var offset = Date.now() - data.serverTime;
     if (data.graceStartTime) {
         startGraceTimer(data.graceStartTime + offset, data.duration || 60000);
@@ -523,6 +608,7 @@ function initSocket() {
   /* ── Fin de partie (serveur) ── */
   socket.on('game:over', function(d) {
     if (gameOver) return;
+    if (IS_SPECTATOR) return showSpectatorGameEnd(d);
     hideLoading();
     stopForfeitCountdown();
 
@@ -545,6 +631,7 @@ function initSocket() {
 
   socket.on('game:result', function(d) {
     if (d.postMessage && !gameOver) {
+      if (IS_SPECTATOR) return showSpectatorGameEnd(d.postMessage);
       hideLoading();
       var iWon = false, isDraw = false;
       if (d.postMessage.result === 'draw') isDraw = true;
@@ -989,12 +1076,48 @@ function showZones() {
   if (!pendingTimerData) startLocalTimer(); // Start local only if no server sync is pending
 }
 
+function restoreRoundSelection(choice, opponentHasChosen) {
+  if (Number.isInteger(choice) && choice >= 0 && choice < SPOTS.length) {
+    myChoice = choice;
+    myLocked = true;
+    document.querySelectorAll('.zone-btn').forEach(function(btn, i){
+      btn.classList.remove('selected', 'dimmed');
+      btn.classList.add(i === choice ? 'selected' : 'dimmed', 'locked-in');
+    });
+    document.getElementById('profile-me').classList.remove('choosing');
+    document.getElementById('profile-me').classList.add('locked');
+  }
+  if (opponentHasChosen) {
+    opLocked = true;
+    document.getElementById('profile-op').classList.remove('choosing');
+    document.getElementById('profile-op').classList.add('locked');
+    var badge = document.getElementById('waiting-badge');
+    badge.className = 'show';
+    badge.textContent = '🔒 Adversaire a choisi';
+  }
+  checkBothReady();
+}
+
+function applyPendingTimer() {
+  if (!pendingTimerData || !gameReady || phase !== 'choosing') return;
+  var data = pendingTimerData;
+  pendingTimerData = null;
+  if (data.type === 'turn_warning') return startGraceTimer(data.startTime, data.duration || 60000);
+  if (data.type === 'sync') {
+    var offset = Date.now() - (data.serverTime || Date.now());
+    if (data.graceStartTime) return startGraceTimer(data.graceStartTime + offset, data.duration || 60000);
+    if (data.turnStartTime) return startTimer(data.turnStartTime + offset);
+  }
+  if (data.startTime) startTimer(data.startTime);
+}
+
 function hideZones() {
   var layer = document.getElementById('spots-layer');
   layer.innerHTML = ''; layer.style.pointerEvents = 'none';
 }
 
 function selectZone(idx) {
+  if (IS_SPECTATOR) return;
   if (phase !== 'choosing' || myLocked) return;
   myChoice = idx;
   myLocked = true; // Validation automatique !
@@ -1184,7 +1307,29 @@ function startRound() {
   shooterHL = null; keeperHL = null; deflectVis = false;
   phase = 'choosing';
   resetGK(); ballAngle = 0; ballTrailPts = [];
-  updUI(); showZones();
+  updUI();
+  if (IS_SPECTATOR) {
+    hideZones();
+    var liveStatus = document.getElementById('status-bar');
+    liveStatus.className = 'show';
+    liveStatus.textContent = '👁 Match en direct — choix secrets';
+    return;
+  }
+  showZones();
+  applyPendingTimer();
+}
+
+function showSpectatorGameEnd(data) {
+  if (gameOver) return;
+  gameOver = true; phase = 'idle';
+  stopLocalTimer(); stopGraceTimer(); stopForfeitCountdown(); hideZones();
+  var winnerSlot = Number(data && data.winnerSlot) || 0;
+  var isDraw = winnerSlot === 0 || (data && (data.result === 'draw' || data.winner === 'draw'));
+  document.getElementById('modalTitle').textContent = isDraw ? '🤝 Match nul' : '🏆 Victoire';
+  document.getElementById('finalScore').textContent = scores.me + ' - ' + scores.op;
+  document.getElementById('finalMessage').textContent = isDraw ? 'La séance est terminée à égalité.' : (winnerSlot === 1 ? P1_NAME : P2_NAME) + ' remporte la séance.';
+  document.getElementById('modalContent').className = 'modal ' + (isDraw ? 'draw-modal' : 'win-modal');
+  document.getElementById('gameOverModal').classList.add('show');
 }
 
 /* ══════════════════════════════════════
@@ -1314,6 +1459,9 @@ try {
   if(_op) setProfilePhoto('avatar-op', MY_SLOT === 1 ? P2_AVATAR : P1_AVATAR, _op.innerHTML);
 } catch(_) {}
 initCanvas();
+if (IS_SPECTATOR) {
+  try { window.parent.postMessage({ type:'spectator:ready', game:'penalty', gameId:GAME_ID }, '*'); } catch (_) {}
+}
 initSocket();
 window.addEventListener('resize', function(){
   if (!gameOver) initCanvas();

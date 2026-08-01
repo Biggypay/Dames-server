@@ -276,6 +276,8 @@ body{
 .choice-btn.disabled{opacity:0.25;pointer-events:none;cursor:not-allowed}
 .choice-btn .emoji{font-size:36px}
 .choice-btn span{font-size:12px;font-weight:600;letter-spacing:0.5px}
+body.spectator .choices{pointer-events:none;opacity:.32}
+body.spectator .choice-btn{cursor:default}
 
 /* ── ROUNDS PROGRESS ── */
 .rounds-progress{display:flex;gap:6px;margin-top:5px}
@@ -548,8 +550,11 @@ var P         = new URLSearchParams(window.location.search);
 var TOKEN_FRAGMENT = new URLSearchParams(window.location.hash.slice(1));
 var GAME_AUTH_TOKEN = TOKEN_FRAGMENT.get('token') || P.get('token') || '';
 if (TOKEN_FRAGMENT.has('token')) { try { history.replaceState(null, '', location.pathname + location.search); } catch (_) {} }
+var IS_SPECTATOR = P.get('spectate') === '1' || P.get('spectator') === '1';
+var SPECTATOR_TOKEN = '';
+var spectatorInitReceived = false;
 var ROOM_ID   = P.get('room')     || '';
-var MY_SLOT   = parseInt(P.get('player') || '1', 10);
+var MY_SLOT   = IS_SPECTATOR ? 1 : parseInt(P.get('player') || '1', 10);
 var P1_ID     = P.get('p1Id')     || '';
 var P2_ID     = P.get('p2Id')     || '';
 var P1_NAME   = P.get('p1Name')   || 'Joueur 1';
@@ -568,7 +573,20 @@ var GAME_ID = P.get('gameId') || P.get('matchId') || '';
 window.addEventListener('message', function(e) {
   if (e.source !== window.parent) return;
   if (parentOrigin && parentOrigin !== '*' && e.origin !== parentOrigin) return;
-  if (e.data && e.data.type === 'client:mutual_quit' && socket && socket.connected) {
+  if (IS_SPECTATOR && e.data && e.data.type === 'spectator:init') {
+    if (e.data.gameId && GAME_ID && e.data.gameId !== GAME_ID) return;
+    SPECTATOR_TOKEN = typeof e.data.token === 'string' ? e.data.token : '';
+    if (typeof e.data.player1Name === 'string' && e.data.player1Name.trim()) P1_NAME = e.data.player1Name.trim().slice(0, 40);
+    if (typeof e.data.player2Name === 'string' && e.data.player2Name.trim()) P2_NAME = e.data.player2Name.trim().slice(0, 40);
+    if (typeof e.data.player1Avatar === 'string') P1_AVATAR = e.data.player1Avatar;
+    if (typeof e.data.player2Avatar === 'string') P2_AVATAR = e.data.player2Avatar;
+    MY_NAME = P1_NAME; OP_NAME = P2_NAME;
+    spectatorInitReceived = true;
+    updUI();
+    if (!socket) initSocket();
+    return;
+  }
+  if (!IS_SPECTATOR && e.data && e.data.type === 'client:mutual_quit' && socket && socket.connected) {
     socket.emit('game_mutual_quit', { room: ROOM_ID, game: 'chifoumi', player: MY_SLOT });
   }
 });
@@ -577,6 +595,7 @@ var MY_SUPABASE_ID = MY_SLOT === 1 ? P1_ID : P2_ID;
 var OP_SUPABASE_ID = MY_SLOT === 1 ? P2_ID : P1_ID;
 var MY_NAME        = MY_SLOT === 1 ? P1_NAME : P2_NAME;
 var OP_NAME        = MY_SLOT === 1 ? P2_NAME : P1_NAME;
+if (IS_SPECTATOR) try { document.body.classList.add('spectator'); } catch (_) {}
 
 /* ══════════════════════════════════════════
    CONSTANTES
@@ -740,13 +759,15 @@ function hideLoading() {
    SOCKET.IO
 ══════════════════════════════════════════ */
 function initSocket() {
+  if (IS_SPECTATOR && !spectatorInitReceived) return;
   var lt = document.querySelector('#loading p');
-  if (lt) lt.textContent = 'ROOM: ' + (ROOM_ID || 'MANQUANT') + ' | SLOT: ' + MY_SLOT;
+  if (lt) lt.textContent = IS_SPECTATOR ? 'CONNEXION AU DIRECT…' : 'ROOM: ' + (ROOM_ID || 'MANQUANT') + ' | SLOT: ' + MY_SLOT;
 
-  socket = io({ transports: ['websocket','polling'], reconnection: true, auth: { token: GAME_AUTH_TOKEN } });
+  socket = io({ transports: ['websocket','polling'], reconnection: true, auth: { token: IS_SPECTATOR ? SPECTATOR_TOKEN : GAME_AUTH_TOKEN } });
 
   socket.on('connect', function() {
     reconBar.classList.remove('show');
+    if (IS_SPECTATOR) { socket.emit('spectator_join', { gameId: GAME_ID }); return; }
     socket.emit('chifoumi_join', {
       room: ROOM_ID, gameId: GAME_ID, player: MY_SLOT, supabaseId: MY_SUPABASE_ID, name: MY_NAME, bet: BET_AMOUNT, currency: CURRENCY
     });
@@ -754,6 +775,56 @@ function initSocket() {
 
   socket.on('disconnect', function() {
     if (!gameOver) reconBar.classList.add('show');
+    if (IS_SPECTATOR) postToParent({ type:'spectator:reconnecting', game:'chifoumi', gameId:GAME_ID });
+  });
+
+  socket.on('connect_error', function(error) {
+    if (IS_SPECTATOR) postToParent({ type:'spectator:error', game:'chifoumi', gameId:GAME_ID, message:(error && error.message) || 'Connexion au direct impossible.' });
+  });
+
+  socket.on('spectator:joined', function() {
+    if (!IS_SPECTATOR) return;
+    hideLoading(); waitingOverlay.classList.remove('show');
+    gameReady = true; gameOver = false;
+    startSpectatorRound();
+    postToParent({ type:'spectator:connected', game:'chifoumi', gameId:GAME_ID });
+  });
+
+  socket.on('spectator_state', function(snapshot) {
+    if (!IS_SPECTATOR || !snapshot || !snapshot.state) return;
+    hideLoading(); waitingOverlay.classList.remove('show');
+    if (snapshot.players) {
+      if (snapshot.players[1] && snapshot.players[1].name) P1_NAME = snapshot.players[1].name;
+      if (snapshot.players[2] && snapshot.players[2].name) P2_NAME = snapshot.players[2].name;
+      MY_NAME = P1_NAME; OP_NAME = P2_NAME; updUI();
+    }
+    BET_AMOUNT = Number(snapshot.betAmount || 0); CURRENCY = snapshot.currency || CURRENCY;
+    playerScore = Number(snapshot.state.scores && snapshot.state.scores[0]) || 0;
+    opScore = Number(snapshot.state.scores && snapshot.state.scores[1]) || 0;
+    currentRound = Number(snapshot.state.currentRound) || 1;
+    document.getElementById('playerScore').textContent = playerScore;
+    document.getElementById('aiScore').textContent = opScore;
+    gameReady = true; gameOver = false;
+    startSpectatorRound();
+    if (snapshot.state.awaitingNextRound && Array.isArray(snapshot.state.history) && snapshot.state.history.length) {
+      var latest = snapshot.state.history[snapshot.state.history.length - 1];
+      renderSpectatorRoundResult({ round:latest.round, choice1:latest.choice1, choice2:latest.choice2, winnerSlot:latest.winnerSlot, scores:snapshot.state.scores });
+    } else if (snapshot.state.revealPending && snapshot.state.revealStartTime) {
+      startRevealCountdown({ serverTime:snapshot.serverTime, startTime:snapshot.state.revealStartTime, duration:snapshot.state.revealDuration });
+      markSpectatorChoicesLocked();
+    }
+    if (snapshot.state.graceStartTime || snapshot.state.turnStartTime) {
+      var offset = Date.now() - (snapshot.serverTime || Date.now());
+      if (snapshot.state.graceStartTime) startGraceTimer(snapshot.state.graceStartTime + offset, snapshot.state.graceDuration || 60000);
+      else startTimer(snapshot.state.turnStartTime + offset);
+    }
+  });
+
+  socket.on('spectator:error', function(data) {
+    if (!IS_SPECTATOR) return;
+    var message = data && data.message ? data.message : 'Ce direct n’est plus disponible.';
+    var text = document.querySelector('#loading p'); if (text) text.textContent = message;
+    postToParent({ type:'spectator:error', game:'chifoumi', gameId:GAME_ID, message:message });
   });
 
   /* ── Partie démarrée ── */
@@ -761,23 +832,31 @@ function initSocket() {
     hideLoading();
     waitingOverlay.classList.remove('show');
 
-    if (data.reconnected && gameReady && !data.paused) {
-      gameOver = false; stopForfeitCountdown();
-      showToast('📶','Connexion rétablie','La partie reprend !', 2000, function() { updUI(); });
-    } else if (data.reconnected && data.gameState) {
+    if (data.reconnected && data.gameState) {
       gameOver = false; resultSent = false;
       try {
         var gs = data.gameState;
         playerScore   = gs.scores[MY_SLOT - 1] || 0;
         opScore       = gs.scores[MY_SLOT === 1 ? 1 : 0] || 0;
         currentRound  = gs.currentRound || 1;
-        roundHistory  = gs.history || [];
+        roundHistory  = (gs.history || []).map(function(item) {
+          var myChoice = MY_SLOT === 1 ? item.choice1 : item.choice2;
+          var theirChoice = MY_SLOT === 1 ? item.choice2 : item.choice1;
+          var result = item.winnerSlot === 0 ? 'draw' : (item.winnerSlot === MY_SLOT ? 'win' : 'lose');
+          return { round:item.round, result:result, playerChoice:myChoice, opponentChoice:theirChoice };
+        });
         document.getElementById('playerScore').textContent = playerScore;
         document.getElementById('aiScore').textContent     = opScore;
         roundLabelEl.textContent = 'Manche ' + currentRound + ' / ' + MAX_ROUNDS;
         rebuildProgressDots();
         showToast('📶','Partie restaurée','Reprise là où vous étiez !', 2400, function() {
-          gameReady = true; startRound();
+          gameReady = true;
+          if (gs.awaitingNextRound && roundHistory.length) {
+            var latest = (gs.history || [])[gs.history.length - 1];
+            renderSpectatorRoundResult({ round:latest.round, choice1:latest.choice1, choice2:latest.choice2, winnerSlot:latest.winnerSlot, scores:gs.scores });
+            return;
+          }
+          startRound();
           if (gs.currentChoice && choices.indexOf(gs.currentChoice) !== -1) {
             playerChoice = gs.currentChoice;
             playerLocked = true;
@@ -797,7 +876,10 @@ function initSocket() {
           }
           applyPendingTimer();
         });
-      } catch(e) { startNewGame(); }
+      } catch(e) { if (socket && socket.connected) socket.emit('chifoumi_round_start', { room:ROOM_ID, player:MY_SLOT, round:currentRound }); }
+    } else if (data.reconnected && gameReady && !data.paused) {
+      gameOver = false; stopForfeitCountdown();
+      showToast('📶','Connexion rétablie','La partie reprend !', 2000, function() { updUI(); });
     } else {
       startNewGame();
     }
@@ -838,6 +920,14 @@ function initSocket() {
   /* ── Adversaire a choisi (Mise à jour UI de verrouillage) ── */
   socket.on('chifoumi_opponent_choice', function(data) {
     if (gameOver || !gameReady) return;
+    if (IS_SPECTATOR) {
+      if (data && data.player === 1) {
+        playerEmojiEl.textContent = '🔒'; playerLabelEl.textContent = 'Choix fait'; playerCard.classList.add('hidden-choice');
+      } else {
+        aiEmojiEl.textContent = '🔒'; aiLabelEl.textContent = 'Choix fait'; aiCard.classList.add('hidden-choice');
+      }
+      return;
+    }
     
     // On sauvegarde LA VRAIE DÉCISION (pierre/feuille/ciseaux) envoyée par le serveur
     opponentChoice = true;
@@ -861,12 +951,14 @@ function initSocket() {
       startTime: data.startTime,
       duration: data.duration
     });
+    if (IS_SPECTATOR) markSpectatorChoicesLocked();
     if (!gameReady) { pendingRevealData = data; return; }
     startRevealCountdown(data);
   });
 
   /* ── Révélation de sécurité ── */
   socket.on('chifoumi_reveal', function(data) {
+    if (IS_SPECTATOR) return;
     if (gameOver || !gameReady) return;
     if (!playerChoice || playerChoice === true) playerChoice = data.myChoice;
     if (!opponentChoice || opponentChoice === true) opponentChoice = data.opChoice;
@@ -880,6 +972,20 @@ function initSocket() {
   socket.on('game:reconnect_deadline', function(data) {
     if (gameOver || !data || !data.reconnectDeadline || !data.serverTime) return;
     startForfeitCountdown(Math.max(0, Math.ceil((data.reconnectDeadline - data.serverTime) / 1000)));
+  });
+
+  socket.on('chifoumi_round_result', function(data) {
+    if (!IS_SPECTATOR || gameOver || !data) return;
+    renderSpectatorRoundResult(data);
+  });
+
+  socket.on('chifoumi_round_ready', function(data) {
+    if (gameOver || !data) return;
+    var nextRound = Number(data.round) || currentRound;
+    if (!IS_SPECTATOR && currentRound === nextRound && roundInProgress) return;
+    currentRound = nextRound;
+    if (IS_SPECTATOR) startSpectatorRound();
+    else { startRound(); applyPendingTimer(); }
   });
 
   socket.on('chifoumi_opponent_disconnected', function() {
@@ -907,20 +1013,24 @@ function initSocket() {
 
   socket.on('game:over', function(d) {
     if (gameOver) return;
+    if (IS_SPECTATOR) return showSpectatorGameEnd(d);
     hideLoading(); stopForfeitCountdown();
     if (d.result === 'cancel') {
       gameOver = true;
       showToast('⚠️','Partie annulée','Les deux joueurs se sont déconnectés.', 4000, function() { sendResult('cancel', 'both_disconnected'); });
       return;
     }
+    if (d.result === 'draw' || d.winner === 'draw' || Number(d.winnerSlot) === 0) return showGameOver();
     var iWon = d.winnerSupabaseId === MY_SUPABASE_ID || (d.winnerSlot && d.winnerSlot === MY_SLOT) || (d.winner === 'player1' && MY_SLOT === 1) || (d.winner === 'player2' && MY_SLOT === 2);
-    handleGameEnd(iWon ? 'win' : 'lose', 'forfeit');
+    handleGameEnd(iWon ? 'win' : 'lose', d.reason || 'normal');
   });
 
   socket.on('game:result', function(d) {
     if (d.postMessage && !gameOver) {
+      if (IS_SPECTATOR) return showSpectatorGameEnd(d.postMessage);
       hideLoading();
-      handleGameEnd(d.postMessage.result === 'win' ? 'win' : 'lose', 'forfeit');
+      if (d.postMessage.result === 'draw') return showGameOver();
+      handleGameEnd(d.postMessage.result === 'win' ? 'win' : 'lose', d.postMessage.reason || 'normal');
     }
   });
 }
@@ -1040,6 +1150,7 @@ choiceBtns.forEach(function(btn) {
 });
 
 function playerMakesChoice(choice) {
+  if (IS_SPECTATOR) return;
   if (!gameReady || gameOver || playerLocked || !roundInProgress) return;
   playerLocked = true;
   playerChoice = choice;
@@ -1190,6 +1301,7 @@ function rebuildProgressDots() {
    ROUND MANAGEMENT
 ══════════════════════════════════════════ */
 function startRound() {
+  if (IS_SPECTATOR) { startSpectatorRound(); return; }
   roundLabelEl.textContent = 'Manche ' + currentRound + ' / ' + MAX_ROUNDS;
 
   playerLocked   = false;
@@ -1217,6 +1329,65 @@ function startRound() {
   if (socket && socket.connected) {
     socket.emit('chifoumi_round_start', { room: ROOM_ID, player: MY_SLOT, round: currentRound });
   }
+}
+
+function startSpectatorRound() {
+  if (!IS_SPECTATOR || gameOver) return;
+  stopRevealCountdown();
+  roundLabelEl.textContent = 'Manche ' + currentRound + ' / ' + MAX_ROUNDS;
+  playerChoice = null; opponentChoice = null; playerLocked = true; roundInProgress = true;
+  choiceBtns.forEach(function(btn){ btn.classList.add('disabled', 'locked'); btn.classList.remove('selected'); });
+  playerEmojiEl.textContent = '❓'; playerLabelEl.textContent = 'Choix secret';
+  aiEmojiEl.textContent = '❓'; aiLabelEl.textContent = 'Choix secret';
+  playerCard.className = 'choice-card waiting'; aiCard.className = 'choice-card waiting';
+  statusEl.className = 'status visible'; statusEl.textContent = '👁 Manche en direct — les choix restent secrets';
+  document.getElementById('playerScore').textContent = playerScore;
+  document.getElementById('aiScore').textContent = opScore;
+}
+
+function markSpectatorChoicesLocked() {
+  if (!IS_SPECTATOR) return;
+  playerEmojiEl.textContent = '🔒'; playerLabelEl.textContent = 'Choix verrouillé';
+  aiEmojiEl.textContent = '🔒'; aiLabelEl.textContent = 'Choix verrouillé';
+  playerCard.classList.remove('waiting'); aiCard.classList.remove('waiting');
+  playerCard.classList.add('hidden-choice'); aiCard.classList.add('hidden-choice');
+}
+
+function renderSpectatorRoundResult(data) {
+  stopRevealCountdown(); stopTimersVisuals(); stopGraceTimer();
+  currentRound = Number(data.round) || currentRound;
+  var perspectiveSlot = IS_SPECTATOR ? 1 : MY_SLOT;
+  playerChoice = perspectiveSlot === 1 ? data.choice1 : data.choice2;
+  opponentChoice = perspectiveSlot === 1 ? data.choice2 : data.choice1;
+  playerScore = Number(data.scores && data.scores[perspectiveSlot - 1]) || 0;
+  opScore = Number(data.scores && data.scores[perspectiveSlot === 1 ? 1 : 0]) || 0;
+  document.getElementById('playerScore').textContent = playerScore;
+  document.getElementById('aiScore').textContent = opScore;
+  playerEmojiEl.textContent = emojis[playerChoice] || '❓';
+  aiEmojiEl.textContent = emojis[opponentChoice] || '❓';
+  playerLabelEl.textContent = playerChoice ? playerChoice.charAt(0).toUpperCase() + playerChoice.slice(1) : '—';
+  aiLabelEl.textContent = opponentChoice ? opponentChoice.charAt(0).toUpperCase() + opponentChoice.slice(1) : '—';
+  playerCard.className = 'choice-card player-active'; aiCard.className = 'choice-card ai-active';
+  var result = Number(data.winnerSlot) === 0 ? 'draw' : (Number(data.winnerSlot) === perspectiveSlot ? 'win' : 'lose');
+  showResult(result, playerChoice, opponentChoice);
+  if (!roundHistory.some(function(item){ return Number(item.round) === Number(data.round); })) {
+    roundHistory.push({ round:Number(data.round), result:result, playerChoice:playerChoice, opponentChoice:opponentChoice });
+    updateProgress(result);
+  }
+  roundInProgress = false;
+}
+
+function showSpectatorGameEnd(data) {
+  if (gameOver) return;
+  gameOver = true; stopTimersVisuals(); stopRevealCountdown(); stopForfeitCountdown(); stopGraceTimer();
+  var winnerSlot = Number(data && data.winnerSlot) || 0;
+  var isDraw = winnerSlot === 0 || (data && (data.result === 'draw' || data.winner === 'draw'));
+  modalTitle.textContent = isDraw ? '🤝 ÉGALITÉ' : '🏆 PARTIE TERMINÉE';
+  finalScore.textContent = playerScore + ' - ' + opScore;
+  finalMessage.textContent = isDraw ? 'Les deux joueurs terminent à égalité.' : (winnerSlot === 1 ? P1_NAME : P2_NAME) + ' remporte la partie.';
+  modalContent.className = 'modal ' + (isDraw ? 'draw-modal' : 'win-modal');
+  prizeLine.style.display = 'none';
+  gameOverModal.classList.add('show');
 }
 
 function startNewGame() {
@@ -1298,7 +1469,8 @@ function updUI() {
   setProfilePhoto('avatar-ai', MY_SLOT === 1 ? P2_AVATAR : P1_AVATAR, '👤');
 }
 
-if (document.readyState === 'complete' || document.readyState === 'interactive') { initSocket(); } 
+if (IS_SPECTATOR) postToParent({ type:'spectator:ready', game:'chifoumi', gameId:GAME_ID });
+if (document.readyState === 'complete' || document.readyState === 'interactive') { initSocket(); }
 else { document.addEventListener('DOMContentLoaded', initSocket); }
 
 })();
