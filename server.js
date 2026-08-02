@@ -300,6 +300,21 @@ function serializableRoomState(room) {
   return state;
 }
 
+// Les joueurs dont le socket est RÉELLEMENT ouvert sur cette salle. Personne
+// d'autre ne le sait : la base ne voit que des colonnes, et le navigateur ment
+// dès qu'il s'endort. Sans cette liste, `games.playerN_last_heartbeat` restait
+// NULL, et « on ne sait pas » se lisait « ce joueur est parti » — assez pour
+// annoncer à deux joueuses assises devant leur plateau qu'elles étaient toutes
+// les deux déconnectées.
+function connectedPlayerIds(room) {
+  const ids = [];
+  for (const slot of [1, 2]) {
+    const player = room?.players?.[slot];
+    if (player?.connected === true && isUuid(player.supabaseId)) ids.push(player.supabaseId);
+  }
+  return ids;
+}
+
 function persistedRoomPayload(gameName, room) {
   if (!room || !validRoom(room.id) || !isUuid(room.databaseGameId)) return null;
   if (!['waiting', 'playing', 'paused', 'finished'].includes(room.status)) return null;
@@ -308,6 +323,7 @@ function persistedRoomPayload(gameName, room) {
     room_id: room.id,
     game_id: room.databaseGameId,
     status: room.status,
+    connected_players: connectedPlayerIds(room),
     state: serializableRoomState(room)
   };
 }
@@ -2555,6 +2571,11 @@ app.post('/game/resign', requireAuth, async (req, res) => {
   }
   const result = resignAuthoritativeRoom(entry, user.supabaseId);
   if (!result.ok) return res.status(result.status || 400).json({ error: result.error });
+  // Un abandon décide d'un match à lui seul. Sans trace, reconstituer « qui a
+  // renoncé, à quelle seconde » demande de relire toute la base a posteriori.
+  console.info('[game/resign]', result.gameName, result.roomId,
+    'loser', user.supabaseId, 'slot', result.loserSlot,
+    result.alreadyFinished ? '(déjà terminée)' : '');
   return res.status(result.settlementPending ? 202 : 200).json({
     ok: true,
     status: result.alreadyFinished ? 'already_finished' : 'resigned',
