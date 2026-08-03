@@ -11,6 +11,7 @@ const GAME_URL = `http://127.0.0.1:${GAME_PORT}`;
 const GAME_ID = '10000000-0000-4000-8000-000000000001';
 const CHIFOUMI_GAME_ID = '10000000-0000-4000-8000-000000000002';
 const PENALTY_GAME_ID = '10000000-0000-4000-8000-000000000003';
+const QUORIDOR_GAME_ID = '10000000-0000-4000-8000-000000000004';
 const PLAYER_1 = '10000000-0000-4000-8000-000000000011';
 const PLAYER_2 = '10000000-0000-4000-8000-000000000012';
 const SPECTATOR = '10000000-0000-4000-8000-000000000013';
@@ -82,7 +83,8 @@ function startMockDatabase() {
       const requestedId = (url.searchParams.get('id') || '').replace(/^eq\./, '');
       const gameType = requestedId === CHIFOUMI_GAME_ID
         ? 'rock_paper_scissors'
-        : requestedId === PENALTY_GAME_ID ? 'penalty_shootout' : 'tictactoe';
+        : requestedId === PENALTY_GAME_ID ? 'penalty_shootout'
+        : requestedId === QUORIDOR_GAME_ID ? 'quoridor' : 'tictactoe';
       return response.end(JSON.stringify([{
         id: requestedId || GAME_ID,
         game_type: gameType,
@@ -203,6 +205,39 @@ async function main() {
     check('RPS reveals both choices only after server resolution', revealed.choice1 === 'pierre' && revealed.choice2 === 'ciseaux' && revealed.winnerSlot === 1, revealed);
     const nextRound = await automaticNextRound;
     check('RPS server advances a round even when clients miss their callback', nextRound.round === 2, nextRound);
+
+    // ── Quoridor : le plateau doit être diffusable comme les autres ──
+    // Ce jeu était le seul des six pages du serveur à n'avoir aucun test de
+    // diffusion. Un spectateur qui ouvrait un direct de Quoridor restait
+    // devant un plateau muet, sans que rien ne le signale.
+    const quoriRoom = QUORIDOR_GAME_ID;
+    const quoriStart1 = once(p1, 'quoridor_start');
+    const quoriStart2 = once(p2, 'quoridor_start');
+    p1.emit('quoridor_join', { room:quoriRoom, player:1, supabaseId:PLAYER_1, name:'Alice', bet:0, currency:'HTG', gameId:QUORIDOR_GAME_ID });
+    p2.emit('quoridor_join', { room:quoriRoom, player:2, supabaseId:PLAYER_2, name:'Bob', bet:0, currency:'HTG', gameId:QUORIDOR_GAME_ID });
+    await Promise.all([quoriStart1, quoriStart2]);
+
+    const quoriJoined = once(spectator, 'spectator:joined');
+    const quoriState = once(spectator, 'spectator_state');
+    spectator.emit('spectator_join', { gameId:QUORIDOR_GAME_ID });
+    const quoriJoinAck = await quoriJoined;
+    check('Quoridor spectator is accepted', quoriJoinAck.gameType === 'quoridor' && quoriJoinAck.readOnly === true, quoriJoinAck);
+    const quoriInitial = await quoriState;
+    const quoriBoard = quoriInitial.state && (typeof quoriInitial.state.gameState === 'string'
+      ? JSON.parse(quoriInitial.state.gameState)
+      : quoriInitial.state.gameState);
+    check('Quoridor spectator receives the real board',
+      !!quoriBoard && quoriBoard.s1Pos.r === 8 && quoriBoard.s2Pos.r === 0 && quoriBoard.s1Walls === 10,
+      quoriBoard);
+    check('Quoridor spectator sees both player names',
+      quoriInitial.players && quoriInitial.players[1].name === 'Alice' && quoriInitial.players[2].name === 'Bob',
+      quoriInitial.players);
+
+    // Un coup réel doit parvenir au spectateur, sinon le direct est figé.
+    const quoriRelay = once(spectator, 'quoridor_move', 5000);
+    p1.emit('quoridor_move', { room:quoriRoom, player:1, moveType:'move', data:{ r:7, c:4 } });
+    const quoriMove = await quoriRelay;
+    check('Quoridor spectator receives live moves', quoriMove.player === 1 && JSON.parse(quoriMove.gameState).s1Pos.r === 7, quoriMove);
 
     const penaltyRoom = PENALTY_GAME_ID;
     const penaltyStart1 = once(p1, 'penalty_start');
