@@ -35,14 +35,21 @@ for f in tests/sql/fixture.sql \
          tests/sql/test_migrations.sql \
          supabase/migrations/20260803_start_when_both_players_are_present.sql \
          supabase/migrations/20260803_bracket_cross_group_and_third_place.sql \
-         tests/sql/test_bracket.sql; do
+         tests/sql/test_bracket.sql \
+         tests/sql/test_bracket_any_game.sql; do
   psql -h "$BASE" -p 5433 -U postgres -q -v ON_ERROR_STOP=1 -f "$f" || exit 1
 done
 ```
 
-Les deux dernières lignes affichent `TOUS LES TESTS SONT PASSES` et
-`TOUS LES TESTS DE BRACKET SONT PASSES`. Toute autre sortie est
+Les dernières lignes affichent `TOUS LES TESTS SONT PASSES`,
+`TOUS LES TESTS DE BRACKET SONT PASSES` et `MEME STRUCTURE POUR TOUS LES JEUX`. Toute autre sortie est
 un échec : le fichier s'arrête à la première assertion fausse.
+
+`test_bracket_any_game.sql` déroule un tournoi ENTIER — trente-deux joueurs,
+quatre groupes, huitièmes croisés, quarts, demies, petite finale, finale — pour
+chacun des huit jeux de la plateforme. Le tableau ne doit rien savoir du jeu
+qu'on y joue : si une règle devient un jour particulière à un jeu, ce fichier
+tombe.
 
 ## Quand une migration touche une nouvelle table
 
