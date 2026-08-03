@@ -177,3 +177,47 @@ CREATE FUNCTION public.tournament_presence_window_seconds() RETURNS integer LANG
 -- laisse `get_game_resume_offer` aller jusqu'au bout de sa logique.
 CREATE FUNCTION public.finalize_abandoned_game(p_game_id uuid, p_dry_run boolean DEFAULT false)
 RETURNS text LANGUAGE sql AS $$ SELECT 'not_eligible'::text $$;
+
+-- ── Complements pour les migrations de tournoi (bracket, demarrage) ────────
+ALTER TABLE public.tournaments ADD COLUMN IF NOT EXISTS estimated_ends_at timestamptz;
+
+CREATE TABLE IF NOT EXISTS public.profiles (
+  id uuid PRIMARY KEY,
+  username text,
+  full_name text,
+  avatar_url text
+);
+
+CREATE TABLE IF NOT EXISTS public.platform_settings (
+  key text PRIMARY KEY,
+  value text
+);
+
+CREATE TABLE IF NOT EXISTS public.wallets (
+  user_id uuid PRIMARY KEY,
+  balance numeric NOT NULL DEFAULT 0,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.transactions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL,
+  type text NOT NULL,
+  amount numeric NOT NULL,
+  balance_before numeric,
+  balance_after numeric,
+  description text,
+  is_sandbox boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Le calendrier est une autre affaire : ici il ne doit rien faire, mais
+-- exister, car la construction du tableau l'appelle.
+CREATE OR REPLACE FUNCTION public.schedule_tournament_matches(p_tournament_id uuid)
+RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE public.tournament_matches
+     SET scheduled_at = COALESCE(scheduled_at, now() + interval '1 hour')
+   WHERE tournament_id = p_tournament_id;
+END;
+$$;

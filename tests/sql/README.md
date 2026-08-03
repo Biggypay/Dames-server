@@ -32,12 +32,16 @@ psql -h "$BASE" -p 5433 -U postgres -q -c \
 for f in tests/sql/fixture.sql \
          supabase/migrations/20260802_truthful_player_presence.sql \
          supabase/migrations/20260802_admin_tournament_match_replay.sql \
-         tests/sql/test_migrations.sql; do
+         tests/sql/test_migrations.sql \
+         supabase/migrations/20260803_start_when_both_players_are_present.sql \
+         supabase/migrations/20260803_bracket_cross_group_and_third_place.sql \
+         tests/sql/test_bracket.sql; do
   psql -h "$BASE" -p 5433 -U postgres -q -v ON_ERROR_STOP=1 -f "$f" || exit 1
 done
 ```
 
-La dernière ligne affiche `TOUS LES TESTS SONT PASSES`. Toute autre sortie est
+Les deux dernières lignes affichent `TOUS LES TESTS SONT PASSES` et
+`TOUS LES TESTS DE BRACKET SONT PASSES`. Toute autre sortie est
 un échec : le fichier s'arrête à la première assertion fausse.
 
 ## Quand une migration touche une nouvelle table
