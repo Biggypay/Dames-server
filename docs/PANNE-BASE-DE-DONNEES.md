@@ -68,6 +68,22 @@ Le 4 août, les deux premières places revenaient au pipeline **temps réel** �
 339 569 et 200 298 appels pour près de 4 600 secondes — quand la première
 requête applicative arrivait en troisième position, à 691 secondes.
 
+Une seule ligne suffit à trancher : quelle part du travail de la base part dans
+la diffusion temps réel ?
+
+```sql
+select round(100 * sum(total_exec_time) filter (
+         where query like '%wal->>%' or query like '%pg_publication_tables%')
+       / nullif(sum(total_exec_time), 0)) as pourcent_temps_reel
+from pg_stat_statements;
+```
+
+Au-delà de 30 %, la base travaille davantage pour la diffusion que pour les
+joueurs. Mesuré le 4 août après l'élagage : **39 %**. C'est un coût de
+plateforme, presque fixe : il tient au sondage du journal de réplication, pas au
+nombre de parties. Il ne disparaît qu'en cessant d'utiliser la diffusion
+Postgres — voir le troisième levier.
+
 ## Ce qui s'était réellement passé
 
 Trente-trois tables étaient publiées au temps réel, pour neuf mille écritures
@@ -121,9 +137,19 @@ select private.check_database_pressure();
 2. **Filtrer les abonnements du client.** Un abonnement sans filtre sur une table
    chaude coûte à *tous* les clients, pas seulement au sien.
 
-3. **Agrandir l'instance.** Soixante connexions, c'est peu dès que le trafic
+3. **Sortir la diffusion de Postgres.** Les deux premiers leviers réduisent la
+   facture temps réel ; seul celui-ci la supprime. Tant qu'un client s'abonne
+   par `postgres_changes`, la base sonde son journal de réplication en continu —
+   c'est là que passent les 39 %. Les coups, les chronomètres, la présence et la
+   diffusion aux spectateurs ne sont **déjà plus** concernés : ils passent par le
+   serveur de jeu Socket.io, qui ne touche pas à la base. Ce qui reste sur
+   Postgres, ce sont les notifications, le chat, les listes de parties et de
+   tournois. Les faire passer par le serveur de jeu, lui aussi, coûte du travail
+   mais aucun abonnement supplémentaire.
+
+4. **Agrandir l'instance.** Soixante connexions, c'est peu dès que le trafic
    monte. C'est le seul levier qui coûte de l'argent, et le dernier à envisager :
-   les deux premiers rendent bien plus que ce qu'ils coûtent.
+   les trois premiers rendent bien plus que ce qu'ils coûtent.
 
 ## Ce qu'il ne faut pas conclure trop vite
 
