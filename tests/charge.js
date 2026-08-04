@@ -103,7 +103,11 @@ function jouer(partie, coup) {
 }
 
 (async () => {
-  const srv = spawn('node', ['server.js'], {
+  // CPUS=0 imite une instance Render à un cœur, CPUS=0,1 une instance à deux.
+  // Sans cette contrainte on mesure la machine de test, pas l'hébergement réel.
+  const cpus = process.env.CPUS;
+  const commande = cpus ? ['taskset', ['-c', cpus, 'node', 'server.js']] : ['node', ['server.js']];
+  const srv = spawn(commande[0], commande[1], {
     cwd: REPO,
     env: { ...process.env, PORT: String(PORT), NODE_ENV: 'test', ALLOWED_ORIGIN: '*', FRAME_ANCESTORS: '*' },
     stdio: ['ignore', 'pipe', 'pipe']
