@@ -25,6 +25,7 @@ const SPECTATOR_PAGES = [
   'penalty-online.html',
   'chifoumi-online.html',
   'echecs_multi.html',
+  'gomoku-online.html',
 ];
 let failures = 0;
 

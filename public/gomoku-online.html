@@ -1,0 +1,917 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no, viewport-fit=cover">
+<title>Morpion à cinq | Mindspille</title>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700;900&family=Caveat:wght@600;700&family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden}
+body{background:linear-gradient(135deg,#1e1b4b 0%,#312e81 50%,#1e1b4b 100%);height:100%;display:flex;flex-direction:column;align-items:center;font-family:'Cinzel',serif;color:#fbbf24}
+
+/* ── TOP BAR ── */
+#top{flex:0 0 auto;width:100%;padding:15px 14px 8px;background:transparent;display:flex;align-items:center;justify-content:space-between;z-index:20;gap:8px}
+.profile{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:72px;opacity:0.5;transition:opacity 0.3s}
+.profile.active{opacity:1}
+.profile-timer-wrap{position:relative;width:58px;height:58px;transition:filter 0.3s;}
+.profile.active.p1-active .profile-timer-wrap{filter:drop-shadow(0 0 10px rgba(226,232,240,0.6));}
+.profile.active.p2-active .profile-timer-wrap{filter:drop-shadow(0 0 10px rgba(248,113,113,0.6));}
+.profile.timer-urgent .profile-timer-wrap{filter:drop-shadow(0 0 12px rgba(251,191,36,0.8));}
+.profile-timer-wrap svg{position:absolute;inset:0;width:100%;height:100%;transform:rotate(-90deg)}
+.timer-track{fill:none;stroke:rgba(255,255,255,0.08);stroke-width:4}
+.timer-arc{fill:none;stroke-width:4;stroke-linecap:round;stroke-dasharray:163.4;stroke-dashoffset:163.4;transition:stroke 0.3s}
+.profile-avatar{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;border-radius:50%;-webkit-border-radius:50%;background-clip:padding-box;background:rgba(255,255,255,0.05);border:2px solid rgba(255,255,255,0.12);transition:all 0.3s}
+.profile.active .profile-avatar{border-color:rgba(255,255,255,0.5)}
+.profile-photo{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block}
+body.chrome-hidden #bot{display:none!important}
+.av-w{width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-family:'Caveat',cursive;font-size:26px;font-weight:700;color:#1f2937;line-height:1}
+.av-r{width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-family:'Caveat',cursive;font-size:26px;font-weight:700;color:#dc2626;line-height:1}
+.profile-name{font-family:'Cinzel',serif;font-size:9px;letter-spacing:1.5px;color:rgba(255,255,255,0.8);text-transform:uppercase;text-align:center;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:4px}
+.goal-hint{font-size:8px;letter-spacing:1px;color:rgba(255,255,255,0.4);min-height:12px;text-align:center}
+.top-center{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px}
+.top-center h1{font-size:15px;font-weight:900;letter-spacing:3px;color:#fbbf24;text-shadow:0 0 20px rgba(251,191,36,0.5)}
+.top-center .sub{font-size:8px;color:rgba(255,255,255,0.3);letter-spacing:2px}
+.bet-badge{font-size:9px;background:rgba(251,191,36,0.15);border:1px solid rgba(251,191,36,0.4);border-radius:99px;padding:2px 8px;color:#fbbf24;font-weight:600;letter-spacing:0.5px;margin-top:10px;display:none}
+
+/* ── CANVAS ── */
+#canvasWrap{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:6px;width:100%;position:relative}
+canvas{display:block;touch-action:none;border-radius:6px;box-shadow:0 10px 40px rgba(0,0,0,0.45)}
+
+/* ── BOT BAR ── */
+#bot{width:100%;padding:12px 14px;background:rgba(255,255,255,0.08);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-top:1px solid rgba(255,255,255,0.15);display:flex;align-items:center;gap:8px;flex-shrink:0}
+#statusTxt{flex:1;font-size:10px;color:#ffffff;text-align:center;min-width:60px;letter-spacing:1px;line-height:1.3;font-weight:600}
+
+/* ── MODAL ── */
+.modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);display:none;align-items:center;justify-content:center;z-index:1000;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);overflow-y:auto;}
+.modal-overlay.show{display:flex;animation:fadeIn 0.3s ease}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.modal{background:linear-gradient(135deg,rgba(30,27,75,0.97),rgba(49,46,129,0.97));border-radius:24px;padding:32px 24px;text-align:center;max-width:380px;width:90%;border:2px solid rgba(255,255,255,0.15);box-shadow:0 20px 60px rgba(0,0,0,0.6);max-height:90vh;overflow-y:auto;}
+.modal h2{font-family:'Cinzel',serif;font-size:28px;margin-bottom:15px;font-weight:700}
+.modal .final-message{font-size:14px;color:rgba(255,255,255,0.8);margin-bottom:20px;line-height:1.5}
+.modal .prize-line{font-size:18px;font-weight:700;color:#fbbf24;margin-bottom:20px;display:none}
+.modal .restart-btn{padding:14px 45px;border-radius:30px;background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;border:none;font-size:16px;font-weight:600;cursor:pointer;transition:all 0.2s ease;font-family:'Inter',sans-serif;letter-spacing:0.5px;-webkit-tap-highlight-color:transparent;}
+.modal .restart-btn:hover{transform:scale(1.05);box-shadow:0 0 25px rgba(59,130,246,0.4)}
+.modal .restart-btn:active{transform:scale(0.95)}
+.modal.win-modal{border-color:rgba(34,197,94,0.5)}
+.modal.lose-modal{border-color:rgba(231,76,60,0.5)}
+.modal.win-modal h2{color:#4ade80}
+.modal.lose-modal h2{color:#f87171}
+
+/* ── OVERLAYS ── */
+#toast{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:linear-gradient(135deg,rgba(30,27,75,.97),rgba(49,46,129,.97));border:1.5px solid rgba(251,191,36,.6);border-radius:20px;padding:28px 32px;text-align:center;pointer-events:none;z-index:40;display:none;box-shadow:0 15px 50px rgba(0,0,0,.6);min-width:220px}
+#toast-emoji{font-size:42px;margin-bottom:10px}
+#toast-title{font-family:'Cinzel',serif;color:#fbbf24;font-size:20px;font-weight:700;margin-bottom:6px}
+#toast-sub{font-size:12px;color:rgba(255,255,255,.6);letter-spacing:1px;white-space:pre-line}
+#reconn-bar{position:fixed;top:0;left:0;right:0;z-index:150;background:rgba(120,20,20,0.92);color:#fff;font-family:'Cinzel',serif;font-size:11px;letter-spacing:1.5px;text-align:center;padding:8px;display:none}
+#reconn-bar.show{display:block}
+#forfeit-bar{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:rgba(30,27,75,0.95);border:1px solid rgba(251,191,36,0.5);border-radius:99px;padding:8px 20px;font-family:'Cinzel',serif;font-size:12px;color:#fbbf24;display:none;z-index:25;backdrop-filter:blur(8px);white-space:nowrap}
+#forfeit-bar.show{display:block}
+body.chrome-hidden #forfeit-bar,body.spectator #forfeit-bar{display:none!important}
+
+/* ── WAITING OVERLAY ── */
+#waiting-overlay{position:fixed;inset:0;background:rgba(30,27,75,0.95);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:100;gap:20px;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);}
+#waiting-overlay.hidden{display:none}
+.spinner{width:52px;height:52px;border:4px solid rgba(251,191,36,0.2);border-top-color:#fbbf24;border-radius:50%;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+#loading-txt{font-size:11px;letter-spacing:2px;color:rgba(255,255,255,0.7);text-align:center;padding:0 20px}
+#confetti-canvas{position:fixed;inset:0;pointer-events:none;z-index:900}
+</style>
+</head>
+<body>
+
+<div id="top">
+  <div class="profile" id="profile-me">
+    <div class="profile-timer-wrap">
+      <svg viewBox="0 0 58 58"><circle class="timer-track" cx="29" cy="29" r="26"></circle><circle class="timer-arc" id="arc-me" cx="29" cy="29" r="26" stroke="#e2e8f0"></circle></svg>
+      <div class="profile-avatar" id="avatar-me"><div class="av-w" id="dot-me">✗</div></div>
+    </div>
+    <div class="profile-name" id="name-me">Vous</div>
+    <div class="goal-hint" id="goal-me"></div>
+  </div>
+
+  <div class="top-center">
+    <h1>MORPION À 5</h1>
+    <div class="sub">ALIGNEZ CINQ PIONS</div>
+    <div class="bet-badge" id="betBadge"></div>
+  </div>
+
+  <div class="profile" id="profile-op">
+    <div class="profile-timer-wrap">
+      <svg viewBox="0 0 58 58"><circle class="timer-track" cx="29" cy="29" r="26"></circle><circle class="timer-arc" id="arc-op" cx="29" cy="29" r="26" stroke="#f87171"></circle></svg>
+      <div class="profile-avatar" id="avatar-op"><div class="av-r" id="dot-op">◯</div></div>
+    </div>
+    <div class="profile-name" id="name-op">Adversaire</div>
+    <div class="goal-hint" id="goal-op"></div>
+  </div>
+</div>
+
+<div id="canvasWrap"><canvas id="board"></canvas></div>
+
+<div id="bot"><div id="statusTxt">CONNEXION…</div></div>
+
+<div id="reconn-bar">RECONNEXION EN COURS…</div>
+<div id="forfeit-bar"></div>
+
+<div id="waiting-overlay">
+  <div class="spinner"></div>
+  <div id="loading-txt">CONNEXION…</div>
+</div>
+
+<div id="toast"><div id="toast-emoji"></div><div id="toast-title"></div><div id="toast-sub"></div></div>
+
+<div class="modal-overlay" id="gameOverModal">
+  <div class="modal" id="modalContent">
+    <h2 id="modalTitle"></h2>
+    <div class="final-message" id="finalMessage"></div>
+    <div class="prize-line" id="prizeLine"></div>
+    <button class="restart-btn" id="closeBtn">Fermer</button>
+  </div>
+</div>
+
+<canvas id="confetti-canvas"></canvas>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+/* ══════════════════════════════════════════
+   PARAMÈTRES D'URL
+══════════════════════════════════════════ */
+var P = new URLSearchParams(location.search);
+
+/* Le jeton arrive dans le fragment : jamais envoyé au serveur HTTP, jamais
+   dans les journaux Render ni dans l'en-tête Referer. On le consomme puis on
+   l'efface immédiatement de la barre d'adresse. */
+var GAME_AUTH_TOKEN = '';
+try {
+  var H = new URLSearchParams((location.hash || '').replace(/^#/, ''));
+  GAME_AUTH_TOKEN = H.get('token') || '';
+  if (GAME_AUTH_TOKEN) history.replaceState(null, '', location.pathname + location.search);
+} catch (e) {}
+
+var IS_SPECTATOR = P.get('spectate') === '1';
+var P1_AVATAR = P.get('p1Avatar') || '';
+var P2_AVATAR = P.get('p2Avatar') || '';
+var SHOW_CHROME = !(IS_SPECTATOR && (P.get('controls') === '0' || P.get('chrome') === '0'));
+var SPECTATOR_TOKEN = '';
+var spectatorInitReceived = false;
+var ROOM_ID    = P.get('room')     || '';
+var MY_SLOT    = IS_SPECTATOR ? 1 : parseInt(P.get('player') || '1', 10);
+var P1_ID      = P.get('p1Id')     || '';
+var P2_ID      = P.get('p2Id')     || '';
+var P1_NAME    = P.get('p1Name')   || 'Joueur 1';
+var P2_NAME    = P.get('p2Name')   || 'Joueur 2';
+var BET_AMOUNT = parseFloat(P.get('bet') || '0');
+var CURRENCY   = P.get('currency') || 'HTG';
+
+if (!ROOM_ID && P1_ID && P2_ID) {
+  var _ids = [P1_ID, P2_ID].sort();
+  ROOM_ID = 'gmk-' + _ids[0].slice(-8) + '-' + _ids[1].slice(-8);
+}
+if (!ROOM_ID) { ROOM_ID = P.get('gameId') || P.get('matchId') || ''; }
+var GAME_ID = P.get('gameId') || P.get('matchId') || '';
+
+var MY_SUPABASE_ID = MY_SLOT === 1 ? P1_ID : P2_ID;
+var OP_SUPABASE_ID = MY_SLOT === 1 ? P2_ID : P1_ID;
+var MY_NAME        = MY_SLOT === 1 ? P1_NAME : P2_NAME;
+var OP_NAME        = MY_SLOT === 1 ? P2_NAME : P1_NAME;
+
+window.addEventListener('message', function(e) {
+  if (!e.data) return;
+  if (IS_SPECTATOR && e.data.type === 'spectator:init') {
+    if (e.data.gameId && GAME_ID && e.data.gameId !== GAME_ID) return;
+    SPECTATOR_TOKEN = typeof e.data.token === 'string' ? e.data.token : '';
+    if (typeof e.data.player1Name === 'string' && e.data.player1Name.trim()) P1_NAME = e.data.player1Name.trim().slice(0, 24);
+    if (typeof e.data.player2Name === 'string' && e.data.player2Name.trim()) P2_NAME = e.data.player2Name.trim().slice(0, 24);
+    if (typeof e.data.player1Avatar === 'string') P1_AVATAR = e.data.player1Avatar;
+    if (typeof e.data.player2Avatar === 'string') P2_AVATAR = e.data.player2Avatar;
+    if (typeof e.data.showControls === 'boolean') SHOW_CHROME = e.data.showControls;
+    MY_NAME = P1_NAME; OP_NAME = P2_NAME;
+    applyChrome(); applyProfiles();
+    spectatorInitReceived = true;
+    if (!socket) initSocket();
+    return;
+  }
+  if (IS_SPECTATOR && e.data.type === 'spectator:controls') {
+    SHOW_CHROME = e.data.show === true;
+    applyChrome();
+    return;
+  }
+  if (!IS_SPECTATOR && e.data.type === 'client:mutual_quit' && socket && socket.connected)
+    socket.emit('game_mutual_quit', { room: ROOM_ID, game: 'gomoku', player: MY_SLOT });
+});
+
+function setProfilePhoto(slotId, url, fallbackClass, glyph) {
+  var host = document.getElementById(slotId);
+  if (!host) return;
+  if (url) {
+    var img = new Image();
+    img.className = 'profile-photo';
+    img.alt = '';
+    img.referrerPolicy = 'no-referrer';
+    img.onerror = function () { host.innerHTML = '<div class="' + fallbackClass + '">' + glyph + '</div>'; };
+    img.onload = function () { host.innerHTML = ''; host.appendChild(img); };
+    img.src = url;
+  } else {
+    host.innerHTML = '<div class="' + fallbackClass + '">' + glyph + '</div>';
+  }
+}
+
+function applyProfiles() {
+  var meName = IS_SPECTATOR ? P1_NAME : MY_NAME;
+  var opName = IS_SPECTATOR ? P2_NAME : OP_NAME;
+  var meEl = document.getElementById('name-me'); if (meEl) meEl.textContent = meName;
+  var opEl = document.getElementById('name-op'); if (opEl) opEl.textContent = opName;
+  var meAvatar = MY_SLOT === 1 ? P1_AVATAR : P2_AVATAR;
+  var opAvatar = MY_SLOT === 1 ? P2_AVATAR : P1_AVATAR;
+  setProfilePhoto('avatar-me', meAvatar, IS_P1 ? 'av-w' : 'av-r', IS_P1 ? '✗' : '◯');
+  setProfilePhoto('avatar-op', opAvatar, IS_P1 ? 'av-r' : 'av-w', IS_P1 ? '◯' : '✗');
+}
+
+if (IS_SPECTATOR) try { document.body.classList.add('spectator'); } catch (_) {}
+function applyChrome() { document.body.classList.toggle('chrome-hidden', !SHOW_CHROME); }
+
+var IS_P1 = MY_SLOT === 1;
+
+applyChrome();
+applyProfiles();
+
+if (BET_AMOUNT > 0) {
+  var betBadge = document.getElementById('betBadge');
+  if (betBadge) {
+    betBadge.textContent = 'Mise : ' + BET_AMOUNT + ' ' + CURRENCY;
+    betBadge.style.display = 'inline-block';
+  }
+}
+
+/* ══════════════════════════════════════════
+   ÉTAT DU JEU — 15x15, cinq alignés
+══════════════════════════════════════════ */
+var SIZE = 15;
+var WIN_LENGTH = 5;
+var CELLS = SIZE * SIZE;
+
+var board, currentSlot, lastMove, winLine;
+var gameOver = false, gameReady = false, resultSent = false;
+var lastStateVersion = -1;
+var pendingTimerData = null;
+var forfeitTimer = null, forfeitCountdown = 0;
+
+function initGame() {
+  board = new Array(CELLS).fill(0);
+  currentSlot = 1;
+  lastMove = null;
+  winLine = null;
+  gameOver = false;
+  lastStateVersion = -1;
+}
+
+function idx(r, c) { return r * SIZE + c; }
+function inBounds(r, c) { return r >= 0 && r < SIZE && c >= 0 && c < SIZE; }
+
+/* ══════════════════════════════════════════
+   RENDU — feuille de cahier quadrillée
+══════════════════════════════════════════ */
+var canvas = document.getElementById('board');
+var ctx = canvas.getContext('2d');
+var CELL = 24, ORIGIN = 8, DPR = 1;
+
+function calcLayout() {
+  var wrap = document.getElementById('canvasWrap');
+  var available = Math.min(wrap.clientWidth - 12, wrap.clientHeight - 12);
+  if (!(available > 0)) available = 320;
+  CELL = Math.max(14, Math.floor(available / (SIZE + 0.6)));
+  ORIGIN = Math.round(CELL * 0.3);
+  var pixel = CELL * SIZE + ORIGIN * 2;
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = pixel * DPR;
+  canvas.height = pixel * DPR;
+  canvas.style.width = pixel + 'px';
+  canvas.style.height = pixel + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+
+/* Tremblé reproductible : la même case tremble toujours pareil, sinon le
+   plateau frissonnerait à chaque redessin. */
+function wobble(seed, n) {
+  var x = Math.sin(seed * 12.9898 + n * 78.233) * 43758.5453;
+  return (x - Math.floor(x)) - 0.5;
+}
+
+function drawPaper() {
+  var pixel = CELL * SIZE + ORIGIN * 2;
+  ctx.fillStyle = '#fbfbf4';
+  ctx.fillRect(0, 0, pixel, pixel);
+
+  /* Quadrillage bleu pâle du cahier, plus dense que le plateau lui-même. */
+  ctx.strokeStyle = '#cfe0f0';
+  ctx.lineWidth = 1;
+  var minor = CELL / 2;
+  ctx.beginPath();
+  for (var m = 0; m * minor <= pixel; m++) {
+    var p = Math.round(m * minor) + 0.5;
+    ctx.moveTo(p, 0); ctx.lineTo(p, pixel);
+    ctx.moveTo(0, p); ctx.lineTo(pixel, p);
+  }
+  ctx.stroke();
+
+  /* Lignes fortes du plateau de jeu. */
+  ctx.strokeStyle = '#7ea9d0';
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  for (var i = 0; i <= SIZE; i++) {
+    var v = Math.round(ORIGIN + i * CELL) + 0.5;
+    ctx.moveTo(v, ORIGIN); ctx.lineTo(v, ORIGIN + SIZE * CELL);
+    ctx.moveTo(ORIGIN, v); ctx.lineTo(ORIGIN + SIZE * CELL, v);
+  }
+  ctx.stroke();
+}
+
+function drawCross(cx, cy, size, seed) {
+  var h = size / 2;
+  ctx.strokeStyle = '#1f2937';
+  ctx.lineWidth = Math.max(2, size * 0.13);
+  ctx.lineCap = 'round';
+  var j = size * 0.11;
+  ctx.beginPath();
+  ctx.moveTo(cx - h + wobble(seed, 1) * j, cy - h + wobble(seed, 2) * j);
+  ctx.quadraticCurveTo(cx + wobble(seed, 3) * j, cy + wobble(seed, 4) * j,
+                       cx + h + wobble(seed, 5) * j, cy + h + wobble(seed, 6) * j);
+  ctx.moveTo(cx + h + wobble(seed, 7) * j, cy - h + wobble(seed, 8) * j);
+  ctx.quadraticCurveTo(cx + wobble(seed, 9) * j, cy + wobble(seed, 10) * j,
+                       cx - h + wobble(seed, 11) * j, cy + h + wobble(seed, 12) * j);
+  ctx.stroke();
+}
+
+function drawCircle(cx, cy, size, seed) {
+  ctx.strokeStyle = '#dc2626';
+  ctx.lineWidth = Math.max(2, size * 0.13);
+  ctx.lineCap = 'round';
+  var rx = size * 0.5, ry = size * 0.5;
+  ctx.beginPath();
+  var steps = 22;
+  for (var s = 0; s <= steps; s++) {
+    /* On dépasse légèrement le tour complet : le trait se referme comme un
+       rond tracé à la main, jamais parfaitement jointif. */
+    var a = (s / steps) * Math.PI * 2.08 - 0.5;
+    var w = 1 + wobble(seed, s) * 0.09;
+    var x = cx + Math.cos(a) * rx * w;
+    var y = cy + Math.sin(a) * ry * w;
+    if (s === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function cellCenter(r, c) {
+  return { x: ORIGIN + c * CELL + CELL / 2, y: ORIGIN + r * CELL + CELL / 2 };
+}
+
+function draw() {
+  if (!board) return;
+  drawPaper();
+
+  var stone = CELL * 0.62;
+  for (var r = 0; r < SIZE; r++) {
+    for (var c = 0; c < SIZE; c++) {
+      var v = board[idx(r, c)];
+      if (!v) continue;
+      var p = cellCenter(r, c);
+      if (v === 1) drawCross(p.x, p.y, stone, idx(r, c) + 1);
+      else drawCircle(p.x, p.y, stone, idx(r, c) + 1);
+    }
+  }
+
+  /* Dernier coup : petit repère au crayon, pour ne pas perdre le fil. */
+  if (lastMove && inBounds(lastMove.r, lastMove.c) && !winLine) {
+    var lp = cellCenter(lastMove.r, lastMove.c);
+    ctx.strokeStyle = 'rgba(37,99,235,0.55)';
+    ctx.lineWidth = 1.6;
+    ctx.strokeRect(lp.x - CELL / 2 + 2, lp.y - CELL / 2 + 2, CELL - 4, CELL - 4);
+  }
+
+  /* Trait de victoire, comme sur une feuille : un trait tiré à la règle. */
+  if (winLine && winLine.length >= 2) {
+    var first = winLine[0], last = winLine[winLine.length - 1];
+    var a = cellCenter(Math.floor(first / SIZE), first % SIZE);
+    var b = cellCenter(Math.floor(last / SIZE), last % SIZE);
+    ctx.strokeStyle = 'rgba(20,20,30,0.85)';
+    ctx.lineWidth = Math.max(3, CELL * 0.1);
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+}
+
+/* ══════════════════════════════════════════
+   INTERACTION
+══════════════════════════════════════════ */
+function myTurn() {
+  return !IS_SPECTATOR && gameReady && !gameOver && currentSlot === MY_SLOT;
+}
+
+function pointerCell(evt) {
+  var rect = canvas.getBoundingClientRect();
+  var src = evt.changedTouches ? evt.changedTouches[0] : evt;
+  var x = src.clientX - rect.left - ORIGIN;
+  var y = src.clientY - rect.top - ORIGIN;
+  var c = Math.floor(x / CELL), r = Math.floor(y / CELL);
+  if (!inBounds(r, c)) return null;
+  return { r: r, c: c };
+}
+
+function attemptMove(evt) {
+  if (evt && evt.cancelable) evt.preventDefault();
+  if (!myTurn()) return;
+  var cell = pointerCell(evt);
+  if (!cell) return;
+  if (board[idx(cell.r, cell.c)] !== 0) return;
+  if (!socket || !socket.connected) return;
+  /* Aucun coup n'est appliqué localement : le serveur seul fait foi et
+     renvoie le plateau. Cela évite tout écart entre les deux écrans. */
+  socket.emit('gomoku_move', { room: ROOM_ID, player: MY_SLOT, data: { r: cell.r, c: cell.c } });
+}
+
+canvas.addEventListener('click', attemptMove);
+canvas.addEventListener('touchend', attemptMove, { passive: false });
+
+/* ══════════════════════════════════════════
+   CHRONOMÈTRES
+══════════════════════════════════════════ */
+var TURN_MS = 30000, GRACE_MS = 60000;
+var timerRAF = null, graceRAF = null;
+
+function arcFor(slot) {
+  var mine = slot === MY_SLOT;
+  return document.getElementById(mine ? 'arc-me' : 'arc-op');
+}
+function profileFor(slot) {
+  var mine = slot === MY_SLOT;
+  return document.getElementById(mine ? 'profile-me' : 'profile-op');
+}
+
+function stopTimer() { if (timerRAF) { cancelAnimationFrame(timerRAF); timerRAF = null; } }
+function stopGraceTimer() { if (graceRAF) { cancelAnimationFrame(graceRAF); graceRAF = null; } }
+
+function resetArcs() {
+  ['arc-me', 'arc-op'].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) el.style.strokeDashoffset = '163.4';
+  });
+  ['profile-me', 'profile-op'].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) el.classList.remove('timer-urgent');
+  });
+}
+
+function runArc(slot, startTime, duration, urgent) {
+  stopTimer(); stopGraceTimer(); resetArcs();
+  var arc = arcFor(slot), prof = profileFor(slot);
+  if (!arc) return;
+  var step = function () {
+    var elapsed = Date.now() - startTime;
+    var ratio = Math.max(0, Math.min(1, elapsed / duration));
+    arc.style.strokeDashoffset = String(163.4 * ratio);
+    if (prof) prof.classList.toggle('timer-urgent', urgent || (duration - elapsed) < 8000);
+    if (ratio < 1 && !gameOver) timerRAF = requestAnimationFrame(step);
+  };
+  step();
+}
+
+function applyPendingTimer() {
+  if (!pendingTimerData) return;
+  var d = pendingTimerData;
+  pendingTimerData = null;
+  if (d.graceStartTime) runArc(d.turnPlayer, d.graceStartTime, GRACE_MS, true);
+  else if (d.turnStartTime) runArc(d.turnPlayer, d.turnStartTime, TURN_MS, false);
+}
+
+function startForfeitCountdown(seconds) {
+  stopForfeitCountdown();
+  forfeitCountdown = seconds;
+  var bar = document.getElementById('forfeit-bar');
+  bar.classList.add('show');
+  var tick = function () {
+    bar.textContent = 'Adversaire déconnecté — forfait dans ' + forfeitCountdown + 's';
+    if (forfeitCountdown <= 0) { stopForfeitCountdown(); return; }
+    forfeitCountdown--;
+  };
+  tick();
+  forfeitTimer = setInterval(tick, 1000);
+}
+function stopForfeitCountdown() {
+  if (forfeitTimer) { clearInterval(forfeitTimer); forfeitTimer = null; }
+  var bar = document.getElementById('forfeit-bar');
+  if (bar) bar.classList.remove('show');
+}
+
+/* ══════════════════════════════════════════
+   INTERFACE
+══════════════════════════════════════════ */
+function updUI() {
+  var me = document.getElementById('profile-me'), op = document.getElementById('profile-op');
+  var meActive = currentSlot === MY_SLOT;
+  me.classList.toggle('active', meActive);
+  op.classList.toggle('active', !meActive);
+  me.classList.toggle('p1-active', MY_SLOT === 1);
+  me.classList.toggle('p2-active', MY_SLOT === 2);
+  op.classList.toggle('p1-active', MY_SLOT === 2);
+  op.classList.toggle('p2-active', MY_SLOT === 1);
+
+  var status = document.getElementById('statusTxt');
+  if (gameOver) status.textContent = 'PARTIE TERMINÉE';
+  else if (IS_SPECTATOR) status.textContent = 'AU TOUR DE ' + (currentSlot === 1 ? P1_NAME : P2_NAME).toUpperCase();
+  else if (!gameReady) status.textContent = 'PRÉPARATION…';
+  else status.textContent = meActive ? 'À VOUS DE JOUER' : 'TOUR DE ' + OP_NAME.toUpperCase();
+}
+
+function applyServerState(state, version) {
+  if (!state) return;
+  if (typeof version === 'number' && version <= lastStateVersion) return;
+  if (typeof version === 'number') lastStateVersion = version;
+  if (Array.isArray(state.board) && state.board.length === CELLS) {
+    board = state.board.map(function (v) { return v === 1 || v === 2 ? v : 0; });
+  }
+  if (state.last && inBounds(state.last.r, state.last.c)) lastMove = { r: state.last.r, c: state.last.c };
+  winLine = Array.isArray(state.winLine) && state.winLine.length ? state.winLine.slice() : null;
+  if (state.currentSlot === 1 || state.currentSlot === 2) currentSlot = state.currentSlot;
+  draw();
+  updUI();
+}
+
+/* ══════════════════════════════════════════
+   FIN DE PARTIE
+══════════════════════════════════════════ */
+function handleGameEnd(winnerSlot, reason) {
+  if (gameOver) return;
+  gameOver = true;
+  stopTimer(); stopGraceTimer(); stopForfeitCountdown();
+  draw(); updUI();
+
+  if (IS_SPECTATOR) return;
+
+  var iWon = winnerSlot === MY_SLOT;
+  var isDraw = winnerSlot === 0;
+  var outcome = isDraw ? 'draw' : (iWon ? 'win' : 'lose');
+
+  var title, message, modalClass;
+  if (isDraw) {
+    title = 'Match nul'; modalClass = ''; message = 'La grille est pleine, personne n’a aligné cinq pions.';
+  } else if (iWon) {
+    title = 'Victoire !'; modalClass = 'win-modal';
+    message = reason === 'timeout' ? OP_NAME + ' a dépassé le temps imparti.'
+            : reason === 'forfeit' ? OP_NAME + ' a abandonné la partie.'
+            : 'Cinq pions alignés. Bien joué !';
+    createConfetti();
+  } else {
+    title = 'Défaite'; modalClass = 'lose-modal';
+    message = reason === 'timeout' ? 'Vous avez dépassé le temps imparti.'
+            : reason === 'forfeit' ? 'Vous avez abandonné la partie.'
+            : OP_NAME + ' a aligné cinq pions.';
+  }
+
+  document.getElementById('modalTitle').textContent = title;
+  document.getElementById('finalMessage').textContent = message;
+  document.getElementById('modalContent').className = 'modal ' + modalClass;
+
+  if (BET_AMOUNT > 0 && !isDraw) {
+    var prizeLine = document.getElementById('prizeLine');
+    prizeLine.style.display = 'block';
+    prizeLine.textContent = iWon ? '🤑 +' + (BET_AMOUNT * 2 * 0.9).toFixed(0) + ' ' + CURRENCY + ' (net)' : '😓 -' + BET_AMOUNT + ' ' + CURRENCY;
+  }
+
+  document.getElementById('gameOverModal').classList.add('show');
+  setTimeout(function () { sendResult(outcome, reason || 'normal'); }, 4000);
+}
+
+function sendResult(outcome, reason) {
+  if (resultSent) return;
+  resultSent = true;
+  var winnerId = outcome === 'win' ? MY_SUPABASE_ID : (outcome === 'lose' ? OP_SUPABASE_ID : null);
+  var loserId  = outcome === 'win' ? OP_SUPABASE_ID : (outcome === 'lose' ? MY_SUPABASE_ID : null);
+  var msg = {
+    type: 'game_result', game: 'gomoku', room: ROOM_ID,
+    result: outcome, winner: winnerId, loser: loserId,
+    bet: BET_AMOUNT, currency: CURRENCY,
+    reason: reason || 'normal', p1Id: P1_ID, p2Id: P2_ID
+  };
+  /* Le règlement du portefeuille est émis par le serveur autoritatif, jamais
+     par cette iframe : ce message ne sert qu'à informer l'application hôte. */
+  if (socket && socket.connected) socket.emit('gomoku_result', msg);
+}
+
+document.getElementById('closeBtn').addEventListener('click', function () { try { window.parent.postMessage({ type: 'close_game' }, '*'); } catch (e) {} document.getElementById('gameOverModal').classList.remove('show'); });
+document.getElementById('closeBtn').addEventListener('touchend', function (e) { e.preventDefault(); try { window.parent.postMessage({ type: 'close_game' }, '*'); } catch (err) {} document.getElementById('gameOverModal').classList.remove('show'); });
+
+/* ══════════════════════════════════════════
+   TOAST & CONFETTI
+══════════════════════════════════════════ */
+function showToast(emoji, title, sub, delay, cb) {
+  var el = document.getElementById('toast');
+  document.getElementById('toast-emoji').textContent = emoji;
+  document.getElementById('toast-title').textContent = title;
+  document.getElementById('toast-sub').textContent = sub;
+  el.style.cssText = 'display:block;opacity:0;transform:translate(-50%,-50%) scale(0.8);transition:none;';
+  setTimeout(function () {
+    el.style.transition = 'all 0.35s cubic-bezier(0.175,0.885,0.32,1.275)';
+    el.style.opacity = '1'; el.style.transform = 'translate(-50%,-50%) scale(1)';
+  }, 20);
+  setTimeout(function () {
+    el.style.opacity = '0'; el.style.transform = 'translate(-50%,-50%) scale(0.85)';
+    setTimeout(function () { el.style.display = 'none'; if (cb) cb(); }, 300);
+  }, delay);
+}
+
+var confettiCanvas = document.getElementById('confetti-canvas');
+var confettiCtx = confettiCanvas.getContext('2d');
+confettiCanvas.width = window.innerWidth; confettiCanvas.height = window.innerHeight;
+var confettiParticles = [], confettiActive = false;
+function createConfetti() {
+  var colors = ['#fbbf24', '#f59e0b', '#e2e8f0', '#ffffff', '#818cf8', '#c084fc'], shapes = ['circle', 'square', 'triangle'];
+  for (var i = 0; i < 180; i++) confettiParticles.push({ x: confettiCanvas.width / 2, y: confettiCanvas.height / 2, vx: (Math.random() - .5) * 22, vy: (Math.random() - .5) * 22 - 6, color: colors[Math.floor(Math.random() * colors.length)], shape: shapes[Math.floor(Math.random() * shapes.length)], size: Math.random() * 10 + 5, rotation: Math.random() * 360, rotationSpeed: (Math.random() - .5) * 12, gravity: 0.32, drag: 0.985, life: 1.0 });
+  confettiActive = true;
+}
+function updateConfetti() {
+  if (!confettiActive) return;
+  confettiCtx.clearRect(0, 0, confettiCanvas.width, confettiCanvas.height);
+  var anyAlive = false;
+  for (var i = confettiParticles.length - 1; i >= 0; i--) {
+    var p = confettiParticles[i];
+    p.x += p.vx; p.y += p.vy; p.vy += p.gravity; p.vx *= p.drag; p.vy *= p.drag; p.rotation += p.rotationSpeed; p.life -= 0.004;
+    if (p.life > 0 && p.y < confettiCanvas.height + 60) {
+      anyAlive = true;
+      confettiCtx.save();
+      confettiCtx.translate(p.x, p.y); confettiCtx.rotate(p.rotation * Math.PI / 180);
+      confettiCtx.globalAlpha = p.life; confettiCtx.fillStyle = p.color;
+      if (p.shape === 'circle') { confettiCtx.beginPath(); confettiCtx.arc(0, 0, p.size / 2, 0, Math.PI * 2); confettiCtx.fill(); }
+      else if (p.shape === 'square') { confettiCtx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size); }
+      else { confettiCtx.beginPath(); confettiCtx.moveTo(0, -p.size / 2); confettiCtx.lineTo(p.size / 2, p.size / 2); confettiCtx.lineTo(-p.size / 2, p.size / 2); confettiCtx.closePath(); confettiCtx.fill(); }
+      confettiCtx.restore();
+    }
+  }
+  if (!anyAlive) { confettiActive = false; confettiParticles = []; confettiCtx.clearRect(0, 0, confettiCanvas.width, confettiCanvas.height); }
+}
+function renderLoop() { requestAnimationFrame(renderLoop); updateConfetti(); }
+renderLoop();
+
+/* ══════════════════════════════════════════
+   SOCKET.IO
+══════════════════════════════════════════ */
+var socket = null;
+
+function initSocket() {
+  if (IS_SPECTATOR && !spectatorInitReceived) return;
+  document.getElementById('loading-txt').textContent =
+    IS_SPECTATOR ? 'CONNEXION AU DIRECT…' : 'ROOM: ' + (ROOM_ID || 'MANQUANT') + ' | SLOT: ' + MY_SLOT;
+
+  socket = io({
+    transports: ['websocket', 'polling'],
+    auth: { token: IS_SPECTATOR ? SPECTATOR_TOKEN : GAME_AUTH_TOKEN },
+    reconnection: true,
+    reconnectionAttempts: Infinity,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
+    timeout: 20000
+  });
+
+  socket.on('connect', function () {
+    document.getElementById('reconn-bar').classList.remove('show');
+    if (IS_SPECTATOR) { socket.emit('spectator_join', { gameId: GAME_ID }); return; }
+    socket.emit('gomoku_join', {
+      room: ROOM_ID, gameId: GAME_ID, player: MY_SLOT,
+      supabaseId: MY_SUPABASE_ID, name: MY_NAME,
+      bet: BET_AMOUNT, currency: CURRENCY
+    });
+  });
+
+  socket.on('disconnect', function () {
+    document.getElementById('reconn-bar').classList.add('show');
+    if (IS_SPECTATOR) try { window.parent.postMessage({ type: 'spectator:reconnecting', game: 'gomoku', gameId: GAME_ID }, '*'); } catch (_) {}
+  });
+
+  /* ── Mode spectateur ── */
+  var SPECT_RETRY_MAX_TRIES = 10;
+  var SPECT_RETRY_MAX_DELAY = 8000;
+  var spectRetryTries = 0;
+  var spectRetryTimer = null;
+
+  function spectatorRetryable(code){
+    /* « room_not_live » : les joueurs ne sont pas encore la. On attend
+       indefiniment — c'est exactement le cas d'un match de tournoi.
+       Les deux autres sont des accidents passagers : on borne les essais. */
+    if(code === 'room_not_live') return true;
+    if(code === 'verification_failed' || code === 'not_live') return spectRetryTries < SPECT_RETRY_MAX_TRIES;
+    return false;
+  }
+  function scheduleSpectatorRejoin(){
+    if(spectRetryTimer) return;
+    spectRetryTries++;
+    var delay = Math.min(SPECT_RETRY_MAX_DELAY, 1200 * spectRetryTries);
+    spectRetryTimer = setTimeout(function(){
+      spectRetryTimer = null;
+      if(socket && socket.connected) socket.emit('spectator_join', { gameId: GAME_ID });
+    }, delay);
+  }
+
+  socket.on('spectator:joined', function () {
+    spectRetryTries = 0;
+    document.getElementById('waiting-overlay').classList.add('hidden');
+    try { window.parent.postMessage({ type: 'spectator:connected', game: 'gomoku', gameId: GAME_ID }, '*'); } catch (_) {}
+  });
+
+  socket.on('spectator_state', function (snapshot) {
+    if (!snapshot || !snapshot.state) return;
+    document.getElementById('waiting-overlay').classList.add('hidden');
+    gameReady = true;
+    if (snapshot.players) {
+      if (snapshot.players[1] && snapshot.players[1].name) P1_NAME = snapshot.players[1].name;
+      if (snapshot.players[2] && snapshot.players[2].name) P2_NAME = snapshot.players[2].name;
+      MY_NAME = P1_NAME; OP_NAME = P2_NAME;
+      applyProfiles();
+    }
+    var st = snapshot.state.gameState;
+    if (typeof st === 'string') { try { st = JSON.parse(st); } catch (e) { st = null; } }
+    if (st) applyServerState(st, null);
+    if (snapshot.state.currentSlot === 1 || snapshot.state.currentSlot === 2) currentSlot = snapshot.state.currentSlot;
+    if (snapshot.state.graceStartTime) runArc(snapshot.state.turnPlayer, snapshot.state.graceStartTime, GRACE_MS, true);
+    else if (snapshot.state.turnStartTime) runArc(snapshot.state.turnPlayer, snapshot.state.turnStartTime, TURN_MS, false);
+    draw(); updUI();
+  });
+
+  socket.on('spectator:error', function (data) {
+    if (!IS_SPECTATOR) return;
+    var code = (data && data.code) || '';
+    var retrying = spectatorRetryable(code);
+    var message = (data && data.message) || 'Ce direct n’est plus disponible.';
+    document.getElementById('loading-txt').textContent = retrying ? 'EN ATTENTE DES JOUEURS…' : message;
+    document.getElementById('waiting-overlay').classList.remove('hidden');
+    if (retrying) scheduleSpectatorRejoin();
+    try { window.parent.postMessage({ type: 'spectator:error', game: 'gomoku', gameId: GAME_ID, code: code, retrying: retrying, message: message }, '*'); } catch (_) {}
+  });
+
+  /* ── Mode joueur ── */
+  socket.on('gomoku_start', function (data) {
+    document.getElementById('waiting-overlay').classList.add('hidden');
+    if (data.opponentName) {
+      if (MY_SLOT === 1) P2_NAME = data.opponentName; else P1_NAME = data.opponentName;
+      OP_NAME = data.opponentName;
+      applyProfiles();
+    }
+    if (data.reconnected) {
+      var st = data.gameState;
+      if (typeof st === 'string') { try { st = JSON.parse(st); } catch (e) { st = null; } }
+      if (st) applyServerState(st, typeof data.stateVersion === 'number' ? data.stateVersion : null);
+      if (data.currentSlot === 1 || data.currentSlot === 2) currentSlot = data.currentSlot;
+      gameReady = true;
+      draw(); updUI();
+      if (socket && socket.connected) socket.emit('gomoku_request_state', { room: ROOM_ID });
+      showToast('🔄', 'Partie reprise', 'Vous êtes de retour sur le plateau.', 1800);
+      return;
+    }
+    startNewGame();
+  });
+
+  socket.on('gomoku_turn_start', function (data) {
+    if (gameOver) return;
+    currentSlot = data.player;
+    if (!gameReady) { pendingTimerData = { turnPlayer: data.player, turnStartTime: data.startTime }; return; }
+    runArc(data.player, data.startTime, data.duration || TURN_MS, false);
+    updUI();
+  });
+
+  socket.on('gomoku_turn_warning', function (data) {
+    if (gameOver) return;
+    runArc(data.player, data.startTime, data.duration || GRACE_MS, true);
+  });
+
+  socket.on('gomoku_turn_sync', function (data) {
+    if (gameOver) return;
+    if (!gameReady) { pendingTimerData = data; return; }
+    if (data.graceStartTime) runArc(data.turnPlayer, data.graceStartTime, data.duration || GRACE_MS, true);
+    else if (data.turnStartTime) runArc(data.turnPlayer, data.turnStartTime, data.duration || TURN_MS, false);
+  });
+
+  socket.on('gomoku_move', function (data) {
+    if (!data) return;
+    var st = data.gameState;
+    if (typeof st === 'string') { try { st = JSON.parse(st); } catch (e) { st = null; } }
+    if (st) applyServerState(st, typeof data.version === 'number' ? data.version : null);
+    if (data.winLine && data.winLine.length) { winLine = data.winLine.slice(); draw(); }
+  });
+
+  socket.on('gomoku_state_sync', function (data) {
+    if (!data || gameOver) return;
+    applyServerState(data.gameState, typeof data.version === 'number' ? data.version : null);
+    if (data.graceStartTime) runArc(data.turnPlayer, data.graceStartTime, data.graceDuration || GRACE_MS, true);
+    else if (data.turnStartTime) runArc(data.turnPlayer, data.turnStartTime, data.turnDuration || TURN_MS, false);
+  });
+
+  socket.on('game:error', function (data) {
+    var message = (data && (data.detail || data.message)) || 'Action refusée par le serveur.';
+    showToast('⚠️', 'Coup refusé', message, 1800);
+    if (!gameOver && socket && socket.connected) socket.emit('gomoku_request_state', { room: ROOM_ID });
+  });
+
+  socket.on('gomoku_player_status', function (data) {
+    if (!data) return;
+    document.getElementById('profile-op').style.opacity = data.connected ? '1' : '0.35';
+  });
+
+  socket.on('game:reconnect_deadline', function (data) {
+    if (!data || !data.reconnectDeadline) return;
+    var seconds = Math.max(0, Math.round((data.reconnectDeadline - (data.serverTime || Date.now())) / 1000));
+    startForfeitCountdown(seconds);
+  });
+
+  socket.on('gomoku_opponent_disconnected', function () {
+    startForfeitCountdown(60);
+  });
+
+  socket.on('gomoku_game_resumed', function (data) {
+    stopForfeitCountdown();
+    document.getElementById('profile-op').style.opacity = '1';
+    showToast('✅', 'Adversaire reconnecté', (data && data.message) || 'La partie reprend !', 2000, function () {
+      if (gameReady && !gameOver) updUI();
+    });
+  });
+
+  socket.on('player:reconnected', function (data) {
+    stopForfeitCountdown();
+    document.getElementById('profile-op').style.opacity = '1';
+    if (data && data.message) showToast('✅', 'Adversaire reconnecté', data.message, 1600);
+  });
+
+  socket.on('game:over', function (d) {
+    if (gameOver) return;
+    stopForfeitCountdown();
+
+    if (d.result === 'cancel') {
+      gameOver = true; stopTimer(); stopGraceTimer();
+      var penalty = d.penalty || 0;
+      showToast('⚠️', 'Partie annulée',
+        'Les deux joueurs se sont déconnectés.\nPénalité de ' + penalty + ' HTG appliquée.',
+        4000, function () { sendResult('cancel', 'both_disconnected'); });
+      return;
+    }
+
+    if (d.winnerSlot === 0 || d.winner === 'draw') { handleGameEnd(0, d.reason || 'draw'); return; }
+
+    var iWon = d.winnerSupabaseId === MY_SUPABASE_ID ||
+               (d.winnerSlot && d.winnerSlot === MY_SLOT) ||
+               (d.winner === 'player1' && MY_SLOT === 1) ||
+               (d.winner === 'player2' && MY_SLOT === 2);
+    handleGameEnd(iWon ? MY_SLOT : (MY_SLOT === 1 ? 2 : 1), d.reason || 'forfeit');
+  });
+
+  socket.on('game:result', function (d) {
+    if (d.postMessage && !gameOver) {
+      if (d.postMessage.result === 'draw') { handleGameEnd(0, 'draw'); return; }
+      var iWon = d.postMessage.result === 'win';
+      handleGameEnd(iWon ? MY_SLOT : (MY_SLOT === 1 ? 2 : 1), 'forfeit');
+    }
+  });
+}
+
+/* ══════════════════════════════════════════
+   DÉMARRAGE
+══════════════════════════════════════════ */
+function startNewGame() {
+  initGame();
+  applyProfiles();
+  document.getElementById('dot-me').textContent = IS_P1 ? '✗' : '◯';
+  document.getElementById('dot-op').textContent = IS_P1 ? '◯' : '✗';
+  document.getElementById('dot-me').className = IS_P1 ? 'av-w' : 'av-r';
+  document.getElementById('dot-op').className = IS_P1 ? 'av-r' : 'av-w';
+  document.getElementById('arc-me').setAttribute('stroke', IS_P1 ? '#e2e8f0' : '#f87171');
+  document.getElementById('arc-op').setAttribute('stroke', IS_P1 ? '#f87171' : '#e2e8f0');
+  document.getElementById('goal-me').textContent = IS_P1 ? '✗ CROIX' : '◯ RONDS';
+  document.getElementById('goal-op').textContent = IS_P1 ? '◯ RONDS' : '✗ CROIX';
+
+  var whoStarts = MY_SLOT === 1 ? 'Vous commencez (croix)' : OP_NAME + ' commence (croix)';
+  showToast('✏️', 'Partie commencée', whoStarts + '\nAlignez cinq pions pour gagner.', 2400, function () {
+    gameReady = true;
+    updUI();
+    applyPendingTimer();
+  });
+  calcLayout(); draw(); updUI();
+}
+
+calcLayout();
+initGame();
+draw();
+updUI();
+
+if (IS_SPECTATOR) {
+  try { window.parent.postMessage({ type: 'spectator:ready', game: 'gomoku', gameId: GAME_ID }, '*'); } catch (_) {}
+}
+initSocket();
+
+window.addEventListener('resize', function () {
+  calcLayout();
+  draw();
+  confettiCanvas.width = window.innerWidth;
+  confettiCanvas.height = window.innerHeight;
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no, viewport-fit=cover">
+<title>Morpion à cinq — Entraînement | Mindspille</title>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700;900&family=Caveat:wght@600;700&family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden}
+body{background:linear-gradient(135deg,#1e1b4b 0%,#312e81 50%,#1e1b4b 100%);height:100%;display:flex;flex-direction:column;align-items:center;font-family:'Cinzel',serif;color:#fbbf24}
+
+#top{flex:0 0 auto;width:100%;padding:15px 14px 8px;display:flex;align-items:center;justify-content:space-between;z-index:20;gap:8px}
+.profile{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:72px;opacity:0.5;transition:opacity 0.3s}
+.profile.active{opacity:1}
+.profile-timer-wrap{position:relative;width:58px;height:58px}
+.profile-avatar{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;border-radius:50%;background:rgba(255,255,255,0.05);border:2px solid rgba(255,255,255,0.12);transition:all 0.3s}
+.profile.active .profile-avatar{border-color:rgba(255,255,255,0.5)}
+.av-w{width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-family:'Caveat',cursive;font-size:26px;font-weight:700;color:#1f2937;line-height:1}
+.av-r{width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-family:'Caveat',cursive;font-size:26px;font-weight:700;color:#dc2626;line-height:1}
+.profile-name{font-family:'Cinzel',serif;font-size:9px;letter-spacing:1.5px;color:rgba(255,255,255,0.8);text-transform:uppercase;text-align:center;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:4px}
+.goal-hint{font-size:8px;letter-spacing:1px;color:rgba(255,255,255,0.4);min-height:12px;text-align:center}
+.top-center{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px}
+.top-center h1{font-size:15px;font-weight:900;letter-spacing:3px;color:#fbbf24;text-shadow:0 0 20px rgba(251,191,36,0.5)}
+.top-center .sub{font-size:8px;color:rgba(255,255,255,0.3);letter-spacing:2px}
+
+#canvasWrap{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:6px;width:100%;position:relative}
+canvas{display:block;touch-action:none;border-radius:6px;box-shadow:0 10px 40px rgba(0,0,0,0.45)}
+
+#bot{width:100%;padding:12px 14px;background:rgba(255,255,255,0.08);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-top:1px solid rgba(255,255,255,0.15);display:flex;align-items:center;gap:8px;flex-shrink:0}
+.modeBtn{flex:1;padding:12px 6px;background:rgba(255,255,255,0.06);border:1px solid rgba(251,191,36,0.3);border-radius:12px;color:rgba(251,191,36,0.7);font-family:'Cinzel',serif;font-size:11px;font-weight:600;letter-spacing:1px;cursor:pointer;transition:all 0.2s;-webkit-appearance:none;outline:none}
+.modeBtn.active{background:linear-gradient(135deg,#fbbf24,#f59e0b);color:#1e1b4b;border-color:transparent;font-weight:700;box-shadow:0 4px 15px rgba(251,191,36,0.4)}
+#statusTxt{font-size:10px;color:#ffffff;text-align:center;min-width:74px;letter-spacing:1px;line-height:1.3;font-weight:600}
+
+.modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);display:none;align-items:center;justify-content:center;z-index:1000;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);overflow-y:auto;}
+.modal-overlay.show{display:flex;animation:fadeIn 0.3s ease}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.modal{background:linear-gradient(135deg,rgba(30,27,75,0.97),rgba(49,46,129,0.97));border-radius:24px;padding:32px 24px;text-align:center;max-width:380px;width:90%;border:2px solid rgba(255,255,255,0.15);box-shadow:0 20px 60px rgba(0,0,0,0.6);}
+.modal h2{font-family:'Cinzel',serif;font-size:28px;margin-bottom:15px;font-weight:700}
+.modal .final-message{font-size:14px;color:rgba(255,255,255,0.8);margin-bottom:20px;line-height:1.5}
+.modal .restart-btn{padding:14px 45px;border-radius:30px;background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;border:none;font-size:16px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;letter-spacing:0.5px;margin:4px}
+.modal.win-modal{border-color:rgba(34,197,94,0.5)}
+.modal.lose-modal{border-color:rgba(231,76,60,0.5)}
+.modal.win-modal h2{color:#4ade80}
+.modal.lose-modal h2{color:#f87171}
+
+#toast{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:linear-gradient(135deg,rgba(30,27,75,.97),rgba(49,46,129,.97));border:1.5px solid rgba(251,191,36,.6);border-radius:20px;padding:28px 32px;text-align:center;pointer-events:none;z-index:40;display:none;box-shadow:0 15px 50px rgba(0,0,0,.6);min-width:220px}
+#toast-emoji{font-size:42px;margin-bottom:10px}
+#toast-title{font-family:'Cinzel',serif;color:#fbbf24;font-size:20px;font-weight:700;margin-bottom:6px}
+#toast-sub{font-size:12px;color:rgba(255,255,255,.6);letter-spacing:1px;white-space:pre-line}
+#confetti-canvas{position:fixed;inset:0;pointer-events:none;z-index:900}
+</style>
+</head>
+<body>
+
+<div id="top">
+  <div class="profile active" id="profile-me">
+    <div class="profile-timer-wrap"><div class="profile-avatar"><div class="av-w">✗</div></div></div>
+    <div class="profile-name">Vous</div>
+    <div class="goal-hint">✗ CROIX</div>
+  </div>
+  <div class="top-center">
+    <h1>MORPION À 5</h1>
+    <div class="sub">ENTRAÎNEMENT</div>
+  </div>
+  <div class="profile" id="profile-op">
+    <div class="profile-timer-wrap"><div class="profile-avatar"><div class="av-r">◯</div></div></div>
+    <div class="profile-name">Ordinateur</div>
+    <div class="goal-hint">◯ RONDS</div>
+  </div>
+</div>
+
+<div id="canvasWrap"><canvas id="board"></canvas></div>
+
+<div id="bot">
+  <button class="modeBtn" id="lvl1">FACILE</button>
+  <button class="modeBtn active" id="lvl2">MOYEN</button>
+  <button class="modeBtn" id="lvl3">DIFFICILE</button>
+  <div id="statusTxt">À VOUS</div>
+  <button class="modeBtn" id="newBtn">REJOUER</button>
+</div>
+
+<div id="toast"><div id="toast-emoji"></div><div id="toast-title"></div><div id="toast-sub"></div></div>
+
+<div class="modal-overlay" id="gameOverModal">
+  <div class="modal" id="modalContent">
+    <h2 id="modalTitle"></h2>
+    <div class="final-message" id="finalMessage"></div>
+    <button class="restart-btn" id="againBtn">Rejouer</button>
+    <button class="restart-btn" id="closeBtn">Fermer</button>
+  </div>
+</div>
+
+<canvas id="confetti-canvas"></canvas>
+
+<script>
+/* ══════════════════════════════════════════
+   MORPION À CINQ — VERSION ENTRAÎNEMENT
+   Plateau 15x15, cinq pions alignés pour gagner, une seule partie.
+══════════════════════════════════════════ */
+var SIZE = 15, WIN_LENGTH = 5, CELLS = SIZE * SIZE;
+var HUMAN = 1, AI = 2;
+
+var board, currentSlot, lastMove, winLine, gameOver, thinking;
+var difficulty = 2;
+
+function idx(r, c) { return r * SIZE + c; }
+function inBounds(r, c) { return r >= 0 && r < SIZE && c >= 0 && c < SIZE; }
+
+function initGame() {
+  board = new Array(CELLS).fill(0);
+  currentSlot = HUMAN;
+  lastMove = null;
+  winLine = null;
+  gameOver = false;
+  thinking = false;
+}
+
+/* Alignement passant par (r,c). Renvoie les index gagnants, sinon null. */
+function findWinLine(b, r, c) {
+  var slot = b[idx(r, c)];
+  if (!slot) return null;
+  var dirs = [[0, 1], [1, 0], [1, 1], [1, -1]];
+  for (var d = 0; d < dirs.length; d++) {
+    var dr = dirs[d][0], dc = dirs[d][1];
+    var line = [[r, c]];
+    for (var s = 0; s < 2; s++) {
+      var sign = s === 0 ? 1 : -1;
+      var rr = r + dr * sign, cc = c + dc * sign;
+      while (inBounds(rr, cc) && b[idx(rr, cc)] === slot) {
+        line.push([rr, cc]);
+        rr += dr * sign; cc += dc * sign;
+      }
+    }
+    if (line.length >= WIN_LENGTH) {
+      line.sort(function (a, z) { return (a[0] - z[0]) || (a[1] - z[1]); });
+      return line.map(function (p) { return idx(p[0], p[1]); });
+    }
+  }
+  return null;
+}
+
+/* ══════════════════════════════════════════
+   IA — évaluation par menaces
+══════════════════════════════════════════ */
+/* Un alignement vaut d'autant plus qu'il est long ET ouvert aux deux bouts :
+   un « quatre » bloqué d'un côté se pare, un « quatre » ouvert ne se pare
+   plus. C'est ce qui sépare une IA qui joue de une qui aligne au hasard. */
+function runScore(len, openEnds) {
+  if (len >= WIN_LENGTH) return 10000000;
+  if (len === 4) return openEnds === 2 ? 1000000 : (openEnds === 1 ? 15000 : 0);
+  if (len === 3) return openEnds === 2 ? 12000 : (openEnds === 1 ? 1200 : 0);
+  if (len === 2) return openEnds === 2 ? 600 : (openEnds === 1 ? 80 : 0);
+  if (len === 1) return openEnds === 2 ? 40 : (openEnds === 1 ? 8 : 0);
+  return 0;
+}
+
+/* Valeur d'une case pour un joueur : on y pose virtuellement un pion et on
+   mesure les quatre directions. */
+function scoreCell(b, r, c, slot) {
+  if (b[idx(r, c)] !== 0) return -1;
+  var dirs = [[0, 1], [1, 0], [1, 1], [1, -1]];
+  var total = 0;
+  for (var d = 0; d < dirs.length; d++) {
+    var dr = dirs[d][0], dc = dirs[d][1];
+    var len = 1, openEnds = 0;
+    for (var s = 0; s < 2; s++) {
+      var sign = s === 0 ? 1 : -1;
+      var rr = r + dr * sign, cc = c + dc * sign;
+      while (inBounds(rr, cc) && b[idx(rr, cc)] === slot) {
+        len++; rr += dr * sign; cc += dc * sign;
+      }
+      if (inBounds(rr, cc) && b[idx(rr, cc)] === 0) openEnds++;
+    }
+    total += runScore(len, openEnds);
+  }
+  return total;
+}
+
+/* On ne considère que les cases proches d'un pion déjà posé : ailleurs, un
+   coup ne crée ni menace ni parade, et balayer 225 cases coûterait cher. */
+function candidateCells(b) {
+  var seen = {}, out = [], radius = 2, any = false;
+  for (var r = 0; r < SIZE; r++) {
+    for (var c = 0; c < SIZE; c++) {
+      if (b[idx(r, c)] === 0) continue;
+      any = true;
+      for (var dr = -radius; dr <= radius; dr++) {
+        for (var dc = -radius; dc <= radius; dc++) {
+          var rr = r + dr, cc = c + dc;
+          if (!inBounds(rr, cc) || b[idx(rr, cc)] !== 0) continue;
+          var k = idx(rr, cc);
+          if (seen[k]) continue;
+          seen[k] = true;
+          out.push({ r: rr, c: cc });
+        }
+      }
+    }
+  }
+  if (!any) out.push({ r: Math.floor(SIZE / 2), c: Math.floor(SIZE / 2) });
+  return out;
+}
+
+function aiChooseMove() {
+  var cells = candidateCells(board);
+  if (!cells.length) return null;
+
+  /* Priorité absolue : gagner tout de suite, sinon empêcher la défaite
+     immédiate. Aucune heuristique ne doit passer devant ces deux cas. */
+  for (var i = 0; i < cells.length; i++) {
+    board[idx(cells[i].r, cells[i].c)] = AI;
+    var w = findWinLine(board, cells[i].r, cells[i].c);
+    board[idx(cells[i].r, cells[i].c)] = 0;
+    if (w) return cells[i];
+  }
+  for (var j = 0; j < cells.length; j++) {
+    board[idx(cells[j].r, cells[j].c)] = HUMAN;
+    var wh = findWinLine(board, cells[j].r, cells[j].c);
+    board[idx(cells[j].r, cells[j].c)] = 0;
+    if (wh) return cells[j];
+  }
+
+  /* Poids de la défense selon le niveau : une IA facile voit surtout son
+     propre jeu, une IA difficile surveille aussi celui d'en face. */
+  var defense = difficulty === 1 ? 0.45 : (difficulty === 2 ? 0.85 : 1.05);
+  var noise = difficulty === 1 ? 0.55 : (difficulty === 2 ? 0.18 : 0.03);
+
+  var best = null, bestScore = -Infinity;
+  for (var k = 0; k < cells.length; k++) {
+    var cell = cells[k];
+    var attack = scoreCell(board, cell.r, cell.c, AI);
+    var block = scoreCell(board, cell.r, cell.c, HUMAN);
+    var score = attack + block * defense;
+    score *= 1 + (Math.random() - 0.5) * noise;
+    if (score > bestScore) { bestScore = score; best = cell; }
+  }
+  return best;
+}
+
+/* ══════════════════════════════════════════
+   RENDU — feuille de cahier quadrillée
+══════════════════════════════════════════ */
+var canvas = document.getElementById('board');
+var ctx = canvas.getContext('2d');
+var CELL = 24, ORIGIN = 8, DPR = 1;
+
+function calcLayout() {
+  var wrap = document.getElementById('canvasWrap');
+  var available = Math.min(wrap.clientWidth - 12, wrap.clientHeight - 12);
+  if (!(available > 0)) available = 320;
+  CELL = Math.max(14, Math.floor(available / (SIZE + 0.6)));
+  ORIGIN = Math.round(CELL * 0.3);
+  var pixel = CELL * SIZE + ORIGIN * 2;
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = pixel * DPR;
+  canvas.height = pixel * DPR;
+  canvas.style.width = pixel + 'px';
+  canvas.style.height = pixel + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+
+function wobble(seed, n) {
+  var x = Math.sin(seed * 12.9898 + n * 78.233) * 43758.5453;
+  return (x - Math.floor(x)) - 0.5;
+}
+
+function drawPaper() {
+  var pixel = CELL * SIZE + ORIGIN * 2;
+  ctx.fillStyle = '#fbfbf4';
+  ctx.fillRect(0, 0, pixel, pixel);
+  ctx.strokeStyle = '#cfe0f0';
+  ctx.lineWidth = 1;
+  var minor = CELL / 2;
+  ctx.beginPath();
+  for (var m = 0; m * minor <= pixel; m++) {
+    var p = Math.round(m * minor) + 0.5;
+    ctx.moveTo(p, 0); ctx.lineTo(p, pixel);
+    ctx.moveTo(0, p); ctx.lineTo(pixel, p);
+  }
+  ctx.stroke();
+  ctx.strokeStyle = '#7ea9d0';
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  for (var i = 0; i <= SIZE; i++) {
+    var v = Math.round(ORIGIN + i * CELL) + 0.5;
+    ctx.moveTo(v, ORIGIN); ctx.lineTo(v, ORIGIN + SIZE * CELL);
+    ctx.moveTo(ORIGIN, v); ctx.lineTo(ORIGIN + SIZE * CELL, v);
+  }
+  ctx.stroke();
+}
+
+function drawCross(cx, cy, size, seed) {
+  var h = size / 2;
+  ctx.strokeStyle = '#1f2937';
+  ctx.lineWidth = Math.max(2, size * 0.13);
+  ctx.lineCap = 'round';
+  var j = size * 0.11;
+  ctx.beginPath();
+  ctx.moveTo(cx - h + wobble(seed, 1) * j, cy - h + wobble(seed, 2) * j);
+  ctx.quadraticCurveTo(cx + wobble(seed, 3) * j, cy + wobble(seed, 4) * j,
+                       cx + h + wobble(seed, 5) * j, cy + h + wobble(seed, 6) * j);
+  ctx.moveTo(cx + h + wobble(seed, 7) * j, cy - h + wobble(seed, 8) * j);
+  ctx.quadraticCurveTo(cx + wobble(seed, 9) * j, cy + wobble(seed, 10) * j,
+                       cx - h + wobble(seed, 11) * j, cy + h + wobble(seed, 12) * j);
+  ctx.stroke();
+}
+
+function drawCircle(cx, cy, size, seed) {
+  ctx.strokeStyle = '#dc2626';
+  ctx.lineWidth = Math.max(2, size * 0.13);
+  ctx.lineCap = 'round';
+  var rx = size * 0.5, ry = size * 0.5;
+  ctx.beginPath();
+  var steps = 22;
+  for (var s = 0; s <= steps; s++) {
+    var a = (s / steps) * Math.PI * 2.08 - 0.5;
+    var w = 1 + wobble(seed, s) * 0.09;
+    var x = cx + Math.cos(a) * rx * w;
+    var y = cy + Math.sin(a) * ry * w;
+    if (s === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function cellCenter(r, c) {
+  return { x: ORIGIN + c * CELL + CELL / 2, y: ORIGIN + r * CELL + CELL / 2 };
+}
+
+function draw() {
+  if (!board) return;
+  drawPaper();
+  var stone = CELL * 0.62;
+  for (var r = 0; r < SIZE; r++) {
+    for (var c = 0; c < SIZE; c++) {
+      var v = board[idx(r, c)];
+      if (!v) continue;
+      var p = cellCenter(r, c);
+      if (v === HUMAN) drawCross(p.x, p.y, stone, idx(r, c) + 1);
+      else drawCircle(p.x, p.y, stone, idx(r, c) + 1);
+    }
+  }
+  if (lastMove && inBounds(lastMove.r, lastMove.c) && !winLine) {
+    var lp = cellCenter(lastMove.r, lastMove.c);
+    ctx.strokeStyle = 'rgba(37,99,235,0.55)';
+    ctx.lineWidth = 1.6;
+    ctx.strokeRect(lp.x - CELL / 2 + 2, lp.y - CELL / 2 + 2, CELL - 4, CELL - 4);
+  }
+  if (winLine && winLine.length >= 2) {
+    var first = winLine[0], last = winLine[winLine.length - 1];
+    var a = cellCenter(Math.floor(first / SIZE), first % SIZE);
+    var b = cellCenter(Math.floor(last / SIZE), last % SIZE);
+    ctx.strokeStyle = 'rgba(20,20,30,0.85)';
+    ctx.lineWidth = Math.max(3, CELL * 0.1);
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+}
+
+/* ══════════════════════════════════════════
+   DÉROULEMENT
+══════════════════════════════════════════ */
+function updUI() {
+  document.getElementById('profile-me').classList.toggle('active', currentSlot === HUMAN && !gameOver);
+  document.getElementById('profile-op').classList.toggle('active', currentSlot === AI && !gameOver);
+  var status = document.getElementById('statusTxt');
+  if (gameOver) status.textContent = 'TERMINÉ';
+  else if (thinking) status.textContent = 'RÉFLEXION…';
+  else status.textContent = currentSlot === HUMAN ? 'À VOUS' : 'ORDINATEUR';
+}
+
+function boardFull() {
+  for (var i = 0; i < CELLS; i++) if (board[i] === 0) return false;
+  return true;
+}
+
+function place(r, c, slot) {
+  board[idx(r, c)] = slot;
+  lastMove = { r: r, c: c };
+  var line = findWinLine(board, r, c);
+  if (line) {
+    winLine = line;
+    draw();
+    endGame(slot);
+    return true;
+  }
+  if (boardFull()) {
+    draw();
+    endGame(0);
+    return true;
+  }
+  currentSlot = slot === HUMAN ? AI : HUMAN;
+  draw();
+  updUI();
+  return false;
+}
+
+function aiPlay() {
+  if (gameOver) return;
+  thinking = true;
+  updUI();
+  /* Petit délai : un coup instantané donne l'impression d'un bug, pas d'un
+     adversaire. */
+  setTimeout(function () {
+    if (gameOver) { thinking = false; return; }
+    var move = aiChooseMove();
+    thinking = false;
+    if (!move) { updUI(); return; }
+    place(move.r, move.c, AI);
+  }, 260 + Math.random() * 320);
+}
+
+function pointerCell(evt) {
+  var rect = canvas.getBoundingClientRect();
+  var src = evt.changedTouches ? evt.changedTouches[0] : evt;
+  var x = src.clientX - rect.left - ORIGIN;
+  var y = src.clientY - rect.top - ORIGIN;
+  var c = Math.floor(x / CELL), r = Math.floor(y / CELL);
+  if (!inBounds(r, c)) return null;
+  return { r: r, c: c };
+}
+
+function humanMove(evt) {
+  if (evt && evt.cancelable) evt.preventDefault();
+  if (gameOver || thinking || currentSlot !== HUMAN) return;
+  var cell = pointerCell(evt);
+  if (!cell) return;
+  if (board[idx(cell.r, cell.c)] !== 0) return;
+  var finished = place(cell.r, cell.c, HUMAN);
+  if (!finished) aiPlay();
+}
+
+canvas.addEventListener('click', humanMove);
+canvas.addEventListener('touchend', humanMove, { passive: false });
+
+function endGame(winnerSlot) {
+  gameOver = true;
+  updUI();
+  var title, message, modalClass;
+  if (winnerSlot === 0) {
+    title = 'Match nul'; modalClass = '';
+    message = 'La grille est pleine, personne n’a aligné cinq pions.';
+  } else if (winnerSlot === HUMAN) {
+    title = 'Victoire !'; modalClass = 'win-modal';
+    message = 'Cinq pions alignés. Bien joué !';
+    createConfetti();
+  } else {
+    title = 'Défaite'; modalClass = 'lose-modal';
+    message = 'L’ordinateur a aligné cinq pions.';
+  }
+  document.getElementById('modalTitle').textContent = title;
+  document.getElementById('finalMessage').textContent = message;
+  document.getElementById('modalContent').className = 'modal ' + modalClass;
+  setTimeout(function () { document.getElementById('gameOverModal').classList.add('show'); }, 700);
+}
+
+function startNewGame() {
+  initGame();
+  document.getElementById('gameOverModal').classList.remove('show');
+  calcLayout();
+  draw();
+  updUI();
+}
+
+/* ══════════════════════════════════════════
+   COMMANDES
+══════════════════════════════════════════ */
+function setDifficulty(level) {
+  difficulty = level;
+  ['lvl1', 'lvl2', 'lvl3'].forEach(function (id, i) {
+    document.getElementById(id).classList.toggle('active', i + 1 === level);
+  });
+}
+document.getElementById('lvl1').addEventListener('click', function () { setDifficulty(1); });
+document.getElementById('lvl2').addEventListener('click', function () { setDifficulty(2); });
+document.getElementById('lvl3').addEventListener('click', function () { setDifficulty(3); });
+document.getElementById('newBtn').addEventListener('click', startNewGame);
+document.getElementById('againBtn').addEventListener('click', startNewGame);
+document.getElementById('closeBtn').addEventListener('click', function () {
+  try { window.parent.postMessage({ type: 'close_game' }, '*'); } catch (e) {}
+  document.getElementById('gameOverModal').classList.remove('show');
+});
+
+/* ══════════════════════════════════════════
+   TOAST & CONFETTI
+══════════════════════════════════════════ */
+function showToast(emoji, title, sub, delay, cb) {
+  var el = document.getElementById('toast');
+  document.getElementById('toast-emoji').textContent = emoji;
+  document.getElementById('toast-title').textContent = title;
+  document.getElementById('toast-sub').textContent = sub;
+  el.style.cssText = 'display:block;opacity:0;transform:translate(-50%,-50%) scale(0.8);transition:none;';
+  setTimeout(function () {
+    el.style.transition = 'all 0.35s cubic-bezier(0.175,0.885,0.32,1.275)';
+    el.style.opacity = '1'; el.style.transform = 'translate(-50%,-50%) scale(1)';
+  }, 20);
+  setTimeout(function () {
+    el.style.opacity = '0'; el.style.transform = 'translate(-50%,-50%) scale(0.85)';
+    setTimeout(function () { el.style.display = 'none'; if (cb) cb(); }, 300);
+  }, delay);
+}
+
+var confettiCanvas = document.getElementById('confetti-canvas');
+var confettiCtx = confettiCanvas.getContext('2d');
+confettiCanvas.width = window.innerWidth; confettiCanvas.height = window.innerHeight;
+var confettiParticles = [], confettiActive = false;
+function createConfetti() {
+  var colors = ['#fbbf24', '#f59e0b', '#e2e8f0', '#ffffff', '#818cf8', '#c084fc'], shapes = ['circle', 'square', 'triangle'];
+  for (var i = 0; i < 180; i++) confettiParticles.push({ x: confettiCanvas.width / 2, y: confettiCanvas.height / 2, vx: (Math.random() - .5) * 22, vy: (Math.random() - .5) * 22 - 6, color: colors[Math.floor(Math.random() * colors.length)], shape: shapes[Math.floor(Math.random() * shapes.length)], size: Math.random() * 10 + 5, rotation: Math.random() * 360, rotationSpeed: (Math.random() - .5) * 12, gravity: 0.32, drag: 0.985, life: 1.0 });
+  confettiActive = true;
+}
+function updateConfetti() {
+  if (!confettiActive) return;
+  confettiCtx.clearRect(0, 0, confettiCanvas.width, confettiCanvas.height);
+  var anyAlive = false;
+  for (var i = confettiParticles.length - 1; i >= 0; i--) {
+    var p = confettiParticles[i];
+    p.x += p.vx; p.y += p.vy; p.vy += p.gravity; p.vx *= p.drag; p.vy *= p.drag; p.rotation += p.rotationSpeed; p.life -= 0.004;
+    if (p.life > 0 && p.y < confettiCanvas.height + 60) {
+      anyAlive = true;
+      confettiCtx.save();
+      confettiCtx.translate(p.x, p.y); confettiCtx.rotate(p.rotation * Math.PI / 180);
+      confettiCtx.globalAlpha = p.life; confettiCtx.fillStyle = p.color;
+      if (p.shape === 'circle') { confettiCtx.beginPath(); confettiCtx.arc(0, 0, p.size / 2, 0, Math.PI * 2); confettiCtx.fill(); }
+      else if (p.shape === 'square') { confettiCtx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size); }
+      else { confettiCtx.beginPath(); confettiCtx.moveTo(0, -p.size / 2); confettiCtx.lineTo(p.size / 2, p.size / 2); confettiCtx.lineTo(-p.size / 2, p.size / 2); confettiCtx.closePath(); confettiCtx.fill(); }
+      confettiCtx.restore();
+    }
+  }
+  if (!anyAlive) { confettiActive = false; confettiParticles = []; confettiCtx.clearRect(0, 0, confettiCanvas.width, confettiCanvas.height); }
+}
+function renderLoop() { requestAnimationFrame(renderLoop); updateConfetti(); }
+renderLoop();
+
+/* ══════════════════════════════════════════
+   INIT
+══════════════════════════════════════════ */
+initGame();
+calcLayout();
+draw();
+updUI();
+showToast('✏️', 'Morpion à cinq', 'Alignez CINQ pions.\nVous jouez les croix.', 2200);
+
+window.addEventListener('resize', function () {
+  calcLayout();
+  draw();
+  confettiCanvas.width = window.innerWidth;
+  confettiCanvas.height = window.innerHeight;
+});
+</script>
+</body>
+</html>

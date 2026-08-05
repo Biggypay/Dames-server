@@ -5,7 +5,9 @@ const files = [
   'public/quoridor-online.html',
   'public/ttt_game.html',
   'public/chifoumi-online.html',
-  'public/penalty-online.html'
+  'public/penalty-online.html',
+  'public/gomoku-online.html',
+  'public/gomoku_ai.html'
 ];
 
 for (const relativePath of files) {

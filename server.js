@@ -145,6 +145,7 @@ const penaltyRooms  = new Map();
 const chifoumiRooms = new Map();
 const echecsRooms   = new Map();
 const ludoRooms      = new Map();
+const gomokuRooms   = new Map();
 
 // ══════════════════════════════════════════════════════════
 //  SÉCURITÉ — limiteur de débit, validation, anti-fraude
@@ -237,8 +238,8 @@ function bindDatabaseGame(room, gameId) {
   return true;
 }
 
-const DB_GAME_TYPES = { dames: 'checkers', tictactoe: 'tictactoe', quoridor: 'quoridor', penalty: 'penalty_shootout', chifoumi: 'rock_paper_scissors', echecs: 'chess', ludo: 'ludo' };
-const ROOM_MAPS = { dames: damesRooms, tictactoe: tttRooms, quoridor: quoriRooms, penalty: penaltyRooms, chifoumi: chifoumiRooms, echecs: echecsRooms, ludo: ludoRooms };
+const DB_GAME_TYPES = { dames: 'checkers', tictactoe: 'tictactoe', quoridor: 'quoridor', penalty: 'penalty_shootout', chifoumi: 'rock_paper_scissors', echecs: 'chess', ludo: 'ludo', gomoku: 'gomoku' };
+const ROOM_MAPS = { dames: damesRooms, tictactoe: tttRooms, quoridor: quoriRooms, penalty: penaltyRooms, chifoumi: chifoumiRooms, echecs: echecsRooms, ludo: ludoRooms, gomoku: gomokuRooms };
 // Room snapshots are persisted after actual state changes. The periodic loop is
 // only a crash-safety fallback and the fingerprint below makes unchanged rooms
 // a no-op. Persisting every room every three seconds generated unnecessary WAL
@@ -430,6 +431,12 @@ function hydratePersistedRoom(record) {
     room.gameState = room.gameState && typeof room.gameState === 'object' ? room.gameState : quoriInitialState();
     room.stateVersion = Math.max(0, Number(room.stateVersion ?? room.gameState.stateVersion) || 0);
     room.gameState.currentSlot = validPlayerSlot(room.currentSlot) ? room.currentSlot : (validPlayerSlot(room.gameState.currentSlot) ? room.gameState.currentSlot : 1);
+    room.currentSlot = room.gameState.currentSlot;
+  }
+  if (record.game_type === 'gomoku') {
+    room.gameState = gomokuSanitizeState(room.gameState);
+    room.stateVersion = Math.max(0, Number(room.stateVersion) || 0);
+    room.gameState.currentSlot = validPlayerSlot(room.currentSlot) ? room.currentSlot : room.gameState.currentSlot;
     room.currentSlot = room.gameState.currentSlot;
   }
   if (record.game_type === 'tictactoe') {
@@ -797,6 +804,20 @@ function spectatorRoomSnapshot(gameName, room) {
     };
   }
   if (gameName === 'ludo') return { ...common, state: ludoPublicState(room) };
+  if (gameName === 'gomoku') {
+    return {
+      ...common,
+      state: {
+        gameState: room.gameState || null,
+        currentSlot: room.currentSlot,
+        turnPlayer: room.turnPlayer,
+        turnStartTime: room.turnStartTime,
+        graceStartTime: room.graceStartTime,
+        turnDuration: TURN_DURATION,
+        graceDuration: GRACE_DURATION
+      }
+    };
+  }
   return null;
 }
 
@@ -1222,6 +1243,68 @@ function emitToUser(userId, event, data) {
     if (uid === userId) io.to(sid).emit(event, data);
 }
 
+// ══════════════════════════════════════════════════════════
+//  MORPION À CINQ (GOMOKU) — moteur autoritatif
+// ══════════════════════════════════════════════════════════
+// Plateau 15x15, une seule partie (jamais de manches), victoire au premier
+// alignement de CINQ pions ou plus. Slot 1 pose les croix, slot 2 les ronds.
+// Le serveur est seul juge : le client ne fait que proposer une case vide.
+const GOMOKU_SIZE = 15;
+const GOMOKU_WIN_LENGTH = 5;
+const GOMOKU_CELLS = GOMOKU_SIZE * GOMOKU_SIZE;
+
+function gomokuIndex(r, c) { return r * GOMOKU_SIZE + c; }
+
+function gomokuInBounds(r, c) {
+  return Number.isInteger(r) && Number.isInteger(c) &&
+         r >= 0 && r < GOMOKU_SIZE && c >= 0 && c < GOMOKU_SIZE;
+}
+
+function gomokuInitialState() {
+  return { board: Array(GOMOKU_CELLS).fill(0), moves: 0, last: null, currentSlot: 1, winLine: null };
+}
+
+// Alignement passant par le dernier coup joué. Renvoie les index des cases
+// gagnantes (>= 5, ordonnés pour que le client trace un trait continu) ou null.
+function gomokuWinLine(board, r, c) {
+  const slot = board[gomokuIndex(r, c)];
+  if (!slot) return null;
+  for (const [dr, dc] of [[0, 1], [1, 0], [1, 1], [1, -1]]) {
+    const line = [[r, c]];
+    for (const sign of [1, -1]) {
+      let rr = r + dr * sign, cc = c + dc * sign;
+      while (gomokuInBounds(rr, cc) && board[gomokuIndex(rr, cc)] === slot) {
+        line.push([rr, cc]);
+        rr += dr * sign; cc += dc * sign;
+      }
+    }
+    if (line.length >= GOMOKU_WIN_LENGTH) {
+      line.sort((a, b) => (a[0] - b[0]) || (a[1] - b[1]));
+      return line.map(([lr, lc]) => gomokuIndex(lr, lc));
+    }
+  }
+  return null;
+}
+
+// Un état venu de Supabase (redémarrage Render) n'est jamais pris au mot :
+// tout plateau douteux repart d'une grille vide plutôt que de laisser une
+// partie misée reprendre sur des données corrompues.
+function gomokuSanitizeState(raw) {
+  const state = raw && typeof raw === 'object' ? raw : {};
+  const source = Array.isArray(state.board) ? state.board : [];
+  if (source.length !== GOMOKU_CELLS) return gomokuInitialState();
+  const board = source.map(cell => (cell === 1 || cell === 2 ? cell : 0));
+  const moves = board.reduce((total, cell) => total + (cell ? 1 : 0), 0);
+  const last = gomokuInBounds(state.last?.r, state.last?.c) ? { r: state.last.r, c: state.last.c } : null;
+  return {
+    board,
+    moves,
+    last,
+    currentSlot: validPlayerSlot(state.currentSlot) ? state.currentSlot : 1,
+    winLine: Array.isArray(state.winLine) ? state.winLine.filter(i => Number.isInteger(i) && i >= 0 && i < GOMOKU_CELLS) : null
+  };
+}
+
 function calcFinancial(betAmount) {
   const bet      = betAmount || 0;
   const totalPot = bet * 2;
@@ -1481,6 +1564,66 @@ function startQuoriTurnTimer(qroom, roomId, playerSlot) {
       if (qroom.status !== 'playing' || qroom.currentSlot !== playerSlot || qroom.turnPlayer !== playerSlot) return;
       const winnerSlot = playerSlot === 1 ? 2 : 1;
       notifyQuoriRoomOver(qroom, roomId, winnerSlot, 'timeout');
+    }, GRACE_DURATION);
+  }, TURN_DURATION);
+}
+
+// ── Morpion à cinq (30s + 60s Grâce, même règle que Quoridor) ──
+function clearGomokuTurnTimers(groom) {
+  if (groom.turnTimer)  { clearTimeout(groom.turnTimer);  groom.turnTimer  = null; }
+  if (groom.graceTimer) { clearTimeout(groom.graceTimer); groom.graceTimer = null; }
+  groom.turnStartTime = null; groom.graceStartTime = null; groom.turnPlayer = null;
+}
+
+function gomokuSnapshot(groom) {
+  const state = groom.gameState || gomokuInitialState();
+  const gameState = {
+    board: Array.isArray(state.board) ? [...state.board] : Array(GOMOKU_CELLS).fill(0),
+    moves: Math.max(0, Number(state.moves) || 0),
+    last: state.last && gomokuInBounds(state.last.r, state.last.c) ? { r: state.last.r, c: state.last.c } : null,
+    winLine: Array.isArray(state.winLine) ? [...state.winLine] : null,
+    currentSlot: validPlayerSlot(groom.currentSlot) ? groom.currentSlot : 1
+  };
+  const snap = {
+    room: groom.id,
+    version: Math.max(0, Number(groom.stateVersion) || 0),
+    gameState,
+    currentSlot: gameState.currentSlot,
+    status: groom.status,
+    serverTime: Date.now(),
+    turnPlayer: groom.turnPlayer
+  };
+  if (groom.status === 'playing' && groom.turnPlayer !== null) {
+    if (groom.graceStartTime) { snap.graceStartTime = groom.graceStartTime; snap.graceDuration = GRACE_DURATION; }
+    else if (groom.turnStartTime) { snap.turnStartTime = groom.turnStartTime; snap.turnDuration = TURN_DURATION; }
+  }
+  return snap;
+}
+
+const _gomokuSyncLoop = setInterval(() => {
+  for (const [roomId, groom] of gomokuRooms) {
+    if (groom.status !== 'playing') continue;
+    io.to(roomId).emit('gomoku_state_sync', gomokuSnapshot(groom));
+  }
+}, DAMES_SYNC_INTERVAL);
+if (_gomokuSyncLoop.unref) _gomokuSyncLoop.unref();
+
+function startGomokuTurnTimer(groom, roomId, playerSlot) {
+  clearGomokuTurnTimers(groom);
+  if (groom.status !== 'playing' || groom.currentSlot !== playerSlot) return;
+  const now = Date.now();
+  groom.turnPlayer = playerSlot; groom.turnStartTime = now; groom.graceStartTime = null;
+  io.to(roomId).emit('gomoku_turn_start', { player: playerSlot, startTime: now, duration: TURN_DURATION });
+  groom.turnTimer = setTimeout(() => {
+    groom.turnTimer = null;
+    if (groom.status !== 'playing' || groom.currentSlot !== playerSlot || groom.turnPlayer !== playerSlot) return;
+    const graceNow = Date.now();
+    groom.graceStartTime = graceNow;
+    io.to(roomId).emit('gomoku_turn_warning', { player: playerSlot, startTime: graceNow, duration: GRACE_DURATION });
+    groom.graceTimer = setTimeout(() => {
+      groom.graceTimer = null;
+      if (groom.status !== 'playing' || groom.currentSlot !== playerSlot || groom.turnPlayer !== playerSlot) return;
+      notifyGomokuRoomOver(groom, roomId, playerSlot === 1 ? 2 : 1, 'timeout');
     }, GRACE_DURATION);
   }, TURN_DURATION);
 }
@@ -1915,6 +2058,7 @@ function clearTimersForGame(gameName, room) {
   else if (gameName === 'chifoumi') clearChifoumiTurnTimers(room);
   else if (gameName === 'echecs') clearEchecsTurnTimers(room);
   else if (gameName === 'ludo') clearLudoTurnTimers(room);
+  else if (gameName === 'gomoku') clearGomokuTurnTimers(room);
 }
 
 function finishBothDisconnected(room, gameName, roomId) {
@@ -2058,6 +2202,29 @@ function notifyQuoriRoomOver(qroom, roomId, winnerSlot, reason = 'normal') {
   io.to(roomId).emit('game:result', { postMessage: base });
 }
 
+function notifyGomokuRoomOver(groom, roomId, winnerSlot, reason = 'normal') {
+  if (groom.status === 'finished') return;
+  groom.status = 'finished'; clearGomokuTurnTimers(groom);
+  if (groom.disconnectTimer) { clearTimeout(groom.disconnectTimer); groom.disconnectTimer = null; }
+  const { bet, totalPot, commission, netGain } = calcFinancial(groom.betAmount);
+  const p1 = groom.players[1], p2 = groom.players[2];
+  void settleRoomInSupabase(groom, 'gomoku', winnerSlot, reason);
+
+  if (winnerSlot === 0) {
+    const base = { type: 'game_over', game: 'gomoku', room: roomId, winner: 'draw', winnerSlot: 0, p1Id: p1?.supabaseId, p2Id: p2?.supabaseId, betAmount: bet, totalPot, commission: 0, netGain: bet, currency: groom.currency || 'HTG', reason: 'draw' };
+    if (p1?.socketId) { io.to(p1.socketId).emit('game:over', { ...base, result: 'draw', myResult: 0 }); io.to(p1.socketId).emit('game:result', { postMessage: { ...base, result: 'draw' } }); }
+    if (p2?.socketId) { io.to(p2.socketId).emit('game:over', { ...base, result: 'draw', myResult: 0 }); io.to(p2.socketId).emit('game:result', { postMessage: { ...base, result: 'draw' } }); }
+    io.to(roomId).emit('game:result', { postMessage: base });
+    return;
+  }
+
+  const winP = winnerSlot === 1 ? p1 : p2, losP = winnerSlot === 1 ? p2 : p1;
+  const base = { type: 'game_over', game: 'gomoku', room: roomId, winner: winnerSlot === 1 ? 'player1' : 'player2', winnerSlot, winnerSupabaseId: winP?.supabaseId, loserSupabaseId: losP?.supabaseId, p1Id: p1?.supabaseId, p2Id: p2?.supabaseId, betAmount: bet, totalPot, commission, netGain, currency: groom.currency || 'HTG', reason };
+  if (winP?.socketId) { io.to(winP.socketId).emit('game:over', { ...base, result: 'win',  myResult: +netGain }); io.to(winP.socketId).emit('game:result', { postMessage: { ...base, result: 'win',  myResult: +netGain } }); }
+  if (losP?.socketId) { io.to(losP.socketId).emit('game:over', { ...base, result: 'loss', myResult: -bet });     io.to(losP.socketId).emit('game:result', { postMessage: { ...base, result: 'loss', myResult: -bet } }); }
+  io.to(roomId).emit('game:result', { postMessage: base });
+}
+
 function notifyPenaltyRoomOver(proom, roomId, winnerSlot, reason = 'normal') {
   if (proom.status === 'finished') return;
   proom.status = 'finished'; clearPenaltyTurnTimers(proom);
@@ -2174,7 +2341,8 @@ function getRoomFinisher(gameName) {
     penalty: notifyPenaltyRoomOver,
     chifoumi: notifyChifoumiRoomOver,
     echecs: notifyEchecsRoomOver,
-    ludo: notifyLudoRoomOver
+    ludo: notifyLudoRoomOver,
+    gomoku: notifyGomokuRoomOver
   }[gameName] || null;
 }
 
@@ -2398,6 +2566,9 @@ app.get(['/penalty', '/penalty.html', '/penalty_shootout.html', '/penalty-online
 app.get(['/penalty-ai', '/penalty_ai.html', '/penalty-solo', '/penalty-entrainement', '/penalty-ia'], serveSmart(['penalty_ai.html', 'penalty-ai.html'], true));
 app.get(['/echecs', '/echecs.html', '/echecs-online.html', '/echecs_multi.html', '/chess', '/chess.html', '/chess-online.html'], serveSmart(['echecs_multi.html', 'echecs.html', 'echecs-online.html']));
 app.get(['/echecs-ai', '/echecs_ai.html', '/echecs-solo', '/echecs-entrainement', '/echecs-ia', '/chess-ai', '/chess_ai.html', '/chess-solo', '/chess-ia'], serveSmart(['echecs_ai.html', 'echecs-ai.html']));
+
+app.get(['/gomoku', '/gomoku.html', '/gomoku-online.html', '/gomoku_multi.html', '/morpion5', '/morpion-cinq'], serveSmart(['gomoku-online.html', 'gomoku_multi.html', 'gomoku.html']));
+app.get(['/gomoku-ai', '/gomoku_ai.html', '/gomoku-solo', '/gomoku-entrainement', '/gomoku-ia', '/morpion5-ai', '/morpion5-ia'], serveSmart(['gomoku_ai.html', 'gomoku-ai.html']));
 
 // Moteur d'échecs partagé : servi depuis la même origine (pages 3D + Worker IA).
 app.get(['/echecs-engine.js', '/chess-engine.js'], (req, res) => {
@@ -3237,6 +3408,125 @@ io.on('connection', (socket) => {
   });
 
   // ══════════════════════════════════════════════════════
+  //  MORPION À CINQ (GOMOKU) MULTIJOUEUR
+  // ══════════════════════════════════════════════════════
+  socket.on('gomoku_join', async ({ room, player, supabaseId, name, bet, currency, gameId }) => {
+    if (!validRoom(room) || !validPlayerSlot(player)) return rejectSocket(socket, 'Room ou joueur invalide.');
+    const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'gomoku', player, bet, room);
+    if (!databaseCheck.ok) return rejectSocket(socket, databaseCheck.message);
+    let groom = gomokuRooms.get(room);
+    if (!groom) {
+      groom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, gameState: gomokuInitialState(), currentSlot: 1, stateVersion: 0, turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null, turnPlayer: null };
+      gomokuRooms.set(room, groom);
+    }
+    if (!bindDatabaseGame(groom, gameId)) return rejectSocket(socket, 'Cette room est déjà liée à une autre partie.');
+    if (!joinRoomAsAuthenticatedPlayer(socket, groom, room, player, supabaseId, name)) return;
+    if (bet && !groom.betAmount) groom.betAmount = bet;
+    persistRoomSoon('gomoku', groom);
+
+    if (groom.status === 'playing' || groom.status === 'paused') {
+      const p1 = groom.players[1], p2 = groom.players[2];
+      const bothBack = p1?.connected && p2?.connected;
+      if (bothBack && groom.disconnectTimer) {
+        clearTimeout(groom.disconnectTimer); groom.disconnectTimer = null; groom.reconnectDeadline = null; groom.status = 'playing';
+        startGomokuTurnTimer(groom, room, groom.pausedTurnPlayer || groom.currentSlot || 1);
+        io.to(room).emit('gomoku_game_resumed', { message: 'Les deux joueurs sont de retour. La partie reprend !' });
+      } else if (groom.disconnectTimer) {
+        setTimeout(() => socket.emit('game:reconnect_deadline', { game: 'gomoku', serverTime: Date.now(), reconnectDeadline: groom.reconnectDeadline }), 0);
+      }
+      else if (!bothBack) {
+        groom.status = 'playing';
+        const otherSlot = player === 1 ? 2 : 1;
+        if (groom.players[otherSlot] && !groom.players[otherSlot].connected) {
+          groom.disconnectTimer = setTimeout(() => {
+            if (groom.status === 'finished') return;
+            const p1b = groom.players[1]?.connected === true, p2b = groom.players[2]?.connected === true;
+            groom.disconnectTimer = null;
+            if (!p1b && !p2b) {
+              finishBothDisconnected(groom, 'gomoku', room);
+            } else { const ws = p1b ? 1 : 2; groom.status = 'playing'; notifyGomokuRoomOver(groom, room, ws, 'forfeit'); }
+          }, 60000);
+        }
+      }
+      socket.to(room).emit('gomoku_player_status', { slot: player, connected: true, name });
+      socket.to(room).emit('player:reconnected', { message: `${name} est de retour !` });
+      const opponentName = player === 1 ? (groom.players[2]?.name || 'Adversaire') : (groom.players[1]?.name || 'Adversaire');
+      socket.emit('gomoku_start', { room, yourSlot: player, opponentName, bet: groom.betAmount, currency: groom.currency, reconnected: true, paused: groom.status === 'paused', gameState: groom.gameState || null, stateVersion: groom.stateVersion || 0, currentSlot: groom.currentSlot, turnPlayer: groom.turnPlayer, turnStartTime: groom.turnStartTime, graceStartTime: groom.graceStartTime });
+      if (groom.turnPlayer !== null && groom.status === 'playing') {
+        const now = Date.now();
+        if (groom.graceStartTime) socket.emit('gomoku_turn_sync', { serverTime: now, turnPlayer: groom.turnPlayer, graceStartTime: groom.graceStartTime, duration: GRACE_DURATION });
+        else if (groom.turnStartTime) socket.emit('gomoku_turn_sync', { serverTime: now, turnPlayer: groom.turnPlayer, turnStartTime: groom.turnStartTime, duration: TURN_DURATION });
+      }
+      return;
+    }
+
+    if (groom.players[1] && groom.players[2] && groom.status === 'waiting') {
+      groom.status = 'playing';
+      groom.startedAt = Date.now();
+      persistRoomSoon('gomoku', groom);
+      const p1 = groom.players[1], p2 = groom.players[2];
+      io.to(p1.socketId).emit('gomoku_start', { room, yourSlot: 1, opponentName: p2.name, bet: groom.betAmount, currency: groom.currency, reconnected: false });
+      io.to(p2.socketId).emit('gomoku_start', { room, yourSlot: 2, opponentName: p1.name, bet: groom.betAmount, currency: groom.currency, reconnected: false });
+      const initialVersion = groom.stateVersion;
+      setTimeout(() => {
+        if (groom.status === 'playing' && groom.stateVersion === initialVersion && !groom.turnStartTime) {
+          startGomokuTurnTimer(groom, room, 1);
+        }
+      }, 3000);
+    }
+  });
+
+  socket.on('gomoku_move', ({ room, player, data }) => {
+    if (!validRoom(room) || !validPlayerSlot(player)) return;
+    const groom = gomokuRooms.get(room), state = groom?.gameState;
+    if (!groom || !state || groom.status !== 'playing' || groom.players[player]?.socketId !== socket.id) return;
+    const rejectMove = message => {
+      rejectSocket(socket, message);
+      socket.emit('gomoku_state_sync', gomokuSnapshot(groom));
+    };
+    if (groom.currentSlot !== player) return rejectMove('Ce n’est pas votre tour.');
+    if (!data || !gomokuInBounds(data.r, data.c)) return rejectMove('Case invalide.');
+    const index = gomokuIndex(data.r, data.c);
+    if (state.board[index] !== 0) return rejectMove('Cette case est déjà occupée.');
+
+    state.board[index] = player;
+    state.moves = Math.max(0, Number(state.moves) || 0) + 1;
+    state.last = { r: data.r, c: data.c };
+
+    const winLine = gomokuWinLine(state.board, data.r, data.c);
+    const boardFull = state.moves >= GOMOKU_CELLS;
+    state.winLine = winLine || null;
+
+    groom.currentSlot = winLine ? player : (player === 1 ? 2 : 1);
+    state.currentSlot = groom.currentSlot;
+    groom.stateVersion = Math.max(0, Number(groom.stateVersion) || 0) + 1;
+
+    io.to(room).emit('gomoku_move', {
+      room, player, data: { r: data.r, c: data.c },
+      gameState: JSON.stringify(state), version: groom.stateVersion,
+      winLine: winLine || null, nextSlot: groom.currentSlot
+    });
+    persistRoomSoon('gomoku', groom);
+
+    if (winLine) return notifyGomokuRoomOver(groom, room, player, 'normal');
+    if (boardFull) return notifyGomokuRoomOver(groom, room, 0, 'draw');
+    startGomokuTurnTimer(groom, room, groom.currentSlot);
+  });
+
+  socket.on('gomoku_request_state', ({ room }) => {
+    if (!validRoom(room)) return;
+    const groom = gomokuRooms.get(room);
+    if (!groom || !socketIsPlayer(groom, socket.id)) return;
+    socket.emit('gomoku_state_sync', gomokuSnapshot(groom));
+  });
+
+  socket.on('gomoku_result', (data) => {
+    if (!data || !validRoom(data.room)) return;
+    const groom = gomokuRooms.get(data.room);
+    if (!groom || !socketIsPlayer(groom, socket.id)) return;
+  });
+
+  // ══════════════════════════════════════════════════════
   //  PENALTY SHOOTOUT MULTIJOUEUR
   // ══════════════════════════════════════════════════════
   socket.on('penalty_join', async ({ room, player, supabaseId, name, bet, currency, gameId }) => {
@@ -3636,7 +3926,8 @@ io.on('connection', (socket) => {
       penalty: [penaltyRooms, notifyPenaltyRoomOver],
       chifoumi: [chifoumiRooms, notifyChifoumiRoomOver],
       echecs: [echecsRooms, notifyEchecsRoomOver],
-      ludo: [ludoRooms, notifyLudoRoomOver]
+      ludo: [ludoRooms, notifyLudoRoomOver],
+      gomoku: [gomokuRooms, notifyGomokuRoomOver]
     };
     const entry = entries[game];
     if (!entry) return;
@@ -3750,6 +4041,22 @@ io.on('connection', (socket) => {
       qroom.pausedTurnPlayer = qroom.turnPlayer || qroom.currentSlot || 1;
       clearQuoriTurnTimers(qroom);
       pauseAndWatch({ room: qroom, roomId, gameName: 'quoridor', getP1: () => qroom.players[1], getP2: () => qroom.players[2], winFn: (winnerIsP1) => notifyQuoriRoomOver(qroom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startQuoriTurnTimer(qroom, roomId, qroom.pausedTurnPlayer || 1) });
+      break;
+    }
+
+    // Morpion à cinq Multijoueur
+    for (const [roomId, groom] of gomokuRooms.entries()) {
+      if (groom.status !== 'playing' && groom.status !== 'paused') continue;
+      let disconnectedSlot = null;
+      for (const [slot, p] of Object.entries(groom.players)) { if (p.socketId === socket.id) { disconnectedSlot = parseInt(slot); break; } }
+      if (disconnectedSlot === null) continue;
+      groom.players[disconnectedSlot].connected = false;
+      const dcName = groom.players[disconnectedSlot]?.name || `Joueur ${disconnectedSlot}`;
+      socket.to(roomId).emit('gomoku_player_status', { slot: disconnectedSlot, connected: false, name: dcName });
+      socket.to(roomId).emit('gomoku_opponent_disconnected', { slot: disconnectedSlot, message: `${dcName} s'est déconnecté.` });
+      groom.pausedTurnPlayer = groom.turnPlayer || groom.currentSlot || 1;
+      clearGomokuTurnTimers(groom);
+      pauseAndWatch({ room: groom, roomId, gameName: 'gomoku', getP1: () => groom.players[1], getP2: () => groom.players[2], winFn: (winnerIsP1) => notifyGomokuRoomOver(groom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startGomokuTurnTimer(groom, roomId, groom.pausedTurnPlayer || 1) });
       break;
     }
 
