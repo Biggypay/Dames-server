@@ -682,6 +682,14 @@ function initSocket() {
       supabaseId: MY_SUPABASE_ID, name: MY_NAME,
       bet: BET_AMOUNT, currency: CURRENCY
     });
+    /* Le serveur n'annonce rien tant que la deuxieme place est vide. Sans ce
+       mot, un joueur seul dans sa room ne distingue pas « j'attends mon
+       adversaire » de « c'est bloque ». */
+    setTimeout(function () {
+      if (gameReady || gameOver) return;
+      var txt = document.getElementById('loading-txt');
+      if (txt) txt.textContent = 'EN ATTENTE DE VOTRE ADVERSAIRE…';
+    }, 6000);
   });
 
   socket.on('disconnect', function () {
@@ -808,6 +816,16 @@ function initSocket() {
 
   socket.on('game:error', function (data) {
     var message = (data && (data.detail || data.message)) || 'Action refusée par le serveur.';
+    /* Un refus AVANT le début de partie laissait le voile de chargement en
+       place : le joueur voyait tourner un rouage sans fin, sans jamais
+       apprendre que le serveur avait refusé son entrée. On affiche la raison
+       là où il regarde déjà. */
+    if (!gameReady) {
+      var txt = document.getElementById('loading-txt');
+      if (txt) txt.textContent = message;
+      document.getElementById('waiting-overlay').classList.remove('hidden');
+      return;
+    }
     showToast('⚠️', 'Coup refusé', message, 1800);
     if (!gameOver && socket && socket.connected) socket.emit('gomoku_request_state', { room: ROOM_ID });
   });
