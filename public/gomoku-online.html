@@ -895,23 +895,36 @@ function initSocket() {
 ══════════════════════════════════════════ */
 function startNewGame() {
   initGame();
+
+  /* La jouabilite ne doit dependre d'AUCUN habillage. Elle est donc acquise
+     ici, avant toute retouche du decor : si une ligne cosmetique echoue plus
+     bas, le plateau reste jouable au lieu de rester mort. */
+  gameReady = true;
+
+  /* `applyProfiles` reecrit le contenu des pastilles (photo de profil ou
+     symbole de repli) : les noeuds #dot-me / #dot-op n'existent plus apres
+     son passage. Les interroger ici levait une TypeError qui interrompait
+     cette fonction avant tout le reste — le plateau s'affichait, mais plus
+     personne ne pouvait poser un pion. C'est `applyProfiles` qui pose deja
+     le bon symbole et la bonne couleur : il n'y a rien a refaire ensuite. */
   applyProfiles();
-  document.getElementById('dot-me').textContent = IS_P1 ? '✗' : '◯';
-  document.getElementById('dot-op').textContent = IS_P1 ? '◯' : '✗';
-  document.getElementById('dot-me').className = IS_P1 ? 'av-w' : 'av-r';
-  document.getElementById('dot-op').className = IS_P1 ? 'av-r' : 'av-w';
-  document.getElementById('arc-me').setAttribute('stroke', IS_P1 ? '#e2e8f0' : '#f87171');
-  document.getElementById('arc-op').setAttribute('stroke', IS_P1 ? '#f87171' : '#e2e8f0');
-  document.getElementById('goal-me').textContent = IS_P1 ? '✗ CROIX' : '◯ RONDS';
-  document.getElementById('goal-op').textContent = IS_P1 ? '◯ RONDS' : '✗ CROIX';
+
+  var arcMe = document.getElementById('arc-me');
+  var arcOp = document.getElementById('arc-op');
+  if (arcMe) arcMe.setAttribute('stroke', IS_P1 ? '#e2e8f0' : '#f87171');
+  if (arcOp) arcOp.setAttribute('stroke', IS_P1 ? '#f87171' : '#e2e8f0');
+  var goalMe = document.getElementById('goal-me');
+  var goalOp = document.getElementById('goal-op');
+  if (goalMe) goalMe.textContent = IS_P1 ? '✗ CROIX' : '◯ RONDS';
+  if (goalOp) goalOp.textContent = IS_P1 ? '◯ RONDS' : '✗ CROIX';
 
   var whoStarts = MY_SLOT === 1 ? 'Vous commencez (croix)' : OP_NAME + ' commence (croix)';
   showToast('✏️', 'Partie commencée', whoStarts + '\nAlignez cinq pions pour gagner.', 2400, function () {
-    gameReady = true;
     updUI();
     applyPendingTimer();
   });
   calcLayout(); draw(); updUI();
+  applyPendingTimer();
 }
 
 calcLayout();
