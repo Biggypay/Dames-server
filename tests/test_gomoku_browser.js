@@ -76,6 +76,14 @@ function startMockDatabase() {
  * mise a jour de l'image.
  */
 function chromiumBinary() {
+  if (process.platform === 'win32') {
+    const windowsCandidates = [
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+      'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'
+    ];
+    return windowsCandidates.find(candidate => fs.existsSync(candidate));
+  }
   const root = process.env.PLAYWRIGHT_BROWSERS_PATH || '/opt/pw-browsers';
   if (!fs.existsSync(root)) return undefined;
   const candidates = fs.readdirSync(root)
@@ -176,26 +184,31 @@ async function main() {
     // L'assertion qui manquait : un plateau visible mais gameReady=false est
     // un plateau mort, et rien a l'ecran ne le montre.
     check('les deux plateaux sont réellement jouables (gameReady)', s1.gameReady && s2.gameReady, { s1, s2 });
-    check('le trait est au slot 1', s1.currentSlot === 1 && s2.currentSlot === 1, { s1, s2 });
+    const openingSlot = s1.currentSlot;
+    check('le premier joueur est tire et synchronise',
+      (openingSlot === 1 || openingSlot === 2) && s2.currentSlot === openingSlot,
+      { s1, s2 });
+    const openerPage = openingSlot === 1 ? page1 : page2;
+    const responderPage = openingSlot === 1 ? page2 : page1;
 
     // Slot 1 pose une croix : elle doit apparaitre sur LES DEUX ecrans.
-    await clickCell(page1, 7, 3);
+    await clickCell(openerPage, 7, 3);
     await sleep(900);
     check('le clic du slot 1 pose un pion', (await readState(page1)).stones === 1);
     check('le pion apparaît aussi chez le slot 2', (await readState(page2)).stones === 1);
-    check('le trait passe au slot 2', (await readState(page2)).currentSlot === 2);
+    check('le trait passe a l adversaire', (await readState(page2)).currentSlot === (openingSlot === 1 ? 2 : 1));
 
     // Un clic hors tour ne doit rien poser.
-    await clickCell(page1, 0, 0);
+    await clickCell(openerPage, 0, 0);
     await sleep(600);
     check('un clic hors tour est sans effet', (await readState(page1)).stones === 1);
 
     // Partie complete : le slot 1 aligne cinq croix en ligne 7.
     const replies = [[0, 0], [1, 0], [2, 0], [3, 0]];
     for (let i = 0; i < 4; i++) {
-      await clickCell(page2, replies[i][0], replies[i][1]);
+      await clickCell(responderPage, replies[i][0], replies[i][1]);
       await sleep(700);
-      await clickCell(page1, 7, 4 + i);
+      await clickCell(openerPage, 7, 4 + i);
       await sleep(700);
     }
 

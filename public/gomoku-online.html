@@ -178,6 +178,9 @@ var MY_SUPABASE_ID = MY_SLOT === 1 ? P1_ID : P2_ID;
 var OP_SUPABASE_ID = MY_SLOT === 1 ? P2_ID : P1_ID;
 var MY_NAME        = MY_SLOT === 1 ? P1_NAME : P2_NAME;
 var OP_NAME        = MY_SLOT === 1 ? P2_NAME : P1_NAME;
+/* Doit exister avant le premier applyProfiles(). Une initialisation plus bas
+   faisait planter la page avant même l'ouverture du socket. */
+var SLOT_SYMBOLS = { 1: 'X', 2: 'O' };
 
 window.addEventListener('message', function(e) {
   if (!e.data) return;
@@ -259,7 +262,6 @@ var WIN_LENGTH = 5;
 var CELLS = SIZE * SIZE;
 
 var board, currentSlot, lastMove, winLine;
-var SLOT_SYMBOLS = { 1: 'X', 2: 'O' };
 var gameOver = false, gameReady = false, resultSent = false;
 var lastStateVersion = -1;
 var pendingTimerData = null;
