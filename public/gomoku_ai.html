@@ -102,6 +102,8 @@ var SIZE = 15, WIN_LENGTH = 5, CELLS = SIZE * SIZE;
 var HUMAN = 1, AI = 2;
 
 var board, currentSlot, lastMove, winLine, gameOver, thinking;
+/* Strictly visual: the board state remains authoritative for the rules. */
+var stoneAnimations = Object.create(null);
 var difficulty = 2;
 
 function idx(r, c) { return r * SIZE + c; }
@@ -114,6 +116,7 @@ function initGame() {
   winLine = null;
   gameOver = false;
   thinking = false;
+  stoneAnimations = Object.create(null);
 }
 
 /* Alignement passant par (r,c). Renvoie les index gagnants, sinon null. */
@@ -289,31 +292,38 @@ function drawPaper() {
   ctx.stroke();
 }
 
-function drawCross(cx, cy, size, seed) {
+function strokePartialQuadratic(x0, y0, x1, y1, x2, y2, progress) {
+  var aX = x0 + (x1 - x0) * progress, aY = y0 + (y1 - y0) * progress;
+  var bX = x1 + (x2 - x1) * progress, bY = y1 + (y2 - y1) * progress;
+  var endX = aX + (bX - aX) * progress, endY = aY + (bY - aY) * progress;
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.quadraticCurveTo(aX, aY, endX, endY); ctx.stroke();
+}
+
+function drawCross(cx, cy, size, seed, progress) {
+  progress = progress === undefined ? 1 : Math.max(0, Math.min(1, progress));
   var h = size / 2;
   ctx.strokeStyle = '#1f2937';
   ctx.lineWidth = Math.max(2, size * 0.13);
   ctx.lineCap = 'round';
   var j = size * 0.11;
-  ctx.beginPath();
-  ctx.moveTo(cx - h + wobble(seed, 1) * j, cy - h + wobble(seed, 2) * j);
-  ctx.quadraticCurveTo(cx + wobble(seed, 3) * j, cy + wobble(seed, 4) * j,
-                       cx + h + wobble(seed, 5) * j, cy + h + wobble(seed, 6) * j);
-  ctx.moveTo(cx + h + wobble(seed, 7) * j, cy - h + wobble(seed, 8) * j);
-  ctx.quadraticCurveTo(cx + wobble(seed, 9) * j, cy + wobble(seed, 10) * j,
-                       cx - h + wobble(seed, 11) * j, cy + h + wobble(seed, 12) * j);
-  ctx.stroke();
+  var first = Math.min(1, progress * 2);
+  if (first > 0) strokePartialQuadratic(cx - h + wobble(seed, 1) * j, cy - h + wobble(seed, 2) * j, cx + wobble(seed, 3) * j, cy + wobble(seed, 4) * j, cx + h + wobble(seed, 5) * j, cy + h + wobble(seed, 6) * j, first);
+  var second = Math.max(0, Math.min(1, (progress - .5) * 2));
+  if (second > 0) strokePartialQuadratic(cx + h + wobble(seed, 7) * j, cy - h + wobble(seed, 8) * j, cx + wobble(seed, 9) * j, cy + wobble(seed, 10) * j, cx - h + wobble(seed, 11) * j, cy + h + wobble(seed, 12) * j, second);
 }
 
-function drawCircle(cx, cy, size, seed) {
+function drawCircle(cx, cy, size, seed, progress) {
+  progress = progress === undefined ? 1 : Math.max(0, Math.min(1, progress));
+  if (progress <= 0) return;
   ctx.strokeStyle = '#dc2626';
   ctx.lineWidth = Math.max(2, size * 0.13);
   ctx.lineCap = 'round';
   var rx = size * 0.5, ry = size * 0.5;
   ctx.beginPath();
   var steps = 22;
-  for (var s = 0; s <= steps; s++) {
-    var a = (s / steps) * Math.PI * 2.08 - 0.5;
+  var lastStep = Math.max(1, Math.ceil(steps * progress));
+  for (var s = 0; s <= lastStep; s++) {
+    var a = Math.min(progress, s / steps) * Math.PI * 2.08 - 0.5;
     var w = 1 + wobble(seed, s) * 0.09;
     var x = cx + Math.cos(a) * rx * w;
     var y = cy + Math.sin(a) * ry * w;
@@ -335,8 +345,11 @@ function draw() {
       var v = board[idx(r, c)];
       if (!v) continue;
       var p = cellCenter(r, c);
-      if (v === HUMAN) drawCross(p.x, p.y, stone, idx(r, c) + 1);
-      else drawCircle(p.x, p.y, stone, idx(r, c) + 1);
+      var key = idx(r, c), animation = stoneAnimations[key];
+      var progress = animation ? Math.min(1, (Date.now() - animation.startedAt) / 420) : 1;
+      if (v === HUMAN) drawCross(p.x, p.y, stone, key + 1, progress);
+      else drawCircle(p.x, p.y, stone, key + 1, progress);
+      if (animation && progress >= 1) delete stoneAnimations[key];
     }
   }
   if (lastMove && inBounds(lastMove.r, lastMove.c) && !winLine) {
@@ -378,6 +391,7 @@ function boardFull() {
 
 function place(r, c, slot) {
   board[idx(r, c)] = slot;
+  stoneAnimations[idx(r, c)] = { startedAt: Date.now() };
   lastMove = { r: r, c: c };
   var line = findWinLine(board, r, c);
   if (line) {
@@ -396,6 +410,12 @@ function place(r, c, slot) {
   updUI();
   return false;
 }
+
+function renderLoop() {
+  requestAnimationFrame(renderLoop);
+  if (Object.keys(stoneAnimations).length) draw();
+}
+renderLoop();
 
 function aiPlay() {
   if (gameOver) return;
