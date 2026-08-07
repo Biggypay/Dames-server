@@ -4,7 +4,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node tests/test_html_syntax.js && node tests/test_resync.js && node tests/test_tictactoe_server.js && node tests/test_chess_engine.js && node tests/test_echecs_server.js && node tests/test_ludo_chifoumi.js && node tests/test_spectator.js && node tests/test_gomoku.js && node tests/test_gomoku_browser.js"
+    "test": "node tests/test_html_syntax.js && node tests/test_resync.js && node tests/test_tictactoe_server.js && node tests/test_chess_engine.js && node tests/test_echecs_server.js && node tests/test_ludo_chifoumi.js && node tests/test_spectator.js && node tests/test_tournament_pause.js && node tests/test_gomoku.js && node tests/test_gomoku_browser.js"
   },
   "engines": {
     "node": "24.x"

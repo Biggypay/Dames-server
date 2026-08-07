@@ -490,6 +490,10 @@ async function restorePersistedRooms() {
       } else if (room.status === 'finished' && room.pendingSettlement) {
         const pending = room.pendingSettlement;
         void settleRoomInSupabase(room, record.game_type, pending.winnerSlot, pending.reason);
+      } else if (room.status === 'paused' && room.adminPaused === true) {
+        // An administrator pause survives a Render restart. Never convert it
+        // into a disconnect forfeit; the exact serialized board remains frozen.
+        room.reconnectDeadline = null;
       } else if (room.status === 'paused') {
         // A Render restart disconnects both sockets. Keep the exact board, but
         // apply the same 60-second reconnect rule as a normal disconnection.
@@ -511,6 +515,44 @@ async function restorePersistedRooms() {
 
 const _roomPersistenceLoop = setInterval(() => { void persistAllRoomStates(); }, ROOM_PERSIST_INTERVAL);
 if (_roomPersistenceLoop.unref) _roomPersistenceLoop.unref();
+
+const TOURNAMENT_CONTROL_INTERVAL_MS = Math.max(2000, Number(process.env.TOURNAMENT_CONTROL_INTERVAL_MS) || 5000);
+let tournamentControlInFlight = false;
+
+async function syncTournamentRoomControls() {
+  if (tournamentControlInFlight || !SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return;
+  const roomsByGameId = new Map();
+  for (const [gameName, roomMap] of Object.entries(ROOM_MAPS)) {
+    for (const room of roomMap.values()) {
+      if (room.status === 'finished' || !isUuid(room.databaseGameId)) continue;
+      roomsByGameId.set(room.databaseGameId, { gameName, room });
+    }
+  }
+  if (!roomsByGameId.size) return;
+
+  tournamentControlInFlight = true;
+  try {
+    const controls = await callServerStateRpc('server_tournament_game_controls', {
+      p_game_ids: [...roomsByGameId.keys()]
+    });
+    if (!Array.isArray(controls)) return;
+    for (const control of controls) {
+      const entry = roomsByGameId.get(control.game_id);
+      if (!entry) continue;
+      const revision = Math.max(0, Number(control.pause_revision) || 0);
+      if (entry.room.tournamentPauseRevision === revision
+          && entry.room.adminPaused === (control.is_paused === true)) continue;
+      setTournamentRoomPaused(entry.gameName, entry.room, control.is_paused === true, revision);
+    }
+  } catch (error) {
+    console.error('[tournament-control] sync failed', error.message);
+  } finally {
+    tournamentControlInFlight = false;
+  }
+}
+
+const _tournamentControlLoop = setInterval(() => { void syncTournamentRoomControls(); }, TOURNAMENT_CONTROL_INTERVAL_MS);
+if (_tournamentControlLoop.unref) _tournamentControlLoop.unref();
 
 function databaseResult(winnerSlot, reason) {
   if (winnerSlot === 0) return reason === 'both_disconnected' || reason === 'mutual_quit' ? 'mutual_quit' : 'draw';
@@ -662,7 +704,7 @@ async function loadDatabaseGameForJoin(gameId) {
     const timeout = setTimeout(() => controller.abort(), 5000);
     try {
       const response = await fetch(
-        SUPABASE_URL + '/rest/v1/games?id=eq.' + encodeURIComponent(gameId) + '&select=id,game_type,player1_id,player2_id,bet_amount,status,is_ai_opponent',
+        SUPABASE_URL + '/rest/v1/games?id=eq.' + encodeURIComponent(gameId) + '&select=id,game_type,player1_id,player2_id,bet_amount,status,is_ai_opponent,is_tournament,game_settings',
         { headers: serverSupabaseHeaders(), signal: controller.signal }
       );
       if (!response.ok) throw new Error('database_game_lookup_' + response.status);
@@ -705,6 +747,9 @@ async function verifyDatabaseGameForJoin(socket, gameId, gameName, player, bet, 
       return { ok: false, message: 'Cette partie ne correspond pas au joueur, au jeu ou à la mise.' };
     }
     if (!['waiting', 'in_progress'].includes(game.status)) return { ok: false, message: 'Cette partie est déjà terminée.' };
+    if (game.is_tournament === true && game.game_settings?.tournament_paused === true) {
+      return { ok: false, message: 'Le tournoi est temporairement en pause. Le plateau est conservé.' };
+    }
     return { ok: true };
   } catch {
     return { ok: false, message: 'Validation serveur temporairement indisponible.' };
@@ -716,7 +761,7 @@ function findLiveRoomByDatabaseGameId(gameId) {
   for (const [gameName, rooms] of Object.entries(ROOM_MAPS)) {
     for (const [roomId, room] of rooms.entries()) {
       if (room?.databaseGameId !== gameId) continue;
-      if (room.status !== 'playing') return null;
+      if (room.status !== 'playing' && !(room.status === 'paused' && room.adminPaused === true)) return null;
       if (!room.players?.[1]?.supabaseId || !room.players?.[2]?.supabaseId) return null;
       if (room.players[1].supabaseId === room.players[2].supabaseId) return null;
       return { gameName, roomId, room };
@@ -1728,7 +1773,9 @@ function resolvePenaltyRound(proom, roomId) {
 // ── Chifoumi (15s + 60s Grace) ────────────────────────────
 const CHIFOUMI_TURN_DURATION  = 15 * 1000;
 const CHIFOUMI_GRACE_DURATION = 60 * 1000;
-const CHIFOUMI_REVEAL_DURATION = 5 * 1000;
+// Server-authoritative reveal delay.  Clients receive this exact value with
+// the reveal event, so reconnecting players and spectators stay synchronized.
+const CHIFOUMI_REVEAL_DURATION = 3 * 1000;
 
 function clearChifoumiTurnTimers(croom) {
   if (croom.turnTimer)  { clearTimeout(croom.turnTimer);  croom.turnTimer  = null; }
@@ -2061,6 +2108,48 @@ function clearTimersForGame(gameName, room) {
   else if (gameName === 'gomoku') clearGomokuTurnTimers(room);
 }
 
+function resumeTimersForGame(gameName, room) {
+  if (!room || room.status !== 'playing') return;
+  if (gameName === 'dames') startDamesTurnTimer(room, room.id, room.pausedTurnPlayer || room.turnPlayer || (room.currentPlayer + 1) || 1);
+  else if (gameName === 'tictactoe') startTTTTurnTimer(room, room.id, room.pausedTurnPlayer || room.turnPlayer || ((room.gameState?.currentPlayer || 0) + 1));
+  else if (gameName === 'quoridor') startQuoriTurnTimer(room, room.id, room.pausedTurnPlayer || room.turnPlayer || room.currentSlot || 1);
+  else if (gameName === 'gomoku') startGomokuTurnTimer(room, room.id, room.pausedTurnPlayer || room.turnPlayer || room.currentSlot || 1);
+  else if (gameName === 'echecs') startEchecsTurnTimer(room, room.id, room.pausedTurnPlayer || room.turnPlayer || (room.currentPlayer + 1) || 1);
+  else if (gameName === 'penalty') startPenaltyTurnTimer(room, room.id);
+  else if (gameName === 'chifoumi') {
+    if (room.awaitingNextRound === true) scheduleNextChifoumiRound(room, room.id);
+    else if (room.choices?.[1] !== undefined && room.choices?.[2] !== undefined) scheduleChifoumiReveal(room, room.id);
+    else startChifoumiTurnTimer(room, room.id);
+  } else if (gameName === 'ludo') startLudoTurnTimer(room, room.id);
+}
+
+function setTournamentRoomPaused(gameName, room, paused, revision) {
+  if (!room || room.status === 'finished') return;
+  room.tournamentPauseRevision = revision;
+  if (paused) {
+    room.adminPaused = true;
+    room.pausedTurnPlayer = room.turnPlayer || room.currentSlot || ((room.currentPlayer ?? 0) + 1) || 1;
+    clearTimersForGame(gameName, room);
+    if (room.disconnectTimer) { clearTimeout(room.disconnectTimer); room.disconnectTimer = null; }
+    room.reconnectDeadline = null;
+    room.status = 'paused';
+    io.to(room.id).emit('tournament:paused', {
+      game: gameName, room: room.id, serverTime: Date.now(),
+      message: 'Le tournoi est en pause. Le plateau a été conservé.'
+    });
+  } else {
+    room.adminPaused = false;
+    const bothConnected = room.players?.[1]?.connected === true && room.players?.[2]?.connected === true;
+    room.status = bothConnected ? 'playing' : 'paused';
+    io.to(room.id).emit('tournament:resumed', {
+      game: gameName, room: room.id, serverTime: Date.now(), waitingForPlayers: !bothConnected,
+      message: bothConnected ? 'Le tournoi reprend.' : 'Le tournoi reprend dès le retour des deux joueurs.'
+    });
+    if (bothConnected) resumeTimersForGame(gameName, room);
+  }
+  persistRoomSoon(gameName, room);
+}
+
 function finishBothDisconnected(room, gameName, roomId) {
   if (!room || room.status === 'finished') return;
   room.status = 'finished';
@@ -2086,6 +2175,13 @@ function finishBothDisconnected(room, gameName, roomId) {
 //  PAUSE / REPRISE / ANNULATION (Sanction 5% si les deux abandonnent)
 // ══════════════════════════════════════════════════════════
 function pauseAndWatch({ room, roomId, gameName, getP1, getP2, winFn, onResume }) {
+  if (room.adminPaused === true) {
+    room.status = 'paused';
+    room.reconnectDeadline = null;
+    if (room.disconnectTimer) { clearTimeout(room.disconnectTimer); room.disconnectTimer = null; }
+    persistRoomSoon(gameName, room);
+    return;
+  }
   if (room.disconnectTimer) return;
   room.status = 'paused';
   const serverTime = Date.now();
@@ -2970,7 +3066,7 @@ io.on('connection', (socket) => {
     if (droom.status === 'playing' || droom.status === 'paused') {
       const p1 = droom.players[1], p2 = droom.players[2];
       const bothBack = p1?.connected && p2?.connected;
-      if (bothBack && droom.disconnectTimer) {
+      if (bothBack && droom.disconnectTimer && !droom.adminPaused) {
         clearTimeout(droom.disconnectTimer); droom.disconnectTimer = null; droom.reconnectDeadline = null; droom.status = 'playing';
         startDamesTurnTimer(droom, room, droom.pausedTurnPlayer || 1);
         io.to(room).emit('dames_game_resumed', { message: 'Les deux joueurs sont de retour. La partie reprend !' });
@@ -2978,7 +3074,7 @@ io.on('connection', (socket) => {
       } else if (droom.disconnectTimer) {
         setTimeout(() => socket.emit('game:reconnect_deadline', { game: 'dames', serverTime: Date.now(), reconnectDeadline: droom.reconnectDeadline }), 0);
       }
-      else if (!bothBack) {
+      else if (!bothBack && !droom.adminPaused) {
         droom.status = 'playing';
         const otherSlot = player === 1 ? 2 : 1;
         if (droom.players[otherSlot] && !droom.players[otherSlot].connected) {
@@ -3089,7 +3185,7 @@ io.on('connection', (socket) => {
     if (eroom.status === 'playing' || eroom.status === 'paused') {
       const p1 = eroom.players[1], p2 = eroom.players[2];
       const bothBack = p1?.connected && p2?.connected;
-      if (bothBack && eroom.disconnectTimer) {
+      if (bothBack && eroom.disconnectTimer && !eroom.adminPaused) {
         clearTimeout(eroom.disconnectTimer); eroom.disconnectTimer = null; eroom.reconnectDeadline = null; eroom.status = 'playing';
         startEchecsTurnTimer(eroom, room, eroom.pausedTurnPlayer || eroom.currentPlayer + 1 || 1);
         io.to(room).emit('echecs_game_resumed', { message: 'Les deux joueurs sont de retour. La partie reprend !' });
@@ -3097,7 +3193,7 @@ io.on('connection', (socket) => {
       } else if (eroom.disconnectTimer) {
         setTimeout(() => socket.emit('game:reconnect_deadline', { game: 'echecs', serverTime: Date.now(), reconnectDeadline: eroom.reconnectDeadline }), 0);
       }
-      else if (!bothBack) {
+      else if (!bothBack && !eroom.adminPaused) {
         eroom.status = 'playing';
         const otherSlot = player === 1 ? 2 : 1;
         if (eroom.players[otherSlot] && !eroom.players[otherSlot].connected) {
@@ -3217,14 +3313,14 @@ io.on('connection', (socket) => {
     if (troom.status === 'playing' || troom.status === 'paused') {
       const p1 = troom.players[1], p2 = troom.players[2];
       const bothBack = p1?.connected && p2?.connected;
-      if (bothBack && troom.disconnectTimer) {
+      if (bothBack && troom.disconnectTimer && !troom.adminPaused) {
         clearTimeout(troom.disconnectTimer); troom.disconnectTimer = null; troom.reconnectDeadline = null; troom.status = 'playing';
         startTTTTurnTimer(troom, room, troom.pausedTurnPlayer || 1);
         io.to(room).emit('ttt_game_resumed', { message: 'Les deux joueurs sont de retour. La partie reprend !' });
       } else if (troom.disconnectTimer) {
         setTimeout(() => socket.emit('game:reconnect_deadline', { game: 'tictactoe', serverTime: Date.now(), reconnectDeadline: troom.reconnectDeadline }), 0);
       }
-      else if (!bothBack) {
+      else if (!bothBack && !troom.adminPaused) {
         troom.status = 'playing';
         const otherSlot = player === 1 ? 2 : 1;
         if (troom.players[otherSlot] && !troom.players[otherSlot].connected) {
@@ -3321,14 +3417,14 @@ io.on('connection', (socket) => {
     if (qroom.status === 'playing' || qroom.status === 'paused') {
       const p1 = qroom.players[1], p2 = qroom.players[2];
       const bothBack = p1?.connected && p2?.connected;
-      if (bothBack && qroom.disconnectTimer) {
+      if (bothBack && qroom.disconnectTimer && !qroom.adminPaused) {
         clearTimeout(qroom.disconnectTimer); qroom.disconnectTimer = null; qroom.reconnectDeadline = null; qroom.status = 'playing';
         startQuoriTurnTimer(qroom, room, qroom.pausedTurnPlayer || qroom.currentSlot || 1);
         io.to(room).emit('quoridor_game_resumed', { message: 'Les deux joueurs sont de retour. La partie reprend !' });
       } else if (qroom.disconnectTimer) {
         setTimeout(() => socket.emit('game:reconnect_deadline', { game: 'quoridor', serverTime: Date.now(), reconnectDeadline: qroom.reconnectDeadline }), 0);
       }
-      else if (!bothBack) {
+      else if (!bothBack && !qroom.adminPaused) {
         qroom.status = 'playing';
         const otherSlot = player === 1 ? 2 : 1;
         if (qroom.players[otherSlot] && !qroom.players[otherSlot].connected) {
@@ -3427,14 +3523,14 @@ io.on('connection', (socket) => {
     if (groom.status === 'playing' || groom.status === 'paused') {
       const p1 = groom.players[1], p2 = groom.players[2];
       const bothBack = p1?.connected && p2?.connected;
-      if (bothBack && groom.disconnectTimer) {
+      if (bothBack && groom.disconnectTimer && !groom.adminPaused) {
         clearTimeout(groom.disconnectTimer); groom.disconnectTimer = null; groom.reconnectDeadline = null; groom.status = 'playing';
         startGomokuTurnTimer(groom, room, groom.pausedTurnPlayer || groom.currentSlot || 1);
         io.to(room).emit('gomoku_game_resumed', { message: 'Les deux joueurs sont de retour. La partie reprend !' });
       } else if (groom.disconnectTimer) {
         setTimeout(() => socket.emit('game:reconnect_deadline', { game: 'gomoku', serverTime: Date.now(), reconnectDeadline: groom.reconnectDeadline }), 0);
       }
-      else if (!bothBack) {
+      else if (!bothBack && !groom.adminPaused) {
         groom.status = 'playing';
         const otherSlot = player === 1 ? 2 : 1;
         if (groom.players[otherSlot] && !groom.players[otherSlot].connected) {
@@ -3553,13 +3649,13 @@ io.on('connection', (socket) => {
       const p1 = proom.players[1], p2 = proom.players[2];
       const bothBack = p1?.connected && p2?.connected;
 
-      if (bothBack && proom.disconnectTimer) {
+      if (bothBack && proom.disconnectTimer && !proom.adminPaused) {
         clearTimeout(proom.disconnectTimer); proom.disconnectTimer = null; proom.reconnectDeadline = null; proom.status = 'playing';
         startPenaltyTurnTimer(proom, room);
         io.to(room).emit('penalty_game_resumed', { message: 'Les deux joueurs sont de retour. La partie reprend !' });
       } else if (proom.disconnectTimer) {
         setTimeout(() => socket.emit('game:reconnect_deadline', { game: 'penalty', serverTime: Date.now(), reconnectDeadline: proom.reconnectDeadline }), 0);
-      } else if (!bothBack) {
+      } else if (!bothBack && !proom.adminPaused) {
         proom.status = 'playing';
         const otherSlot = player === 1 ? 2 : 1;
         if (proom.players[otherSlot] && !proom.players[otherSlot].connected) {
@@ -3650,7 +3746,7 @@ io.on('connection', (socket) => {
     if (croom.status === 'playing' || croom.status === 'paused') {
       const p1 = croom.players[1], p2 = croom.players[2];
       const bothBack = p1?.connected && p2?.connected;
-      if (bothBack && croom.disconnectTimer) {
+      if (bothBack && croom.disconnectTimer && !croom.adminPaused) {
         clearTimeout(croom.disconnectTimer); croom.disconnectTimer = null; croom.reconnectDeadline = null; croom.status = 'playing';
         if (croom.awaitingNextRound === true) scheduleNextChifoumiRound(croom, room);
         else if (croom.choices[1] !== undefined && croom.choices[2] !== undefined) scheduleChifoumiReveal(croom, room);
@@ -3659,7 +3755,7 @@ io.on('connection', (socket) => {
       } else if (croom.disconnectTimer) {
         setTimeout(() => socket.emit('game:reconnect_deadline', { game: 'chifoumi', serverTime: Date.now(), reconnectDeadline: croom.reconnectDeadline }), 0);
       }
-      else if (!bothBack) {
+      else if (!bothBack && !croom.adminPaused) {
         croom.status = 'playing';
         const otherSlot = player === 1 ? 2 : 1;
         if (croom.players[otherSlot] && !croom.players[otherSlot].connected) {
@@ -3780,7 +3876,7 @@ io.on('connection', (socket) => {
 
     if (lroom.status === 'playing' || lroom.status === 'paused') {
       const bothBack = lroom.players[1]?.connected && lroom.players[2]?.connected;
-      if (bothBack && lroom.disconnectTimer) {
+      if (bothBack && lroom.disconnectTimer && !lroom.adminPaused) {
         clearTimeout(lroom.disconnectTimer);
         lroom.disconnectTimer = null;
         lroom.reconnectDeadline = null;
@@ -4149,6 +4245,7 @@ io.on('connection', (socket) => {
 
 async function startServer() {
   await restorePersistedRooms();
+  await syncTournamentRoomControls();
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ Serveur Nano Banana v5.6 démarré sur le port ${PORT}`);
   });
