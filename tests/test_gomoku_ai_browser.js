@@ -95,19 +95,21 @@ async function main() {
     }
 
     await page.waitForFunction(() => board.filter(Boolean).length >= 2, null, { timeout: 3000 });
+    await page.waitForFunction(() => Object.keys(stoneAnimations).length === 0, null, { timeout: 3000 });
     const finalState = await page.evaluate(() => ({
       stones: board.filter(Boolean).length,
       human: board.filter(value => value === HUMAN).length,
-      ai: board.filter(value => value === AI).length
+      ai: board.filter(value => value === AI).length,
+      animationsFinished: Object.keys(stoneAnimations).length === 0
     }));
-    if (finalState.human < 1 || finalState.ai < 1) {
+    if (finalState.human < 1 || finalState.ai < 1 || !finalState.animationsFinished) {
       throw new Error(`l'IA n'a pas répondu: ${JSON.stringify(finalState)}`);
     }
     if (errors.length) throw new Error(`exceptions navigateur: ${errors.join(' | ')}`);
 
     console.log('  OK les cases touchées correspondent exactement aux cases jouées');
     console.log('  OK le X humain démarre avec son animation progressive');
-    console.log('  OK l’IA répond et place son O');
+    console.log('  OK l’IA répond, dessine son O et termine les deux animations');
     console.log('  OK aucune exception JavaScript dans le mode IA');
     console.log('OK parcours navigateur Gomoku IA passé');
   } finally {

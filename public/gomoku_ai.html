@@ -411,12 +411,6 @@ function place(r, c, slot) {
   return false;
 }
 
-function renderLoop() {
-  requestAnimationFrame(renderLoop);
-  if (Object.keys(stoneAnimations).length) draw();
-}
-renderLoop();
-
 function aiPlay() {
   if (gameOver) return;
   thinking = true;
@@ -553,7 +547,14 @@ function updateConfetti() {
   }
   if (!anyAlive) { confettiActive = false; confettiParticles = []; confettiCtx.clearRect(0, 0, confettiCanvas.width, confettiCanvas.height); }
 }
-function renderLoop() { requestAnimationFrame(renderLoop); updateConfetti(); }
+/* Une seule boucle de rendu pour les pions et les confettis. Deux fonctions
+   portant ce nom existaient auparavant : la seconde écrasait la première et
+   interrompait le tracé progressif des X/O du mode IA. */
+function renderLoop() {
+  requestAnimationFrame(renderLoop);
+  if (Object.keys(stoneAnimations).length) draw();
+  updateConfetti();
+}
 renderLoop();
 
 /* ══════════════════════════════════════════
