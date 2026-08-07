@@ -413,8 +413,15 @@ function myTurn() {
 function pointerCell(evt) {
   var rect = canvas.getBoundingClientRect();
   var src = evt.changedTouches ? evt.changedTouches[0] : evt;
-  var x = src.clientX - rect.left - ORIGIN;
-  var y = src.clientY - rect.top - ORIGIN;
+  /* The canvas can be flex-shrunk by the iframe on small screens. Convert
+     the displayed pointer coordinates back into the logical board space
+     before deriving the row/column; otherwise a tap can target a neighbour. */
+  var logicalWidth = canvas.width / DPR;
+  var logicalHeight = canvas.height / DPR;
+  var scaleX = logicalWidth / rect.width;
+  var scaleY = logicalHeight / rect.height;
+  var x = (src.clientX - rect.left) * scaleX - ORIGIN;
+  var y = (src.clientY - rect.top) * scaleY - ORIGIN;
   var c = Math.floor(x / CELL), r = Math.floor(y / CELL);
   if (!inBounds(r, c)) return null;
   return { r: r, c: c };
