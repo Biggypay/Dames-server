@@ -27,6 +27,10 @@ body{background:linear-gradient(135deg,#1e1b4b 0%,#312e81 50%,#1e1b4b 100%);heig
 body.chrome-hidden #bot{display:none!important}
 .av-w{width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-family:'Caveat',cursive;font-size:26px;font-weight:700;color:#1f2937;line-height:1}
 .av-r{width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-family:'Caveat',cursive;font-size:26px;font-weight:700;color:#dc2626;line-height:1}
+.turn-stone{width:28px;height:28px;border-radius:50%;transition:transform .2s ease,opacity .2s ease;animation:turnStoneIn .22s ease-out}
+.turn-stone.black{background:radial-gradient(circle at 32% 28%,#667085 0%,#161b28 33%,#020305 100%);box-shadow:inset -4px -5px 8px rgba(0,0,0,.65),0 3px 8px rgba(0,0,0,.5)}
+.turn-stone.white{background:radial-gradient(circle at 32% 25%,#fff 0%,#edf0f6 40%,#9aa3b2 100%);box-shadow:inset -3px -4px 7px rgba(0,0,0,.2),0 3px 8px rgba(255,255,255,.25)}
+@keyframes turnStoneIn{from{transform:scale(.65);opacity:0}to{transform:scale(1);opacity:1}}
 .profile-name{font-family:'Cinzel',serif;font-size:9px;letter-spacing:1.5px;color:rgba(255,255,255,0.8);text-transform:uppercase;text-align:center;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:4px}
 .goal-hint{font-size:8px;letter-spacing:1px;color:rgba(255,255,255,0.4);min-height:12px;text-align:center}
 .top-center{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px}
@@ -208,8 +212,8 @@ function setProfilePhoto(slotId, url, fallbackClass, glyph) {
     img.className = 'profile-photo';
     img.alt = '';
     img.referrerPolicy = 'no-referrer';
-    img.onerror = function () { host.innerHTML = '<div class="' + fallbackClass + '">' + glyph + '</div>'; };
-    img.onload = function () { host.innerHTML = ''; host.appendChild(img); };
+    img.onerror = function () { if(host.dataset.turnSymbol !== '1')host.innerHTML = '<div class="' + fallbackClass + '">' + glyph + '</div>'; };
+    img.onload = function () { if(host.dataset.turnSymbol !== '1'){host.innerHTML = ''; host.appendChild(img);} };
     img.src = url;
   } else {
     host.innerHTML = '<div class="' + fallbackClass + '">' + glyph + '</div>';
@@ -217,14 +221,18 @@ function setProfilePhoto(slotId, url, fallbackClass, glyph) {
 }
 
 function applyProfiles() {
+  var avatarMe = document.getElementById('avatar-me'), avatarOp = document.getElementById('avatar-op');
+  if(avatarMe) delete avatarMe.dataset.turnSymbol;
+  if(avatarOp) delete avatarOp.dataset.turnSymbol;
   var meName = IS_SPECTATOR ? P1_NAME : MY_NAME;
   var opName = IS_SPECTATOR ? P2_NAME : OP_NAME;
   var meEl = document.getElementById('name-me'); if (meEl) meEl.textContent = meName;
   var opEl = document.getElementById('name-op'); if (opEl) opEl.textContent = opName;
   var meAvatar = MY_SLOT === 1 ? P1_AVATAR : P2_AVATAR;
   var opAvatar = MY_SLOT === 1 ? P2_AVATAR : P1_AVATAR;
-  setProfilePhoto('avatar-me', meAvatar, IS_P1 ? 'av-w' : 'av-r', IS_P1 ? '✗' : '◯');
-  setProfilePhoto('avatar-op', opAvatar, IS_P1 ? 'av-r' : 'av-w', IS_P1 ? '◯' : '✗');
+  var mySymbol = symbolForSlot(MY_SLOT), opSymbol = symbolForSlot(MY_SLOT === 1 ? 2 : 1);
+  setProfilePhoto('avatar-me', meAvatar, mySymbol === 'X' ? 'av-w' : 'av-r', mySymbol === 'X' ? '✗' : '◯');
+  setProfilePhoto('avatar-op', opAvatar, opSymbol === 'X' ? 'av-w' : 'av-r', opSymbol === 'X' ? '✗' : '◯');
 }
 
 if (IS_SPECTATOR) try { document.body.classList.add('spectator'); } catch (_) {}
@@ -251,6 +259,7 @@ var WIN_LENGTH = 5;
 var CELLS = SIZE * SIZE;
 
 var board, currentSlot, lastMove, winLine;
+var SLOT_SYMBOLS = { 1: 'X', 2: 'O' };
 var gameOver = false, gameReady = false, resultSent = false;
 var lastStateVersion = -1;
 var pendingTimerData = null;
@@ -270,6 +279,7 @@ function initGame() {
 
 function idx(r, c) { return r * SIZE + c; }
 function inBounds(r, c) { return r >= 0 && r < SIZE && c >= 0 && c < SIZE; }
+function symbolForSlot(slot) { return SLOT_SYMBOLS[slot] === 'O' ? 'O' : 'X'; }
 
 /* ══════════════════════════════════════════
    RENDU — feuille de cahier quadrillée
@@ -405,7 +415,7 @@ function draw() {
       var p = cellCenter(r, c);
       var key = idx(r, c), animation = stoneAnimations[key];
       var progress = animation ? Math.min(1, (Date.now() - animation.startedAt) / 420) : 1;
-      if (v === 1) drawCross(p.x, p.y, stone, key + 1, progress);
+      if (symbolForSlot(v) === 'X') drawCross(p.x, p.y, stone, key + 1, progress);
       else drawCircle(p.x, p.y, stone, key + 1, progress);
       if (animation && progress >= 1) delete stoneAnimations[key];
     }
@@ -504,6 +514,8 @@ function resetArcs() {
 
 function runArc(slot, startTime, duration, urgent) {
   stopTimer(); stopGraceTimer(); resetArcs();
+  applyProfiles();
+  showActiveGomokuSymbol(slot);
   var arc = arcFor(slot), prof = profileFor(slot);
   if (!arc) return;
   var step = function () {
@@ -582,6 +594,7 @@ function applyServerState(state, version, animateLatestMove) {
   if (state.last && inBounds(state.last.r, state.last.c)) lastMove = { r: state.last.r, c: state.last.c };
   winLine = Array.isArray(state.winLine) && state.winLine.length ? state.winLine.slice() : null;
   if (state.currentSlot === 1 || state.currentSlot === 2) currentSlot = state.currentSlot;
+  if (state.slotSymbols) SLOT_SYMBOLS = state.slotSymbols[1] === 'O' ? { 1: 'O', 2: 'X' } : { 1: 'X', 2: 'O' };
   draw();
   updUI();
 }
@@ -702,6 +715,14 @@ function renderLoop() {
   requestAnimationFrame(renderLoop);
   if (Object.keys(stoneAnimations).length) draw();
   updateConfetti();
+}
+
+function showActiveGomokuSymbol(slot) {
+  var mine = slot === MY_SLOT;
+  var host = document.getElementById(mine ? 'avatar-me' : 'avatar-op');
+  if (!host) return;
+  host.dataset.turnSymbol = '1';
+  host.innerHTML = '<div class="turn-stone ' + (symbolForSlot(slot) === 'X' ? 'black' : 'white') + '"></div>';
 }
 renderLoop();
 
@@ -827,6 +848,8 @@ function initSocket() {
       showToast('🔄', 'Partie reprise', 'Vous êtes de retour sur le plateau.', 1800);
       return;
     }
+    if (data.slotSymbols) SLOT_SYMBOLS = data.slotSymbols[1] === 'O' ? { 1: 'O', 2: 'X' } : { 1: 'X', 2: 'O' };
+    if (data.currentSlot === 1 || data.currentSlot === 2) currentSlot = data.currentSlot;
     startNewGame();
   });
 
@@ -945,7 +968,9 @@ function initSocket() {
    DÉMARRAGE
 ══════════════════════════════════════════ */
 function startNewGame() {
+  var openingSlot = currentSlot;
   initGame();
+  if (openingSlot === 1 || openingSlot === 2) currentSlot = openingSlot;
 
   /* La jouabilite ne doit dependre d'AUCUN habillage. Elle est donc acquise
      ici, avant toute retouche du decor : si une ligne cosmetique echoue plus
@@ -962,14 +987,15 @@ function startNewGame() {
 
   var arcMe = document.getElementById('arc-me');
   var arcOp = document.getElementById('arc-op');
-  if (arcMe) arcMe.setAttribute('stroke', IS_P1 ? '#e2e8f0' : '#f87171');
-  if (arcOp) arcOp.setAttribute('stroke', IS_P1 ? '#f87171' : '#e2e8f0');
+  var myIsX = symbolForSlot(MY_SLOT) === 'X';
+  if (arcMe) arcMe.setAttribute('stroke', myIsX ? '#e2e8f0' : '#f87171');
+  if (arcOp) arcOp.setAttribute('stroke', myIsX ? '#f87171' : '#e2e8f0');
   var goalMe = document.getElementById('goal-me');
   var goalOp = document.getElementById('goal-op');
-  if (goalMe) goalMe.textContent = IS_P1 ? '✗ CROIX' : '◯ RONDS';
-  if (goalOp) goalOp.textContent = IS_P1 ? '◯ RONDS' : '✗ CROIX';
+  if (goalMe) goalMe.textContent = myIsX ? '✗ CROIX' : '◯ RONDS';
+  if (goalOp) goalOp.textContent = myIsX ? '◯ RONDS' : '✗ CROIX';
 
-  var whoStarts = MY_SLOT === 1 ? 'Vous commencez (croix)' : OP_NAME + ' commence (croix)';
+  var whoStarts = currentSlot === MY_SLOT ? 'Vous commencez (' + (symbolForSlot(MY_SLOT) === 'X' ? 'croix' : 'ronds') + ')' : OP_NAME + ' commence (' + (symbolForSlot(currentSlot) === 'X' ? 'croix' : 'ronds') + ')';
   showToast('✏️', 'Partie commencée', whoStarts + '\nAlignez cinq pions pour gagner.', 2400, function () {
     updUI();
     applyPendingTimer();

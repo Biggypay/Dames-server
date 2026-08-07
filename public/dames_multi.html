@@ -689,6 +689,7 @@ function startTimer(isMyTurn, serverStartTime) {
   var prof = document.getElementById(profId);
   
   prof.classList.add('active', isMyTurn ? 'human-active' : 'ai-active');
+  showTurnPiece(isMyTurn);
   
   function tick(){
     if(!timerActive) return;
@@ -711,6 +712,7 @@ function startGraceTimer(isMyTurn, serverStartTime, duration){
   var profId = isMyTurn ? 'profile-human' : 'profile-ai';
   
   document.getElementById(profId).classList.add('active', isMyTurn ? 'human-active' : 'ai-active', 'timer-urgent');
+  showTurnPiece(isMyTurn);
   
   function tick(){
     if(!graceActive) return;
@@ -734,6 +736,7 @@ function stopTimer(){
   document.getElementById('timer-arc-ai').style.strokeDashoffset = CIRC;
   document.getElementById('profile-human').className = 'profile';
   document.getElementById('profile-ai').className = 'profile';
+  restoreDamesProfilePhotos();
 }
 function stopGraceTimer(){
   graceActive = false; if(graceRAF) cancelAnimationFrame(graceRAF);
@@ -1075,7 +1078,12 @@ function checkGameOver(){
 
 function updateCapturedDisplay(){
   var elH = document.getElementById('cap-human'), elA = document.getElementById('cap-ai');
-  var hCount = capturedBy[MY_PLAYER], aCount = capturedBy[1 - MY_PLAYER];
+  /* These counters belong to the profile beside them: they show the pieces
+     each player still owns, never the opponent's captured-piece total. */
+  var hCount = 0, aCount = 0;
+  for(var r=0; r<BS; r++) for(var c=0; c<BS; c++) if(board[r][c]){
+    if(board[r][c].player === MY_PLAYER) hCount++; else aCount++;
+  }
   var hColor = MY_PLAYER === 0 ? 'white' : 'red';
   var aColor = MY_PLAYER === 0 ? 'red' : 'white';
   
@@ -1419,8 +1427,8 @@ function setProfilePhoto(hostId, url, fallbackHtml){
   host.setAttribute('data-photo', url);
   var img = new Image();
   img.className = 'profile-photo'; img.alt = ''; img.referrerPolicy = 'no-referrer';
-  img.onerror = function(){ host.removeAttribute('data-photo'); host.innerHTML = fallbackHtml; };
-  img.onload = function(){ host.innerHTML = ''; host.appendChild(img); };
+  img.onerror = function(){ if(host.dataset.turnSymbol !== '1'){ host.removeAttribute('data-photo'); host.innerHTML = fallbackHtml; } };
+  img.onload = function(){ if(host.dataset.turnSymbol !== '1'){ host.innerHTML = ''; host.appendChild(img); } };
   img.src = url;
 }
 /* La couronne se pose par-dessus la photo au lieu d'etre dessinee dedans. */
@@ -1453,6 +1461,20 @@ function updUI(){
   document.getElementById('profile-human').querySelector('.profile-name').textContent = IS_SPECTATOR ? P1_NAME : MY_NAME;
   document.getElementById('profile-ai').querySelector('.profile-name').textContent = IS_SPECTATOR ? P2_NAME : OP_NAME;
   updateForcedHint();
+}
+function restoreDamesProfilePhotos(){
+  if(typeof setProfilePhoto!=='function')return;
+  var mine=document.getElementById('avatar-human'), other=document.getElementById('avatar-ai');
+  if(mine)delete mine.dataset.turnSymbol;
+  if(other)delete other.dataset.turnSymbol;
+  var mineWhite=MY_PLAYER===0;
+  setProfilePhoto('avatar-human',MY_SLOT===1?P1_AVATAR:P2_AVATAR,'<div class="av-'+(mineWhite?'white':'red')+(hasKing(MY_PLAYER)?' av-king':'')+'"></div>');
+  setProfilePhoto('avatar-ai',MY_SLOT===1?P2_AVATAR:P1_AVATAR,'<div class="av-'+(mineWhite?'red':'white')+(hasKing(1-MY_PLAYER)?' av-king':'')+'"></div>');
+}
+function showTurnPiece(isMyTurn){
+  var player=isMyTurn?MY_PLAYER:1-MY_PLAYER;
+  var host=document.getElementById(isMyTurn?'avatar-human':'avatar-ai');
+  if(host){host.dataset.turnSymbol='1';host.innerHTML='<div class="av-'+(player===0?'white':'red')+(hasKing(player)?' av-king':'')+'"></div>';}
 }
 
 function startSpectatorGame(state){

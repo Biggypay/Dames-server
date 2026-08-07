@@ -216,6 +216,9 @@ function consensusResult(room, socket, data) {
 function socketAllow(socketId, tag, max, windowMs) { return rateLimit('sock:' + tag + ':' + socketId, max, windowMs); }
 
 function validPlayerSlot(slot) { return slot === 1 || slot === 2; }
+// A match opening is decided by the server, never by invitation order.
+// crypto.randomInt avoids predictable client-side or Math.random() selection.
+function randomOpeningSlot() { return crypto.randomInt(1, 3); }
 function safeName(value, fallback = 'Joueur') {
   const name = typeof value === 'string' ? value.trim().slice(0, 40) : '';
   return name || fallback;
@@ -442,6 +445,9 @@ function hydratePersistedRoom(record) {
   if (record.game_type === 'tictactoe') {
     room.totalManches = TTT_TOTAL_ROUNDS;
     room.gameState = room.gameState && typeof room.gameState === 'object' ? room.gameState : tttState();
+    room.gameState.slotSymbols = room.gameState.slotSymbols?.[1] === 'O'
+      ? { 1: 'O', 2: 'X' }
+      : { 1: 'X', 2: 'O' };
     room.gameState.revision = Math.max(0, Number(room.gameState.revision) || 0);
     // A round result is persisted before the animation delay. If Render restarts
     // during that delay, resume from the next clean round instead of leaving the
@@ -1036,7 +1042,7 @@ function checkersClientBoard(board) {
 const TTT_TOTAL_ROUNDS = Math.max(1, Math.min(15, Number(process.env.TTT_TOTAL_ROUNDS) || 5));
 const TTT_LINES = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8], [0, 4, 8], [2, 4, 6]];
 function tttWinningLine(board, symbol) { return TTT_LINES.find(line => line.every(index => board[index] === symbol)) || null; }
-function tttState() { return { board: Array(9).fill(null), currentPlayer: 0, matchW: 0, matchR: 0, manchesDone: 0, mancheResults: [], isTiebreaker: false, mancheStarterPlayer: 0, resolvingRound: false, revision: 0 }; }
+function tttState() { return { board: Array(9).fill(null), currentPlayer: 0, matchW: 0, matchR: 0, manchesDone: 0, mancheResults: [], isTiebreaker: false, mancheStarterPlayer: 0, slotSymbols: { 1: 'X', 2: 'O' }, resolvingRound: false, revision: 0 }; }
 function tttMatchWinner(state, total) {
   if (state.isTiebreaker) return null;
   const remaining = total - state.manchesDone;
@@ -1306,7 +1312,7 @@ function gomokuInBounds(r, c) {
 }
 
 function gomokuInitialState() {
-  return { board: Array(GOMOKU_CELLS).fill(0), moves: 0, last: null, currentSlot: 1, winLine: null };
+  return { board: Array(GOMOKU_CELLS).fill(0), moves: 0, last: null, currentSlot: 1, slotSymbols: { 1: 'X', 2: 'O' }, winLine: null };
 }
 
 // Alignement passant par le dernier coup joué. Renvoie les index des cases
@@ -1346,6 +1352,7 @@ function gomokuSanitizeState(raw) {
     moves,
     last,
     currentSlot: validPlayerSlot(state.currentSlot) ? state.currentSlot : 1,
+    slotSymbols: state.slotSymbols?.[1] === 'O' ? { 1: 'O', 2: 'X' } : { 1: 'X', 2: 'O' },
     winLine: Array.isArray(state.winLine) ? state.winLine.filter(i => Number.isInteger(i) && i >= 0 && i < GOMOKU_CELLS) : null
   };
 }
@@ -1506,6 +1513,10 @@ function tttSnapshot(troom) {
       mancheResults: Array.isArray(state.mancheResults) ? [...state.mancheResults] : [],
       isTiebreaker: state.isTiebreaker === true,
       mancheStarterPlayer: Number(state.mancheStarterPlayer) === 1 ? 1 : 0,
+      slotSymbols: {
+        1: state.slotSymbols?.[1] === 'O' ? 'O' : 'X',
+        2: state.slotSymbols?.[2] === 'X' ? 'X' : 'O'
+      },
       resolvingRound: state.resolvingRound === true,
       revision: Math.max(0, Number(state.revision) || 0)
     },
@@ -1627,7 +1638,8 @@ function gomokuSnapshot(groom) {
     moves: Math.max(0, Number(state.moves) || 0),
     last: state.last && gomokuInBounds(state.last.r, state.last.c) ? { r: state.last.r, c: state.last.c } : null,
     winLine: Array.isArray(state.winLine) ? [...state.winLine] : null,
-    currentSlot: validPlayerSlot(groom.currentSlot) ? groom.currentSlot : 1
+    currentSlot: validPlayerSlot(groom.currentSlot) ? groom.currentSlot : 1,
+    slotSymbols: state.slotSymbols?.[1] === 'O' ? { 1: 'O', 2: 'X' } : { 1: 'X', 2: 'O' }
   };
   const snap = {
     room: groom.id,
@@ -3349,13 +3361,20 @@ io.on('connection', (socket) => {
     if (troom.players[1] && troom.players[2] && troom.status === 'waiting') {
       troom.status = 'playing';
       troom.startedAt = Date.now();
+      const openingSlot = randomOpeningSlot();
+      // Tic-Tac-Toe's following rounds alternate normally; only the first
+      // round is drawn randomly for this match.
+      troom.gameState.mancheStarterPlayer = openingSlot - 1;
+      troom.gameState.currentPlayer = openingSlot - 1;
+      troom.gameState.slotSymbols = openingSlot === 1 ? { 1: 'X', 2: 'O' } : { 1: 'O', 2: 'X' };
+      troom.gameState.revision = Math.max(0, Number(troom.gameState.revision) || 0) + 1;
       persistRoomSoon('tictactoe', troom);
       const p1 = troom.players[1], p2 = troom.players[2];
       io.to(p1.socketId).emit('ttt_start', { room, yourSlot: 1, opponentName: p2.name, bet: troom.betAmount, currency: troom.currency, reconnected: false, totalManches: troom.totalManches, gameState: troom.gameState, revision: troom.gameState.revision });
       io.to(p2.socketId).emit('ttt_start', { room, yourSlot: 2, opponentName: p1.name, bet: troom.betAmount, currency: troom.currency, reconnected: false, totalManches: troom.totalManches, gameState: troom.gameState, revision: troom.gameState.revision });
       // Start exactly once. The old delayed timeout could fire after player 1's
       // first move and incorrectly put the clock back on player 1.
-      startTTTTurnTimer(troom, room, 1);
+      startTTTTurnTimer(troom, room, openingSlot);
     }
   });
 
@@ -3368,7 +3387,7 @@ io.on('connection', (socket) => {
     };
     if (!troom || !state) return rejectMove('Partie Tic-Tac-Toe introuvable.');
     if (troom.status !== 'playing' || state.resolvingRound || troom.players[player]?.socketId !== socket.id) return rejectMove('Ce coup ne peut pas être joué maintenant.');
-    const expectedSymbol = player === 1 ? 'X' : 'O', index = row * 3 + col;
+    const expectedSymbol = state.slotSymbols?.[player] === 'O' ? 'O' : 'X', index = row * 3 + col;
     if (state.currentPlayer !== player - 1 || symbol !== expectedSymbol || state.board[index] !== null) return rejectMove('Coup Tic-Tac-Toe invalide.');
     clearTTTTurnTimers(troom);
     state.board[index] = expectedSymbol;
@@ -3453,6 +3472,8 @@ io.on('connection', (socket) => {
     if (qroom.players[1] && qroom.players[2] && qroom.status === 'waiting') {
       qroom.status = 'playing';
       qroom.startedAt = Date.now();
+      qroom.currentSlot = randomOpeningSlot();
+      qroom.gameState.currentSlot = qroom.currentSlot;
       persistRoomSoon('quoridor', qroom);
       const p1 = qroom.players[1], p2 = qroom.players[2];
       io.to(p1.socketId).emit('quoridor_start', { room, yourSlot: 1, opponentName: p2.name, bet: qroom.betAmount, currency: qroom.currency, reconnected: false });
@@ -3460,7 +3481,7 @@ io.on('connection', (socket) => {
       const initialVersion = qroom.stateVersion;
       setTimeout(() => {
         if (qroom.status === 'playing' && qroom.stateVersion === initialVersion && !qroom.turnStartTime) {
-          startQuoriTurnTimer(qroom, room, 1);
+          startQuoriTurnTimer(qroom, room, qroom.currentSlot);
         }
       }, 3000);
     }
@@ -3559,14 +3580,20 @@ io.on('connection', (socket) => {
     if (groom.players[1] && groom.players[2] && groom.status === 'waiting') {
       groom.status = 'playing';
       groom.startedAt = Date.now();
+      // Gomoku still starts with X, but the player assigned X is drawn by the
+      // server so invitation order never decides who opens.
+      groom.currentSlot = randomOpeningSlot();
+      groom.gameState.currentSlot = groom.currentSlot;
+      groom.gameState.slotSymbols = groom.currentSlot === 1 ? { 1: 'X', 2: 'O' } : { 1: 'O', 2: 'X' };
+      groom.stateVersion = Math.max(0, Number(groom.stateVersion) || 0) + 1;
       persistRoomSoon('gomoku', groom);
       const p1 = groom.players[1], p2 = groom.players[2];
-      io.to(p1.socketId).emit('gomoku_start', { room, yourSlot: 1, opponentName: p2.name, bet: groom.betAmount, currency: groom.currency, reconnected: false });
-      io.to(p2.socketId).emit('gomoku_start', { room, yourSlot: 2, opponentName: p1.name, bet: groom.betAmount, currency: groom.currency, reconnected: false });
+      io.to(p1.socketId).emit('gomoku_start', { room, yourSlot: 1, opponentName: p2.name, bet: groom.betAmount, currency: groom.currency, reconnected: false, currentSlot: groom.currentSlot, slotSymbols: groom.gameState.slotSymbols });
+      io.to(p2.socketId).emit('gomoku_start', { room, yourSlot: 2, opponentName: p1.name, bet: groom.betAmount, currency: groom.currency, reconnected: false, currentSlot: groom.currentSlot, slotSymbols: groom.gameState.slotSymbols });
       const initialVersion = groom.stateVersion;
       setTimeout(() => {
         if (groom.status === 'playing' && groom.stateVersion === initialVersion && !groom.turnStartTime) {
-          startGomokuTurnTimer(groom, room, 1);
+          startGomokuTurnTimer(groom, room, groom.currentSlot);
         }
       }, 3000);
     }
@@ -3904,6 +3931,7 @@ io.on('connection', (socket) => {
     if (lroom.players[1] && lroom.players[2] && lroom.status === 'waiting') {
       lroom.status = 'playing';
       lroom.startedAt = Date.now();
+      ensureLudoState(lroom).currentPlayer = randomOpeningSlot();
       persistRoomSoon('ludo', lroom);
       const p1 = lroom.players[1], p2 = lroom.players[2];
       const common = {

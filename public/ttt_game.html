@@ -252,6 +252,7 @@ var MY_NAME        = MY_SLOT===1?P1_NAME:P2_NAME;
 var OP_NAME        = MY_SLOT===1?P2_NAME:P1_NAME;
 var MY_SYMBOL  = MY_SLOT===1?'X':'O';
 var OP_SYMBOL  = MY_SLOT===1?'O':'X';
+function symbolForSlot(slot){ return slot===MY_SLOT ? MY_SYMBOL : OP_SYMBOL; }
 
 /* Badge mise */
 if(BET_AMOUNT>0){
@@ -639,6 +640,10 @@ function applyAuthoritativeState(gs,forceRebuild){
   var nextBoard=Array.isArray(gs.board)&&gs.board.length===9?gs.board.map(function(cell){return cell==='X'||cell==='O'?cell:null;}):null;
   if(!nextBoard)return false;
   lastServerRevision=revision;
+  if(gs.slotSymbols){
+    MY_SYMBOL=gs.slotSymbols[MY_SLOT]==='O'?'O':'X';
+    OP_SYMBOL=MY_SYMBOL==='X'?'O':'X';
+  }
   currentPlayer=Number(gs.currentPlayer)===1?1:0;
   if(MY_SLOT===1){matchW=Number(gs.matchW)||0;matchR=Number(gs.matchR)||0;}
   else{matchW=Number(gs.matchR)||0;matchR=Number(gs.matchW)||0;}
@@ -773,7 +778,10 @@ function initSocket(){
           gameReady=!mancheOver&&!data.paused;updUI();applyPendingTimer();
         });
       }else{
-        showToast('🎲','Partie commencée',(MY_PLAYER===0?'Vous commencez (X)':OP_NAME+' commence (X)'),2400,function(){
+        var openerSlot=Number(data.gameState.currentPlayer)===1?2:1;
+        showToast('🎲','Partie commencée',
+          openerSlot===MY_SLOT ? 'Vous commencez cette manche.' : OP_NAME+' commence cette manche.',
+          2400,function(){
           gameReady=!mancheOver;updUI();applyPendingTimer();
         });
       }
@@ -811,7 +819,7 @@ function initSocket(){
     var incomingRevision=Math.max(0,Number(data.revision)||0);
     if(incomingRevision<lastServerRevision)return;
     lastServerRevision=incomingRevision;
-    var sym=data.player===1?'X':'O';
+    var sym=data.symbol==='O'?'O':(data.symbol==='X'?'X':symbolForSlot(data.player));
     var index=bIdx(data.row,data.col);
     if(!board[index])placeSymbol(sym,data.row,data.col);
     else if(board[index]!==sym){socket.emit('ttt_request_state',{room:ROOM_ID});return;}
@@ -839,7 +847,7 @@ function initSocket(){
     authoritativeMatchWinner=Number(data.matchWinner)||0;
     pendingMove=null;gameReady=false;isProcessing=true;roundAnimationActive=true;updateDots();
     if(data.winner==='draw')handleDraw();
-    else{var winSym=data.winner===1?'X':'O';var winLine=data.winLine||null;if(winLine)handleWin(winSym,winLine);else{socket.emit('ttt_request_state',{room:ROOM_ID});handleDraw();}}
+    else{var winSym=symbolForSlot(Number(data.winner));var winLine=data.winLine||null;if(winLine)handleWin(winSym,winLine);else{socket.emit('ttt_request_state',{room:ROOM_ID});handleDraw();}}
   });
 
   socket.on('ttt_state_sync',function(data){
@@ -960,6 +968,7 @@ function stopTimer(){
   if(arcA)arcA.style.strokeDashoffset=CIRC;
   document.getElementById('profile-human').className='profile';
   document.getElementById('profile-ai').className='profile';
+  restoreTurnProfilePhotos();
 }
 function stopGraceTimer(){
   graceActive=false;
@@ -975,6 +984,7 @@ function startTimer(isMyTurn,serverStartTime){
   var profId=isMyTurn?'profile-human':'profile-ai';
   var arc=document.getElementById(arcId),prof=document.getElementById(profId);
   prof.classList.add('active',isMyTurn?'human-active':'ai-active');
+  showTurnSymbol(isMyTurn);
   function tick(){
     if(!timerActive)return;
     var progress=Math.min((Date.now()-timerStart)/TIMER_DURATION,1);
@@ -996,6 +1006,7 @@ function startGraceTimer(isMyTurn,serverStartTime,duration){
   var profId=isMyTurn?'profile-human':'profile-ai';
   var arc=document.getElementById(arcId),prof=document.getElementById(profId);
   prof.classList.add('active',isMyTurn?'human-active':'ai-active','timer-urgent');
+  showTurnSymbol(isMyTurn);
   function tick(){
     if(!graceActive)return;
     var elapsed=Date.now()-graceStart,remaining=Math.max(0,graceDuration-elapsed);
@@ -1181,8 +1192,8 @@ function setProfilePhoto(hostId,url,fallbackHtml){
   if(!url){host.innerHTML=fallbackHtml;return;}
   var img=new Image();
   img.className='profile-photo';img.alt='';img.referrerPolicy='no-referrer';
-  img.onerror=function(){host.innerHTML=fallbackHtml;};
-  img.onload=function(){host.innerHTML='';host.appendChild(img);};
+  img.onerror=function(){if(host.dataset.turnSymbol!=='1')host.innerHTML=fallbackHtml;};
+  img.onload=function(){if(host.dataset.turnSymbol!=='1'){host.innerHTML='';host.appendChild(img);}};
   img.src=url;
 }
 /* Marque le corps de page comme « spectateur ». La classe survit a
@@ -1194,6 +1205,19 @@ function applyChrome(){
 }
 var AV_X='<div class="av-x"><div class="av-x-arm"></div><div class="av-x-arm"></div></div>';
 var AV_O='<div class="av-o"></div>';
+
+function restoreTurnProfilePhotos(){
+  if(typeof setProfilePhoto!=='function')return;
+  var mine=document.getElementById('avatar-human'), other=document.getElementById('avatar-ai');
+  if(mine)delete mine.dataset.turnSymbol;
+  if(other)delete other.dataset.turnSymbol;
+  setProfilePhoto('avatar-human',MY_SLOT===1?P1_AVATAR:P2_AVATAR,MY_SYMBOL==='X'?AV_X:AV_O);
+  setProfilePhoto('avatar-ai',MY_SLOT===1?P2_AVATAR:P1_AVATAR,OP_SYMBOL==='X'?AV_X:AV_O);
+}
+function showTurnSymbol(isMyTurn){
+  var host=document.getElementById(isMyTurn?'avatar-human':'avatar-ai');
+  if(host){host.dataset.turnSymbol='1';host.innerHTML=isMyTurn?(MY_SYMBOL==='X'?AV_X:AV_O):(OP_SYMBOL==='X'?AV_X:AV_O);}
+}
 
 function updUI(){
   var myAvatar =MY_SLOT===1?P1_AVATAR:P2_AVATAR;

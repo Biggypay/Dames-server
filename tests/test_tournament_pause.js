@@ -98,10 +98,18 @@ async function main() {
     const start2 = once(p2, 'ttt_start');
     p1.emit('ttt_join', { room: GAME_ID, player: 1, supabaseId: P1, name: 'Alice', bet: 0, currency: 'HTG', gameId: GAME_ID });
     p2.emit('ttt_join', { room: GAME_ID, player: 2, supabaseId: P2, name: 'Bob', bet: 0, currency: 'HTG', gameId: GAME_ID });
-    await Promise.all([start1, start2]);
+    const [startedP1] = await Promise.all([start1, start2]);
+    const openingSlot = Number(startedP1.gameState && startedP1.gameState.currentPlayer) === 1 ? 2 : 1;
+    const openingSocket = openingSlot === 1 ? p1 : p2;
+    const waitingSocket = openingSlot === 1 ? p2 : p1;
+    const openingSymbol = startedP1.gameState.slotSymbols[openingSlot] === 'O' ? 'O' : 'X';
+    const secondSlot = openingSlot === 1 ? 2 : 1;
+    const secondSocket = secondSlot === 1 ? p1 : p2;
+    const secondSymbol = startedP1.gameState.slotSymbols[secondSlot] === 'O' ? 'O' : 'X';
+    check('the randomly selected TTT opener receives X', openingSymbol === 'X', startedP1.gameState);
 
-    const firstMove = once(p2, 'ttt_move');
-    p1.emit('ttt_move', { room: GAME_ID, player: 1, row: 0, col: 0, symbol: 'X' });
+    const firstMove = once(waitingSocket, 'ttt_move');
+    openingSocket.emit('ttt_move', { room: GAME_ID, player: openingSlot, row: 0, col: 0, symbol: openingSymbol });
     await firstMove;
 
     paused = true; revision++;
@@ -111,7 +119,7 @@ async function main() {
     let movedWhilePaused = false;
     const forbiddenMove = () => { movedWhilePaused = true; };
     p1.once('ttt_move', forbiddenMove);
-    p2.emit('ttt_move', { room: GAME_ID, player: 2, row: 1, col: 1, symbol: 'O' });
+    secondSocket.emit('ttt_move', { room: GAME_ID, player: secondSlot, row: 1, col: 1, symbol: secondSymbol });
     await sleep(500);
     p1.off('ttt_move', forbiddenMove);
     check('moves are rejected while the tournament is paused', movedWhilePaused === false);
@@ -120,7 +128,7 @@ async function main() {
     const resumeNotice = await once(p1, 'tournament:resumed');
     check('resume reaches active players', resumeNotice.waitingForPlayers === false, resumeNotice);
     const resumedMove = once(p1, 'ttt_move');
-    p2.emit('ttt_move', { room: GAME_ID, player: 2, row: 1, col: 1, symbol: 'O' });
+    secondSocket.emit('ttt_move', { room: GAME_ID, player: secondSlot, row: 1, col: 1, symbol: secondSymbol });
     const move = await resumedMove;
     check('the same board continues after resume', move.row === 1 && move.col === 1, move);
   } finally {
