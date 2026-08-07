@@ -1368,29 +1368,34 @@ document.getElementById('btn-cam').addEventListener('click',function(){
    RAYCASTING — CLIC / TOUCH
 ══════════════════════════════════════════ */
 var ray=new THREE.Raycaster(),mouse2=new THREE.Vector2();
-function hitTest(cx,cy){
-  if(mancheOver||matchOver||isProcessing)return;
+/*
+ * The previous picker raycast every board child and used whichever invisible
+ * cell happened to be returned first. With an angled/rotating camera, that
+ * could select a neighbouring cell. Pick the mathematical board plane first,
+ * then derive its row and column from the exact world position.
+ */
+var boardPickPlane=new THREE.Plane(new THREE.Vector3(0,1,0),-0.21);
+var boardPickPoint=new THREE.Vector3();
+function boardCellAtPointer(cx,cy){
   var rect=renderer.domElement.getBoundingClientRect();
   mouse2.x=((cx-rect.left)/rect.width)*2-1;
   mouse2.y=-((cy-rect.top)/rect.height)*2+1;
   ray.setFromCamera(mouse2,camera);
-  var hits=ray.intersectObjects(boardGroup.children);
-  for(var i=0;i<hits.length;i++){
-    var ud=hits[i].object.userData;
-    if(ud.row!==undefined&&!board[bIdx(ud.row,ud.col)]){playCell(ud.row,ud.col);return;}
-  }
+  if(!ray.ray.intersectPlane(boardPickPlane,boardPickPoint))return null;
+  var col=Math.floor((boardPickPoint.x+3)/2);
+  var row=Math.floor((boardPickPoint.z+3)/2);
+  if(row<0||row>2||col<0||col>2)return null;
+  return {row:row,col:col};
+}
+function hitTest(cx,cy){
+  if(mancheOver||matchOver||isProcessing)return;
+  var cell=boardCellAtPointer(cx,cy);
+  if(cell&&!board[bIdx(cell.row,cell.col)])playCell(cell.row,cell.col);
 }
 function hoverTest(cx,cy){
   if(mancheOver||isProcessing||currentPlayer!==MY_PLAYER)return;
-  var rect=renderer.domElement.getBoundingClientRect();
-  mouse2.x=((cx-rect.left)/rect.width)*2-1;
-  mouse2.y=-((cy-rect.top)/rect.height)*2+1;
-  ray.setFromCamera(mouse2,camera);
-  var hits=ray.intersectObjects(boardGroup.children);
-  for(var i=0;i<hits.length;i++){
-    var ud=hits[i].object.userData;
-    if(ud.row!==undefined&&!board[bIdx(ud.row,ud.col)]){showHL(ud.row,ud.col);return;}
-  }
+  var cell=boardCellAtPointer(cx,cy);
+  if(cell&&!board[bIdx(cell.row,cell.col)]){showHL(cell.row,cell.col);return;}
   clearHL();
 }
 
