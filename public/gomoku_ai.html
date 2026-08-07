@@ -429,10 +429,14 @@ function aiPlay() {
 function pointerCell(evt) {
   var rect = canvas.getBoundingClientRect();
   var src = evt.changedTouches ? evt.changedTouches[0] : evt;
-  /* Le canvas fixe lui-meme sa taille CSS dans calcLayout(). Garder la
-     conversion historique : elle aligne exactement le tap et le tracé. */
-  var x = src.clientX - rect.left - ORIGIN;
-  var y = src.clientY - rect.top - ORIGIN;
+  /* Même conversion que le mode multijoueur : un canvas réduit par l'iframe
+     PWA conserve ainsi une correspondance exacte entre toucher et case. */
+  var logicalWidth = canvas.width / DPR;
+  var logicalHeight = canvas.height / DPR;
+  var scaleX = logicalWidth / rect.width;
+  var scaleY = logicalHeight / rect.height;
+  var x = (src.clientX - rect.left) * scaleX - ORIGIN;
+  var y = (src.clientY - rect.top) * scaleY - ORIGIN;
   var c = Math.floor(x / CELL), r = Math.floor(y / CELL);
   if (!inBounds(r, c)) return null;
   return { r: r, c: c };

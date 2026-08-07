@@ -80,6 +80,27 @@ async function main() {
       throw new Error(`mapping de cases invalide: ${JSON.stringify(mapped)}`);
     }
 
+    const scaledMapped = await page.evaluate(targetCells => {
+      const canvas = document.getElementById('board');
+      canvas.style.width = `${(canvas.width / DPR) * 0.72}px`;
+      canvas.style.height = `${(canvas.height / DPR) * 0.72}px`;
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = rect.width / (canvas.width / DPR);
+      const scaleY = rect.height / (canvas.height / DPR);
+      return targetCells.map(([row, col]) => {
+        const point = {
+          clientX: rect.left + (ORIGIN + col * CELL + CELL / 2) * scaleX,
+          clientY: rect.top + (ORIGIN + row * CELL + CELL / 2) * scaleY
+        };
+        const cell = pointerCell(point);
+        return { expected: [row, col], actual: cell ? [cell.r, cell.c] : null };
+      });
+    }, targets);
+    if (scaledMapped.some(item => !item.actual || item.actual[0] !== item.expected[0] || item.actual[1] !== item.expected[1])) {
+      throw new Error(`mapping redimensionné invalide: ${JSON.stringify(scaledMapped)}`);
+    }
+    await page.evaluate(() => { calcLayout(); draw(); });
+
     const center = await page.evaluate(() => {
       const rect = document.getElementById('board').getBoundingClientRect();
       return { x: rect.left + ORIGIN + 7 * CELL + CELL / 2, y: rect.top + ORIGIN + 7 * CELL + CELL / 2 };
@@ -107,7 +128,7 @@ async function main() {
     }
     if (errors.length) throw new Error(`exceptions navigateur: ${errors.join(' | ')}`);
 
-    console.log('  OK les cases touchées correspondent exactement aux cases jouées');
+    console.log('  OK les cases touchées correspondent exactement aux cases jouées, même après redimensionnement');
     console.log('  OK le X humain démarre avec son animation progressive');
     console.log('  OK l’IA répond, dessine son O et termine les deux animations');
     console.log('  OK aucune exception JavaScript dans le mode IA');
