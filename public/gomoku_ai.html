@@ -435,8 +435,14 @@ function aiPlay() {
 function pointerCell(evt) {
   var rect = canvas.getBoundingClientRect();
   var src = evt.changedTouches ? evt.changedTouches[0] : evt;
-  var x = src.clientX - rect.left - ORIGIN;
-  var y = src.clientY - rect.top - ORIGIN;
+  /* The canvas may be visually scaled by the responsive iframe. Convert the
+     tap back into the logical canvas coordinates before choosing a square;
+     otherwise a correct tap can land in a neighbouring cell and make the
+     drawing animation appear to jump. */
+    var logicalWidth = canvas.width / DPR;
+    var scaleX = logicalWidth / rect.width, scaleY = (canvas.height / DPR) / rect.height;
+  var x = (src.clientX - rect.left) * scaleX - ORIGIN;
+  var y = (src.clientY - rect.top) * scaleY - ORIGIN;
   var c = Math.floor(x / CELL), r = Math.floor(y / CELL);
   if (!inBounds(r, c)) return null;
   return { r: r, c: c };
