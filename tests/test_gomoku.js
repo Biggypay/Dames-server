@@ -149,44 +149,54 @@ async function main() {
     const [s1, s2] = await Promise.all([start1, start2]);
     check('les deux joueurs reçoivent gomoku_start', s1.yourSlot === 1 && s2.yourSlot === 2, { s1, s2 });
 
-    // Le slot 1 ouvre : jouer hors tour ne doit rien produire.
-    const outOfTurn = once(p2, 'game:error', 2500).catch(() => null);
-    p2.emit('gomoku_move', { room: ROOM, player: 2, data: { r: 0, c: 0 } });
+    // Le serveur tire le premier joueur. Le protocole doit fonctionner quel
+    // que soit le slot gagnant du tirage, pas seulement quand le slot 1 ouvre.
+    const openingSlot = s1.currentSlot;
+    check('le premier joueur est tiré par le serveur et synchronisé',
+      (openingSlot === 1 || openingSlot === 2) && s2.currentSlot === openingSlot,
+      { s1, s2 });
+    const opener = openingSlot === 1 ? p1 : p2;
+    const responder = openingSlot === 1 ? p2 : p1;
+    const responderSlot = openingSlot === 1 ? 2 : 1;
+
+    // Jouer hors tour ne doit rien produire.
+    const outOfTurn = once(responder, 'game:error', 2500).catch(() => null);
+    responder.emit('gomoku_move', { room: ROOM, player: responderSlot, data: { r: 0, c: 0 } });
     const refusal = await outOfTurn;
     check('un coup hors tour est refusé', !!refusal, refusal);
 
-    // Alignement horizontal du slot 1 en ligne 7, colonnes 3..7.
-    // Le slot 2 répond loin de là pour ne pas bloquer.
+    // L'ouvreur aligne cinq pions en ligne 7. L'autre répond loin de là pour
+    // ne pas bloquer, ce qui valide aussi le cas où le slot 2 commence.
     let last = null;
     for (let step = 0; step < 4; step++) {
-      last = await play(p1, p1, 1, 7, 3 + step);
-      check(`coup ${step + 1} du slot 1 diffusé`, last && last.player === 1, last);
-      const reply = await play(p2, p2, 2, 0, step);
-      check(`réponse ${step + 1} du slot 2 diffusée`, reply && reply.player === 2, reply);
+      last = await play(opener, opener, openingSlot, 7, 3 + step);
+      check(`coup ${step + 1} de l'ouvreur diffusé`, last && last.player === openingSlot, last);
+      const reply = await play(responder, responder, responderSlot, 0, step);
+      check(`réponse ${step + 1} de l'adversaire diffusée`, reply && reply.player === responderSlot, reply);
     }
 
     // Case déjà occupée : refus, sans altérer le plateau.
-    const occupied = once(p1, 'game:error', 2500).catch(() => null);
-    p1.emit('gomoku_move', { room: ROOM, player: 1, data: { r: 7, c: 3 } });
+    const occupied = once(opener, 'game:error', 2500).catch(() => null);
+    opener.emit('gomoku_move', { room: ROOM, player: openingSlot, data: { r: 7, c: 3 } });
     check('une case occupée est refusée', !!(await occupied));
 
-    // Cinquième pion : victoire du slot 1.
+    // Cinquième pion : victoire de l'ouvreur.
     const over1 = once(p1, 'game:over');
     const over2 = once(p2, 'game:over');
-    const winningBroadcast = onceMatching(p1, 'gomoku_move',
-      d => d && d.player === 1 && d.data && d.data.r === 7 && d.data.c === 7);
-    p1.emit('gomoku_move', { room: ROOM, player: 1, data: { r: 7, c: 7 } });
+    const winningBroadcast = onceMatching(opener, 'gomoku_move',
+      d => d && d.player === openingSlot && d.data && d.data.r === 7 && d.data.c === 7);
+    opener.emit('gomoku_move', { room: ROOM, player: openingSlot, data: { r: 7, c: 7 } });
     const winMove = await winningBroadcast;
     check('le serveur renvoie la ligne gagnante', Array.isArray(winMove.winLine) && winMove.winLine.length === 5, winMove.winLine);
 
     const [end1, end2] = await Promise.all([over1, over2]);
-    check('le slot 1 est déclaré vainqueur', end1.winnerSlot === 1 && end1.result === 'win', end1);
-    check('le slot 2 est déclaré perdant', end2.winnerSlot === 1 && end2.result === 'loss', end2);
+    check('l’ouvreur est déclaré vainqueur', end1.winnerSlot === openingSlot && end1.result === (openingSlot === 1 ? 'win' : 'loss'), end1);
+    check('l’adversaire est déclaré perdant', end2.winnerSlot === openingSlot && end2.result === (openingSlot === 2 ? 'win' : 'loss'), end2);
     check('la partie se règle en une seule manche', end1.reason === 'normal', end1.reason);
 
     // Une fois la partie finie, plus aucun coup n'est accepté.
-    const afterEnd = once(p2, 'gomoku_move', 1500).catch(() => null);
-    p2.emit('gomoku_move', { room: ROOM, player: 2, data: { r: 5, c: 5 } });
+    const afterEnd = once(responder, 'gomoku_move', 1500).catch(() => null);
+    responder.emit('gomoku_move', { room: ROOM, player: responderSlot, data: { r: 5, c: 5 } });
     check('aucun coup n’est accepté après la fin', !(await afterEnd));
   } finally {
     for (const socket of sockets) socket.disconnect();
