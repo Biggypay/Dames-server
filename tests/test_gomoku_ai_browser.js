@@ -115,6 +115,16 @@ async function main() {
       throw new Error(`animation humaine absente: ${JSON.stringify(duringAnimation)}`);
     }
 
+    await sleep(680);
+    const beforeAiTurn = await page.evaluate(() => ({
+      human: board.filter(value => value === HUMAN).length,
+      ai: board.filter(value => value === AI).length,
+      humanAnimationFinished: !stoneAnimations[7 * SIZE + 7]
+    }));
+    if (beforeAiTurn.human !== 1 || beforeAiTurn.ai !== 0 || !beforeAiTurn.humanAnimationFinished) {
+      throw new Error(`l'IA a joué avant la fin du tour humain: ${JSON.stringify(beforeAiTurn)}`);
+    }
+
     await page.waitForFunction(() => board.filter(Boolean).length >= 2, null, { timeout: 3000 });
     await page.waitForFunction(() => Object.keys(stoneAnimations).length === 0, null, { timeout: 3000 });
     const finalState = await page.evaluate(() => ({
@@ -130,6 +140,7 @@ async function main() {
 
     console.log('  OK les cases touchées correspondent exactement aux cases jouées, même après redimensionnement');
     console.log('  OK le X humain démarre avec son animation progressive');
+    console.log('  OK l’IA attend la fin complète du X avant de jouer');
     console.log('  OK l’IA répond, dessine son O et termine les deux animations');
     console.log('  OK aucune exception JavaScript dans le mode IA');
     console.log('OK parcours navigateur Gomoku IA passé');

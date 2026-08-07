@@ -104,6 +104,9 @@ var HUMAN = 1, AI = 2;
 var board, currentSlot, lastMove, winLine, gameOver, thinking;
 /* Strictly visual: the board state remains authoritative for the rules. */
 var stoneAnimations = Object.create(null);
+var STONE_ANIMATION_MS = 420;
+var AI_RESPONSE_PAUSE_MS = 500;
+var AI_RESPONSE_JITTER_MS = 250;
 var difficulty = 2;
 
 function idx(r, c) { return r * SIZE + c; }
@@ -346,7 +349,7 @@ function draw() {
       if (!v) continue;
       var p = cellCenter(r, c);
       var key = idx(r, c), animation = stoneAnimations[key];
-      var progress = animation ? Math.min(1, (Date.now() - animation.startedAt) / 420) : 1;
+      var progress = animation ? Math.min(1, (Date.now() - animation.startedAt) / STONE_ANIMATION_MS) : 1;
       if (v === HUMAN) drawCross(p.x, p.y, stone, key + 1, progress);
       else drawCircle(p.x, p.y, stone, key + 1, progress);
       if (animation && progress >= 1) delete stoneAnimations[key];
@@ -415,15 +418,15 @@ function aiPlay() {
   if (gameOver) return;
   thinking = true;
   updUI();
-  /* Petit délai : un coup instantané donne l'impression d'un bug, pas d'un
-     adversaire. */
+  /* Le X du joueur doit finir de se dessiner avant le début du O de l'IA.
+     On ajoute ensuite une courte réflexion pour séparer clairement les tours. */
   setTimeout(function () {
     if (gameOver) { thinking = false; return; }
     var move = aiChooseMove();
     thinking = false;
     if (!move) { updUI(); return; }
     place(move.r, move.c, AI);
-  }, 260 + Math.random() * 320);
+  }, STONE_ANIMATION_MS + AI_RESPONSE_PAUSE_MS + Math.random() * AI_RESPONSE_JITTER_MS);
 }
 
 function pointerCell(evt) {
