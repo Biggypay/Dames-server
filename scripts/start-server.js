@@ -51,8 +51,8 @@ function patchServer(raw) {
 
   source = replaceOnce(
     source,
-    "const gameState = {\n    board:",
-    "const gameState = {\n    series: seriesPayload(groom),\n    board:",
+    "function gomokuSnapshot(groom) {\n  const state = groom.gameState || gomokuInitialState();\n  const gameState = {\n    board:",
+    "function gomokuSnapshot(groom) {\n  const state = groom.gameState || gomokuInitialState();\n  const gameState = {\n    series: seriesPayload(groom),\n    board:",
     'snapshot series payload'
   );
 
@@ -102,8 +102,8 @@ function patchGomokuHtml(raw) {
   html = replaceOnce(
     html,
     "socket.on('gomoku_start', function (data) {\n    document.getElementById('waiting-overlay').classList.add('hidden');",
-    "socket.on('gomoku_start', function (data) {\n    document.getElementById('waiting-overlay').classList.add('hidden');\n    if (data && data.series) updateSeriesUI(data.series);",
-    'start series sync'
+    "socket.on('gomoku_start', function (data) {\n    document.getElementById('waiting-overlay').classList.add('hidden');\n    if (data && (data.yourSlot === 1 || data.yourSlot === 2)) MY_SLOT = data.yourSlot;\n    if (data && data.series) updateSeriesUI(data.series);",
+    'authoritative player slot and series sync'
   );
 
   html = replaceOnce(
