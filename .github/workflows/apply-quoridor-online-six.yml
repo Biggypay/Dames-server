@@ -1,6 +1,8 @@
 name: Apply Quoridor-only online six rounds
 
 on:
+  push:
+    branches: [fix/correct-round-rules]
   pull_request:
     branches: [main]
 
