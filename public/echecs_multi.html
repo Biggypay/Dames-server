@@ -41,6 +41,9 @@ body.chrome-hidden #bot,body.chrome-hidden #hint{display:none!important}
 .timer-urgent .timer-arc{animation:urgentPulse 0.5s infinite alternate}
 @keyframes urgentPulse{from{opacity:1}to{opacity:0.4}}
 
+.rounds-progress{display:flex;gap:5px;margin-top:5px;align-items:center;justify-content:center}
+.round-dot{width:24px;height:5px;border-radius:3px;background:rgba(255,255,255,.09);transition:all .25s ease}
+.round-dot.win{background:#22c55e}.round-dot.lose{background:#ef4444}.round-dot.draw{background:#fbbf24}.round-dot.current{background:rgba(255,255,255,.42);box-shadow:0 0 7px rgba(255,255,255,.45)}
 /* BADGE MISE */
 .bet-badge{font-size:9px;background:rgba(251,191,36,0.15);border:1px solid rgba(251,191,36,0.4);border-radius:99px;padding:2px 8px;color:#fbbf24;font-weight:600;letter-spacing:0.5px;margin-top:2px}
 
@@ -118,6 +121,7 @@ body.chrome-hidden #forfeit-bar,body.spectator #forfeit-bar{display:none!importa
   <div class="top-center">
     <div class="score-row"><span class="snum sw" id="score-w">16</span><span class="ssep">vs</span><span class="snum sr" id="score-r">16</span></div>
     <span class="manche-lbl">Échecs Multijoueur</span>
+    <div class="rounds-progress" id="roundsProgress"></div>
     <div class="bet-badge" id="betBadge" style="display:none;"></div>
   </div>
   <div class="profile" id="profile-ai">
@@ -236,6 +240,15 @@ window.addEventListener('message', function(e){
     socket.emit('game_mutual_quit',{room:ROOM_ID,game:'echecs',player:MY_SLOT});
 });
 
+var seriesState={regularRounds:6,roundsPlayed:0,currentRound:1,wins:{1:0,2:0},draws:0,history:[],suddenDeath:false};
+function updateSeriesUI(next){
+  if(next&&typeof next==='object') seriesState=next;
+  var el=document.getElementById('roundsProgress'); if(!el)return; el.innerHTML='';
+  var played=Math.min(6,Number(seriesState.roundsPlayed)||0), hist=Array.isArray(seriesState.history)?seriesState.history:[];
+  for(var i=0;i<6;i++){var d=document.createElement('span');d.className='round-dot';
+    if(i<played){var r=hist[i];d.className+=' '+(r===MY_SLOT?'win':r===0?'draw':(r===1||r===2)?'lose':'');}
+    else if(i===played&&!seriesState.suddenDeath)d.className+=' current'; el.appendChild(d);}
+}
 var MY_PLAYER = MY_SLOT === 1 ? 0 : 1; // 0=Blanc, 1=Rouge (Noirs)
 if(IS_SPECTATOR){
   document.body.classList.add('spectator');
@@ -391,6 +404,8 @@ function initSocket(){
   });
 
   socket.on('echecs_start', function(data){
+    if(data&&data.whiteSlot) MY_PLAYER = MY_SLOT===data.whiteSlot?0:1;
+    if(data&&data.series) updateSeriesUI(data.series);
     hideLoading();
     if(data.reconnected && data.gameState){
       /* On ne saute la restauration que si le serveur confirme (même version)
@@ -453,7 +468,10 @@ function initSocket(){
     else if(data.turnStartTime) startTimer(isMyTurn, data.turnStartTime+offset);
   });
 
-  socket.on('echecs_move', function(data){
+  socket.on('echecs_round_end',function(data){if(!data)return;if(data.series)updateSeriesUI(data.series);gameReady=false;stopTimer();stopGraceTimer();var mine=data.roundWinner===MY_SLOT,drawn=!data.roundWinner,sc=seriesState.wins||{1:0,2:0};showToast(drawn?'🤝':mine?'🏆':'🎯',drawn?'Manche nulle':mine?'Manche gagnée':'Manche perdue','Score : '+(sc[MY_SLOT]||0)+' — '+(sc[MY_SLOT===1?2:1]||0),1700);});
+socket.on('echecs_round_start',function(data){if(!data||gameOver)return;if(data.whiteSlot)MY_PLAYER=MY_SLOT===data.whiteSlot?0:1;if(data.series)updateSeriesUI(data.series);startMultiGame();});
+
+socket.on('echecs_move', function(data){
     if(data.player === MY_SLOT) return;
     if(typeof data.version === 'number'){
       if(data.version <= stateVersion) return;                            // doublon / déjà appliqué
@@ -472,6 +490,8 @@ function initSocket(){
   /* Filet de sécurité : le serveur renvoie l'état exact toutes les quelques
      secondes (et sur demande). Si le plateau local a divergé, on se recale. */
   socket.on('echecs_state_sync', function(data){
+    if(data&&data.whiteSlot) MY_PLAYER = MY_SLOT===data.whiteSlot?0:1;
+    if(data&&data.series) updateSeriesUI(data.series);
     if(gameOver || !gameReady || !data || data.room !== ROOM_ID) return;
     if(isProcessing || ackTimer || pendingPromotion) return; // animation ou coup en vol : on laisse finir
     var serverState;

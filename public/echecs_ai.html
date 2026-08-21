@@ -37,6 +37,9 @@ body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%
 .timer-urgent .timer-arc{animation:urgentPulse 0.5s infinite alternate}
 @keyframes urgentPulse{from{opacity:1}to{opacity:0.4}}
 
+.rounds-progress{display:flex;gap:5px;margin-top:5px;align-items:center;justify-content:center}
+.round-dot{width:24px;height:5px;border-radius:3px;background:rgba(255,255,255,.09);transition:all .25s ease}
+.round-dot.win{background:#22c55e}.round-dot.lose{background:#ef4444}.round-dot.draw{background:#fbbf24}.round-dot.current{background:rgba(255,255,255,.42);box-shadow:0 0 7px rgba(255,255,255,.45)}
 /* BADGE MISE */
 .bet-badge{font-size:9px;background:rgba(251,191,36,0.15);border:1px solid rgba(251,191,36,0.4);border-radius:99px;padding:2px 8px;color:#fbbf24;font-weight:600;letter-spacing:0.5px;margin-top:2px}
 
@@ -118,6 +121,7 @@ body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%
   <div class="top-center">
     <div class="score-row"><span class="snum sw" id="score-w">16</span><span class="ssep">vs</span><span class="snum sr" id="score-r">16</span></div>
     <span class="manche-lbl">Entraînement · IA</span>
+    <div class="rounds-progress" id="roundsProgress"></div>
     <div class="bet-badge" id="betBadge" style="display:none;"></div>
   </div>
   <div class="profile" id="profile-ai">
@@ -191,6 +195,10 @@ var MY_PLAYER = 0; // 0=Blanc (humain), 1=Rouge (IA)
 var MY_NAME = P.get('name') || P.get('username') || 'Vous';
 var OP_NAME = 'IA';
 
+var practiceSeries={regularRounds:6,roundsPlayed:0,currentRound:1,wins:{1:0,2:0},draws:0,history:[],suddenDeath:false};
+function updatePracticeBars(){var el=document.getElementById('roundsProgress');if(!el)return;el.innerHTML='';for(var i=0;i<6;i++){var d=document.createElement('span');d.className='round-dot';if(i<Math.min(6,practiceSeries.roundsPlayed)){var r=practiceSeries.history[i];d.className+=' '+(r===1?'win':r===0?'draw':'lose');}else if(i===Math.min(6,practiceSeries.roundsPlayed)&&!practiceSeries.suddenDeath)d.className+=' current';el.appendChild(d);}}
+function resetPracticeSeries(){practiceSeries={regularRounds:6,roundsPlayed:0,currentRound:1,wins:{1:0,2:0},draws:0,history:[],suddenDeath:false};updatePracticeBars();}
+function recordPracticeRound(w){practiceSeries.roundsPlayed++;if(w)practiceSeries.wins[w]=(practiceSeries.wins[w]||0)+1;else practiceSeries.draws++;if(practiceSeries.history.length<6)practiceSeries.history.push(w||0);var a=practiceSeries.wins[1]||0,b=practiceSeries.wins[2]||0,over=false,mw=0;if(practiceSeries.suddenDeath){if(w){over=true;mw=w;}}else if(practiceSeries.roundsPlayed<6){if(Math.abs(a-b)>6-practiceSeries.roundsPlayed){over=true;mw=a>b?1:2;}}else if(a!==b){over=true;mw=a>b?1:2;}else practiceSeries.suddenDeath=true;if(!over)practiceSeries.currentRound=practiceSeries.roundsPlayed+1;updatePracticeBars();return{matchOver:over,matchWinner:mw};}
 var resultSent = false;
 var gameOver = false, isProcessing = false, gameReady = false;
 var S = Chess.initialState();
@@ -208,6 +216,7 @@ function hideLoading(){
 }
 
 function startAIGame(){
+  resetPracticeSeries();
   var rb = document.getElementById('replay-btn'); if(rb) rb.classList.remove('show');
   hideLoading();
   startGame();
@@ -746,7 +755,9 @@ function drawLabel(reason){
   return 'Match nul.';
 }
 
-function handleGameEnd(winner, reason){
+function handleGameEnd(winner,reason){if(gameOver)return;var slot=winner===-1||winner===null?0:(winner===MY_PLAYER?1:2);var rr=recordPracticeRound(slot);if(rr.matchOver)return showFinalGameEnd(rr.matchWinner===1?MY_PLAYER:1-MY_PLAYER,reason);gameOver=true;stopTimer();stopGraceTimer();var sc=practiceSeries.wins;showToast(slot===0?'🤝':slot===1?'🏆':'🎯',slot===0?'Manche nulle':slot===1?'Manche gagnée':'Manche perdue','Score : '+(sc[1]||0)+' — '+(sc[2]||0),1500,function(){startGame();});}
+
+function showFinalGameEnd(winner, reason){
   if(gameOver) return;
   stopTimer(); stopGraceTimer(); gameOver = true;
   hidePromoOverlay(); pendingPromotion = null;

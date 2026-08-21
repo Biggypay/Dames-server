@@ -1440,21 +1440,27 @@ function clearEchecsTurnTimers(eroom) {
   eroom.turnStartTime = null; eroom.graceStartTime = null; eroom.turnPlayer = null;
 }
 
+function echecsSlotForSide(eroom, side){
+  const whiteSlot = eroom && eroom.whiteSlot === 2 ? 2 : 1;
+  return side === 0 ? whiteSlot : (whiteSlot === 1 ? 2 : 1);
+}
+function echecsSideForSlot(eroom, slot){ return echecsSlotForSide(eroom,0) === slot ? 0 : 1; }
+
 function startEchecsTurnTimer(eroom, roomId, playerSlot) {
   clearEchecsTurnTimers(eroom);
-  if (eroom.status !== 'playing' || eroom.currentPlayer + 1 !== playerSlot) return;
+  if (eroom.status !== 'playing' || echecsSlotForSide(eroom, eroom.currentPlayer) !== playerSlot) return;
   const now = Date.now();
   eroom.turnPlayer = playerSlot; eroom.turnStartTime = now; eroom.graceStartTime = null;
   io.to(roomId).emit('echecs_turn_start', { player: playerSlot, startTime: now, duration: TURN_DURATION });
   eroom.turnTimer = setTimeout(() => {
     eroom.turnTimer = null;
-    if (eroom.status !== 'playing' || eroom.currentPlayer + 1 !== playerSlot || eroom.turnPlayer !== playerSlot) return;
+    if (eroom.status !== 'playing' || echecsSlotForSide(eroom, eroom.currentPlayer) !== playerSlot || eroom.turnPlayer !== playerSlot) return;
     const graceNow = Date.now();
     eroom.graceStartTime = graceNow;
     io.to(roomId).emit('echecs_turn_warning', { player: playerSlot, startTime: graceNow, duration: GRACE_DURATION });
     eroom.graceTimer = setTimeout(() => {
       eroom.graceTimer = null;
-      if (eroom.status !== 'playing' || eroom.currentPlayer + 1 !== playerSlot || eroom.turnPlayer !== playerSlot) return;
+      if (eroom.status !== 'playing' || echecsSlotForSide(eroom, eroom.currentPlayer) !== playerSlot || eroom.turnPlayer !== playerSlot) return;
       const winnerSlot = playerSlot === 1 ? 2 : 1;
       notifyEchecsRoomOver(eroom, roomId, winnerSlot, 'timeout');
     }, GRACE_DURATION);
@@ -1474,6 +1480,8 @@ function echecsSnapshot(eroom) {
     version: eroom.stateVersion || 0,
     gameState: JSON.stringify(ChessEngine.exportState(ensureEchecsEngineState(eroom))),
     currentPlayer: eroom.currentPlayer,
+    whiteSlot: eroom.whiteSlot === 2 ? 2 : 1,
+    series: seriesPayload(eroom),
     lastMove: eroom.lastMove || null,
     status: eroom.status,
     serverTime: Date.now()
@@ -1572,6 +1580,7 @@ function clearQuoriTurnTimers(qroom) {
 function quoriSnapshot(qroom) {
   const state = qroom.gameState || quoriInitialState();
   const gameState = {
+    series: seriesPayload(qroom),
     s1Pos: { r: Number(state.s1Pos?.r), c: Number(state.s1Pos?.c) },
     s2Pos: { r: Number(state.s2Pos?.r), c: Number(state.s2Pos?.c) },
     s1Walls: Number(state.s1Walls),
@@ -2128,7 +2137,7 @@ function resumeTimersForGame(gameName, room) {
   else if (gameName === 'tictactoe') startTTTTurnTimer(room, room.id, room.pausedTurnPlayer || room.turnPlayer || ((room.gameState?.currentPlayer || 0) + 1));
   else if (gameName === 'quoridor') startQuoriTurnTimer(room, room.id, room.pausedTurnPlayer || room.turnPlayer || room.currentSlot || 1);
   else if (gameName === 'gomoku') startGomokuTurnTimer(room, room.id, room.pausedTurnPlayer || room.turnPlayer || room.currentSlot || 1);
-  else if (gameName === 'echecs') startEchecsTurnTimer(room, room.id, room.pausedTurnPlayer || room.turnPlayer || (room.currentPlayer + 1) || 1);
+  else if (gameName === 'echecs') startEchecsTurnTimer(room, room.id, room.pausedTurnPlayer || room.turnPlayer || echecsSlotForSide(room, room.currentPlayer));
   else if (gameName === 'penalty') startPenaltyTurnTimer(room, room.id);
   else if (gameName === 'chifoumi') {
     if (room.awaitingNextRound === true) scheduleNextChifoumiRound(room, room.id);
@@ -2289,6 +2298,23 @@ function notifyTTTRoomOver(troom, roomId, winnerSlot, reason = 'normal') {
   io.to(roomId).emit('game:result', { postMessage: base });
 }
 
+function finishQuoridorRound(qroom, roomId, winnerSlot, reason='normal'){
+  if(!qroom || qroom.status!=='playing') return;
+  clearQuoriTurnTimers(qroom); qroom.status='round_break';
+  const summary=recordRoundResult(qroom,winnerSlot);
+  io.to(roomId).emit('quoridor_round_end',{room:roomId,roundWinner:summary.roundWinner,reason,series:summary.series,serverTime:Date.now()});
+  persistRoomSoon('quoridor',qroom);
+  if(summary.matchOver) return setTimeout(()=>notifyQuoriRoomOver(qroom,roomId,summary.matchWinner,reason),1600);
+  setTimeout(()=>{
+    if(!qroom||qroom.status!=='round_break') return;
+    const starter=advanceRoundStarter(qroom); qroom.gameState=quoriInitialState(); qroom.currentSlot=starter; qroom.gameState.currentSlot=starter;
+    qroom.stateVersion=(Number(qroom.stateVersion)||0)+1; qroom.status='playing';
+    const payload={room:roomId,currentSlot:starter,gameState:JSON.stringify(qroom.gameState),version:qroom.stateVersion,series:seriesPayload(qroom),serverTime:Date.now()};
+    io.to(roomId).emit('quoridor_round_start',payload); io.to(roomId).emit('quoridor_state_sync',quoriSnapshot(qroom));
+    persistRoomSoon('quoridor',qroom); startQuoriTurnTimer(qroom,roomId,starter);
+  },2200);
+}
+
 function notifyQuoriRoomOver(qroom, roomId, winnerSlot, reason = 'normal') {
   if (qroom.status === 'finished') return;
   qroom.status = 'finished'; clearQuoriTurnTimers(qroom);
@@ -2402,6 +2428,24 @@ function notifyPenaltyRoomOver(proom, roomId, winnerSlot, reason = 'normal') {
   if (winP?.socketId) { io.to(winP.socketId).emit('game:over', { ...base, result: 'win',  myResult: +netGain }); io.to(winP.socketId).emit('game:result', { postMessage: { ...base, result: 'win',  myResult: +netGain } }); }
   if (losP?.socketId) { io.to(losP.socketId).emit('game:over', { ...base, result: 'loss', myResult: -bet }); io.to(losP.socketId).emit('game:result', { postMessage: { ...base, result: 'loss', myResult: -bet } }); }
   io.to(roomId).emit('game:result', { postMessage: base });
+}
+
+function finishEchecsRound(eroom, roomId, winnerSlot, reason='normal'){
+  if(!eroom || eroom.status!=='playing') return;
+  clearEchecsTurnTimers(eroom); eroom.status='round_break';
+  const summary=recordRoundResult(eroom,winnerSlot);
+  io.to(roomId).emit('echecs_round_end',{room:roomId,roundWinner:summary.roundWinner,reason,series:summary.series,serverTime:Date.now()});
+  persistRoomSoon('echecs',eroom);
+  if(summary.matchOver) return setTimeout(()=>notifyEchecsRoomOver(eroom,roomId,summary.matchWinner,reason),1600);
+  setTimeout(()=>{
+    if(!eroom||eroom.status!=='round_break') return;
+    eroom.whiteSlot=advanceRoundStarter(eroom);
+    eroom.engineState=ChessEngine.initialState(); eroom.currentPlayer=0; eroom.lastMove=null;
+    eroom.stateVersion=(Number(eroom.stateVersion)||0)+1; eroom.status='playing';
+    const payload={room:roomId,whiteSlot:eroom.whiteSlot,currentPlayer:0,gameState:JSON.stringify(ChessEngine.exportState(eroom.engineState)),version:eroom.stateVersion,series:seriesPayload(eroom),serverTime:Date.now()};
+    io.to(roomId).emit('echecs_round_start',payload); io.to(roomId).emit('echecs_state_sync',echecsSnapshot(eroom));
+    persistRoomSoon('echecs',eroom); startEchecsTurnTimer(eroom,roomId,eroom.whiteSlot);
+  },2200);
 }
 
 function notifyEchecsRoomOver(eroom, roomId, winnerSlot, reason = 'normal') {
@@ -3228,10 +3272,12 @@ io.on('connection', (socket) => {
     if (!databaseCheck.ok) return rejectSocket(socket, databaseCheck.message);
     let eroom = echecsRooms.get(room);
     if (!eroom) {
-      eroom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, engineState: ChessEngine.initialState(), currentPlayer: 0, lastMove: null, stateVersion: 0, turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null, turnPlayer: null };
+      eroom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, engineState: ChessEngine.initialState(), currentPlayer: 0, whiteSlot: 1, lastMove: null, stateVersion: 0, turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null, turnPlayer: null };
+      ensureSeriesState(eroom);
       echecsRooms.set(room, eroom);
     }
     ensureEchecsEngineState(eroom);
+    ensureSeriesState(eroom);
     if (!bindDatabaseGame(eroom, gameId)) return rejectSocket(socket, 'Cette room est déjà liée à une autre partie.');
     if (!joinRoomAsAuthenticatedPlayer(socket, eroom, room, player, supabaseId, name)) return;
     if (bet && !eroom.betAmount) eroom.betAmount = bet;
@@ -3242,10 +3288,13 @@ io.on('connection', (socket) => {
       waitingForOpponent: !(eroom.players[1] && eroom.players[2])
     });
 
-    if (eroom.status === 'playing' || eroom.status === 'paused') {
+    if (eroom.status === 'playing' || eroom.status === 'paused' || eroom.status === 'round_break') {
       const p1 = eroom.players[1], p2 = eroom.players[2];
       const bothBack = p1?.connected && p2?.connected;
-      if (bothBack && eroom.disconnectTimer && !eroom.adminPaused) {
+      const inRoundBreak = eroom.status === 'round_break';
+      if (inRoundBreak) {
+        // The next chess round is already scheduled; no disconnect forfeit during this short break.
+      } else if (bothBack && eroom.disconnectTimer && !eroom.adminPaused) {
         clearTimeout(eroom.disconnectTimer); eroom.disconnectTimer = null; eroom.reconnectDeadline = null; eroom.status = 'playing';
         startEchecsTurnTimer(eroom, room, eroom.pausedTurnPlayer || eroom.currentPlayer + 1 || 1);
         io.to(room).emit('echecs_game_resumed', { message: 'Les deux joueurs sont de retour. La partie reprend !' });
@@ -3270,7 +3319,7 @@ io.on('connection', (socket) => {
       socket.to(room).emit('echecs_player_status', { slot: player, connected: true, name });
       socket.to(room).emit('player:reconnected', { message: `${name} est de retour !` });
       const opponentName = player === 1 ? (eroom.players[2]?.name || 'Adversaire') : (eroom.players[1]?.name || 'Adversaire');
-      socket.emit('echecs_start', { room, yourSlot: player, opponentName, bet: eroom.betAmount, currency: eroom.currency, reconnected: true, paused: eroom.status === 'paused', gameState: JSON.stringify(ChessEngine.exportState(ensureEchecsEngineState(eroom))), currentPlayer: eroom.currentPlayer !== undefined ? eroom.currentPlayer : 0, lastMove: eroom.lastMove || null, stateVersion: eroom.stateVersion || 0 });
+      socket.emit('echecs_start', { room, yourSlot: player, opponentName, bet: eroom.betAmount, currency: eroom.currency, reconnected: true, paused: eroom.status === 'paused', gameState: JSON.stringify(ChessEngine.exportState(ensureEchecsEngineState(eroom))), currentPlayer: eroom.currentPlayer !== undefined ? eroom.currentPlayer : 0, whiteSlot: eroom.whiteSlot, series: seriesPayload(eroom), lastMove: eroom.lastMove || null, stateVersion: eroom.stateVersion || 0 });
       if (eroom.turnPlayer !== null && eroom.status === 'playing') {
         const now = Date.now();
         if (eroom.graceStartTime) socket.emit('echecs_turn_sync', { serverTime: now, turnPlayer: eroom.turnPlayer, graceStartTime: eroom.graceStartTime, duration: GRACE_DURATION });
@@ -3282,14 +3331,17 @@ io.on('connection', (socket) => {
     if (eroom.players[1] && eroom.players[2] && eroom.status === 'waiting') {
       eroom.status = 'playing';
       eroom.startedAt = Date.now();
+      eroom.whiteSlot = 1;
+      ensureSeriesState(eroom).roundStarter = eroom.whiteSlot;
+      eroom.engineState = ChessEngine.initialState(); eroom.currentPlayer = 0;
       persistRoomSoon('echecs', eroom);
       const p1 = eroom.players[1], p2 = eroom.players[2];
-      io.to(p1.socketId).emit('echecs_start', { room, yourSlot: 1, opponentName: p2.name, bet: eroom.betAmount, currency: eroom.currency, reconnected: false });
-      io.to(p2.socketId).emit('echecs_start', { room, yourSlot: 2, opponentName: p1.name, bet: eroom.betAmount, currency: eroom.currency, reconnected: false });
+      io.to(p1.socketId).emit('echecs_start', { room, yourSlot: 1, opponentName: p2.name, bet: eroom.betAmount, currency: eroom.currency, reconnected: false, whiteSlot: eroom.whiteSlot, series: seriesPayload(eroom), gameState: JSON.stringify(ChessEngine.exportState(eroom.engineState)), currentPlayer: 0 });
+      io.to(p2.socketId).emit('echecs_start', { room, yourSlot: 2, opponentName: p1.name, bet: eroom.betAmount, currency: eroom.currency, reconnected: false, whiteSlot: eroom.whiteSlot, series: seriesPayload(eroom), gameState: JSON.stringify(ChessEngine.exportState(eroom.engineState)), currentPlayer: 0 });
       const initialVersion = eroom.stateVersion;
       setTimeout(() => {
         if (eroom.status === 'playing' && eroom.stateVersion === initialVersion && !eroom.turnStartTime) {
-          startEchecsTurnTimer(eroom, room, 1);
+          startEchecsTurnTimer(eroom, room, eroom.whiteSlot);
         }
       }, 3000);
     }
@@ -3307,7 +3359,7 @@ io.on('connection', (socket) => {
       return rejectSocket(socket, 'Coup d’échecs invalide.');
     }
     const state = ensureEchecsEngineState(eroom);
-    const expectedSide = player === 1 ? 0 : 1;
+    const expectedSide = echecsSideForSlot(eroom, player);
     if (state.t !== expectedSide) { rejectSocket(socket, 'Ce n’est pas votre tour.'); return void socket.emit('echecs_state_sync', echecsSnapshot(eroom)); }
     const mv = ChessEngine.findMove(state, from.row * 8 + from.col, to.row * 8 + to.col, promo);
     if (!mv) { rejectSocket(socket, 'Coup d’échecs illégal.'); return void socket.emit('echecs_state_sync', echecsSnapshot(eroom)); }
@@ -3330,11 +3382,11 @@ io.on('connection', (socket) => {
     socket.emit('echecs_move_ack', { room, version: eroom.stateVersion, currentPlayer: eroom.currentPlayer });
     persistRoomSoon('echecs', eroom);
     if (status.over) {
-      if (status.reason === 'checkmate') return notifyEchecsRoomOver(eroom, room, status.winner === 0 ? 1 : 2, 'checkmate');
+      if (status.reason === 'checkmate') return finishEchecsRound(eroom, room, echecsSlotForSide(eroom, status.winner), 'checkmate');
       eroom.endDetail = status.reason;
-      return notifyEchecsRoomOver(eroom, room, 0, 'draw');
+      return finishEchecsRound(eroom, room, 0, 'draw');
     }
-    startEchecsTurnTimer(eroom, room, eroom.currentPlayer + 1);
+    startEchecsTurnTimer(eroom, room, echecsSlotForSide(eroom, eroom.currentPlayer));
   });
 
   // Un joueur de la room peut redemander l'état exact à tout moment.
@@ -3474,6 +3526,7 @@ io.on('connection', (socket) => {
     let qroom = quoriRooms.get(room);
     if (!qroom) {
       qroom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, gameState: quoriInitialState(), currentSlot: 1, stateVersion: 0, turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null, turnPlayer: null };
+      ensureSeriesState(qroom);
       quoriRooms.set(room, qroom);
     }
     if (!bindDatabaseGame(qroom, gameId)) return rejectSocket(socket, 'Cette room est déjà liée à une autre partie.');
@@ -3481,10 +3534,13 @@ io.on('connection', (socket) => {
     if (bet && !qroom.betAmount) qroom.betAmount = bet;
     persistRoomSoon('quoridor', qroom);
 
-    if (qroom.status === 'playing' || qroom.status === 'paused') {
+    if (qroom.status === 'playing' || qroom.status === 'paused' || qroom.status === 'round_break') {
       const p1 = qroom.players[1], p2 = qroom.players[2];
       const bothBack = p1?.connected && p2?.connected;
-      if (bothBack && qroom.disconnectTimer && !qroom.adminPaused) {
+      const inRoundBreak = qroom.status === 'round_break';
+      if (inRoundBreak) {
+        // The next Quoridor round is already scheduled; never start a forfeit clock here.
+      } else if (bothBack && qroom.disconnectTimer && !qroom.adminPaused) {
         clearTimeout(qroom.disconnectTimer); qroom.disconnectTimer = null; qroom.reconnectDeadline = null; qroom.status = 'playing';
         startQuoriTurnTimer(qroom, room, qroom.pausedTurnPlayer || qroom.currentSlot || 1);
         io.to(room).emit('quoridor_game_resumed', { message: 'Les deux joueurs sont de retour. La partie reprend !' });
@@ -3508,7 +3564,7 @@ io.on('connection', (socket) => {
       socket.to(room).emit('quoridor_player_status', { slot: player, connected: true, name });
       socket.to(room).emit('player:reconnected', { message: `${name} est de retour !` });
       const opponentName = player === 1 ? (qroom.players[2]?.name || 'Adversaire') : (qroom.players[1]?.name || 'Adversaire');
-      socket.emit('quoridor_start', { room, yourSlot: player, opponentName, bet: qroom.betAmount, currency: qroom.currency, reconnected: true, paused: qroom.status === 'paused', gameState: qroom.gameState || null, stateVersion: qroom.stateVersion || 0, currentSlot: qroom.currentSlot, turnPlayer: qroom.turnPlayer, turnStartTime: qroom.turnStartTime, graceStartTime: qroom.graceStartTime });
+      socket.emit('quoridor_start', { room, yourSlot: player, opponentName, bet: qroom.betAmount, currency: qroom.currency, reconnected: true, paused: qroom.status === 'paused', gameState: qroom.gameState || null, stateVersion: qroom.stateVersion || 0, currentSlot: qroom.currentSlot, series: seriesPayload(qroom), turnPlayer: qroom.turnPlayer, turnStartTime: qroom.turnStartTime, graceStartTime: qroom.graceStartTime });
       if (qroom.turnPlayer !== null && qroom.status === 'playing') {
         const now = Date.now();
         if (qroom.graceStartTime) socket.emit('quoridor_turn_sync', { serverTime: now, turnPlayer: qroom.turnPlayer, graceStartTime: qroom.graceStartTime, duration: GRACE_DURATION });
@@ -3520,6 +3576,9 @@ io.on('connection', (socket) => {
     if (qroom.players[1] && qroom.players[2] && qroom.status === 'waiting') {
       qroom.status = 'playing';
       qroom.startedAt = Date.now();
+      qroom.currentSlot = randomOpeningSlot();
+      qroom.gameState.currentSlot = qroom.currentSlot;
+      ensureSeriesState(qroom).roundStarter = qroom.currentSlot;
       qroom.currentSlot = randomOpeningSlot();
       qroom.gameState.currentSlot = qroom.currentSlot;
       persistRoomSoon('quoridor', qroom);
@@ -3562,7 +3621,7 @@ io.on('connection', (socket) => {
     qroom.stateVersion = Math.max(0, Number(qroom.stateVersion) || 0) + 1;
     io.to(room).emit('quoridor_move', { room, player, moveType, data: { r: data.r, c: data.c }, gameState: JSON.stringify(state), version: qroom.stateVersion, nextPlayer: qroom.currentSlot - 1 });
     persistRoomSoon('quoridor', qroom);
-    if (winnerSlot) return notifyQuoriRoomOver(qroom, room, winnerSlot, 'normal');
+    if (winnerSlot) return finishQuoridorRound(qroom, room, winnerSlot, 'normal');
     startQuoriTurnTimer(qroom, room, qroom.currentSlot);
   });
 
