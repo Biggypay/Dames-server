@@ -1,0 +1,63 @@
+name: Apply Quoridor and Chess six-round series
+
+on:
+  push:
+    branches:
+      - feat/quoridor-chess-six-rounds
+
+permissions:
+  contents: write
+
+concurrency:
+  group: quoridor-chess-series-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apply-test-commit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/quoridor-chess-six-rounds
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Apply source patch
+        run: node scripts/apply-quoridor-chess-series.cjs
+      - name: Check server syntax
+        run: node --check server.js
+      - name: Check browser scripts
+        run: node tests/test_html_syntax.js
+      - name: Verify chess engine
+        run: node tests/test_chess_engine.js
+      - name: Verify chess socket runtime
+        run: node tests/test_echecs_server.js
+      - name: Verify required six-round wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "finishQuoridorRound" server.js
+          grep -q "finishEchecsRound" server.js
+          grep -q "quoridor_round_start" server.js
+          grep -q "echecs_round_start" server.js
+          grep -q "roundsProgress" public/quoridor-online.html
+          grep -q "roundsProgress" public/quoridor_ai.html
+          grep -q "roundsProgress" public/echecs_multi.html
+          grep -q "roundsProgress" public/echecs_ai.html
+          grep -q "roundsProgress" public/gomoku_ai.html
+      - name: Commit patched sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add server.js public/quoridor-online.html public/quoridor_ai.html public/echecs_multi.html public/echecs_ai.html public/gomoku_ai.html
+          git config user.name "Biggy"
+          git config user.email "ritchysandersdossous@gmail.com"
+          if ! git diff --cached --quiet; then
+            git commit -m "feat(games): add six-round Quoridor and Chess series with AI parity"
+            git push origin HEAD:feat/quoridor-chess-six-rounds
+          fi
