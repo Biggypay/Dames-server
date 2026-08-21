@@ -38,6 +38,14 @@ body.chrome-hidden #bot{display:none!important}
 .top-center .sub{font-size:8px;color:rgba(255,255,255,0.3);letter-spacing:2px}
 .bet-badge{font-size:9px;background:rgba(251,191,36,0.15);border:1px solid rgba(251,191,36,0.4);border-radius:99px;padding:2px 8px;color:#fbbf24;font-weight:600;letter-spacing:0.5px;margin-top:10px;display:none}
 
+.rounds-progress{display:flex;gap:6px;margin-top:5px;align-items:center;justify-content:center}
+.round-dot{width:30px;height:6px;border-radius:3px;background:rgba(255,255,255,0.08);transition:all .3s ease}
+.round-dot.played{background:rgba(255,255,255,0.2)}
+.round-dot.win{background:#22c55e}
+.round-dot.lose{background:#ef4444}
+.round-dot.draw{background:#fbbf24}
+.round-dot.current{background:rgba(255,255,255,0.4);box-shadow:0 0 8px rgba(255,255,255,0.5)}
+
 /* ── CANVAS ── */
 #canvasWrap{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:6px;width:100%;position:relative}
 canvas{display:block;touch-action:none;border-radius:6px;box-shadow:0 10px 40px rgba(0,0,0,0.45)}
@@ -97,6 +105,7 @@ body.chrome-hidden #forfeit-bar,body.spectator #forfeit-bar{display:none!importa
   <div class="top-center">
     <h1>MORPION À 5</h1>
     <div class="sub">ALIGNEZ CINQ PIONS</div>
+    <div class="rounds-progress" id="roundsProgress"></div>
     <div class="bet-badge" id="betBadge"></div>
   </div>
 
@@ -262,6 +271,30 @@ var WIN_LENGTH = 5;
 var CELLS = SIZE * SIZE;
 
 var board, currentSlot, lastMove, winLine;
+var seriesState = { regularRounds: 6, roundsPlayed: 0, currentRound: 1, wins: {1:0,2:0}, draws: 0, history: [], suddenDeath: false };
+function updateSeriesUI(next) {
+  if (next && typeof next === 'object') seriesState = next;
+  var el = document.getElementById('roundsProgress');
+  if (!el) return;
+  var total = 6;
+  var history = Array.isArray(seriesState.history) ? seriesState.history : [];
+  var played = Math.min(total, Number(seriesState.roundsPlayed) || 0);
+  el.innerHTML = '';
+  for (var i = 0; i < total; i++) {
+    var bar = document.createElement('span');
+    bar.className = 'round-dot';
+    if (i < played) {
+      var result = history[i];
+      if (result === MY_SLOT) bar.className += ' win';
+      else if (result === 0) bar.className += ' draw';
+      else if (result === 1 || result === 2) bar.className += ' lose';
+      else bar.className += ' played';
+    } else if (i === played && played < total && !seriesState.suddenDeath) {
+      bar.className += ' current';
+    }
+    el.appendChild(bar);
+  }
+}
 var gameOver = false, gameReady = false, resultSent = false;
 var lastStateVersion = -1;
 var pendingTimerData = null;
@@ -834,6 +867,8 @@ function initSocket() {
   /* ── Mode joueur ── */
   socket.on('gomoku_start', function (data) {
     document.getElementById('waiting-overlay').classList.add('hidden');
+    if (data && (data.yourSlot === 1 || data.yourSlot === 2)) MY_SLOT = data.yourSlot;
+    if (data && data.series) updateSeriesUI(data.series); else updateSeriesUI(seriesState);
     if (data.opponentName) {
       if (MY_SLOT === 1) P2_NAME = data.opponentName; else P1_NAME = data.opponentName;
       OP_NAME = data.opponentName;
@@ -853,6 +888,30 @@ function initSocket() {
     if (data.slotSymbols) SLOT_SYMBOLS = data.slotSymbols[1] === 'O' ? { 1: 'O', 2: 'X' } : { 1: 'X', 2: 'O' };
     if (data.currentSlot === 1 || data.currentSlot === 2) currentSlot = data.currentSlot;
     startNewGame();
+  });
+
+  socket.on('gomoku_round_end', function (data) {
+    if (!data) return;
+    if (data.series) updateSeriesUI(data.series);
+    gameReady = false;
+    stopTimer(); stopGraceTimer();
+    var mineWon = data.roundWinner === MY_SLOT;
+    var drawn = !data.roundWinner;
+    var title = drawn ? 'Manche nulle' : (mineWon ? 'Manche gagnée' : 'Manche perdue');
+    var score = seriesState.wins || {1:0,2:0};
+    var sub = 'Score : ' + (Number(score[MY_SLOT]) || 0) + ' — ' + (Number(score[MY_SLOT === 1 ? 2 : 1]) || 0);
+    showToast(drawn ? '🤝' : (mineWon ? '🏆' : '🎯'), title, sub, 1700);
+  });
+
+  socket.on('gomoku_round_start', function (data) {
+    if (!data || gameOver) return;
+    if (data.series) updateSeriesUI(data.series);
+    var st = data.gameState;
+    if (typeof st === 'string') { try { st = JSON.parse(st); } catch (e) { st = null; } }
+    winLine = null;
+    if (st) applyServerState(st, typeof data.version === 'number' ? data.version : null, true);
+    gameReady = true;
+    updUI(); draw();
   });
 
   socket.on('gomoku_turn_start', function (data) {
@@ -885,6 +944,8 @@ function initSocket() {
 
   socket.on('gomoku_state_sync', function (data) {
     if (!data || gameOver) return;
+    if (data.series) updateSeriesUI(data.series);
+    else if (data.gameState && data.gameState.series) updateSeriesUI(data.gameState.series);
     applyServerState(data.gameState, typeof data.version === 'number' ? data.version : null);
     if (data.graceStartTime) runArc(data.turnPlayer, data.graceStartTime, data.graceDuration || GRACE_MS, true);
     else if (data.turnStartTime) runArc(data.turnPlayer, data.turnStartTime, data.turnDuration || TURN_MS, false);

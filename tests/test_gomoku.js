@@ -180,24 +180,92 @@ async function main() {
     opener.emit('gomoku_move', { room: ROOM, player: openingSlot, data: { r: 7, c: 3 } });
     check('une case occupée est refusée', !!(await occupied));
 
-    // Cinquième pion : victoire de l'ouvreur.
-    const over1 = once(p1, 'game:over');
-    const over2 = once(p2, 'game:over');
+    // ── Le match se joue en 6 manches : gagner une manche ne doit JAMAIS
+    // déclencher game:over/le règlement du portefeuille. On vérifie ça en
+    // gardant un espion actif sur toute la durée du test.
+    let prematureGameOver = false;
+    p1.on('game:over', () => { prematureGameOver = true; });
+    p2.on('game:over', () => { prematureGameOver = true; });
+
+    const winnerSlot = openingSlot, loserSlot = openingSlot === 1 ? 2 : 1;
+    const winnerSocket = opener, loserSocket = responder;
+
+    async function playRoundToWin(starterIsWinner) {
+      const wCols = [3, 4, 5, 6, 7];
+      const lCols = [0, 2, 4, 6, 8];
+      let wi = 0, li = 0;
+      const totalMoves = starterIsWinner ? 9 : 10;
+      let turn = starterIsWinner ? 'W' : 'L';
+      let winMove = null;
+      for (let i = 0; i < totalMoves; i++) {
+        if (turn === 'W') {
+          const c = wCols[wi++];
+          const isLast = wi === wCols.length;
+          const bcast = onceMatching(winnerSocket, 'gomoku_move',
+            d => d && d.player === winnerSlot && d.data && d.data.r === 7 && d.data.c === c);
+          winnerSocket.emit('gomoku_move', { room: ROOM, player: winnerSlot, data: { r: 7, c } });
+          const move = await bcast;
+          if (isLast) winMove = move;
+          turn = 'L';
+        } else {
+          const c = lCols[li++];
+          const bcast = onceMatching(loserSocket, 'gomoku_move',
+            d => d && d.player === loserSlot && d.data && d.data.r === 0 && d.data.c === c);
+          loserSocket.emit('gomoku_move', { room: ROOM, player: loserSlot, data: { r: 0, c } });
+          await bcast;
+          turn = 'W';
+        }
+      }
+      return winMove;
+    }
+
+    const roundEnd1a = once(p1, 'gomoku_round_end');
+    const roundEnd1b = once(p2, 'gomoku_round_end');
     const winningBroadcast = onceMatching(opener, 'gomoku_move',
       d => d && d.player === openingSlot && d.data && d.data.r === 7 && d.data.c === 7);
     opener.emit('gomoku_move', { room: ROOM, player: openingSlot, data: { r: 7, c: 7 } });
     const winMove = await winningBroadcast;
     check('le serveur renvoie la ligne gagnante', Array.isArray(winMove.winLine) && winMove.winLine.length === 5, winMove.winLine);
 
-    const [end1, end2] = await Promise.all([over1, over2]);
-    check('l’ouvreur est déclaré vainqueur', end1.winnerSlot === openingSlot && end1.result === (openingSlot === 1 ? 'win' : 'loss'), end1);
-    check('l’adversaire est déclaré perdant', end2.winnerSlot === openingSlot && end2.result === (openingSlot === 2 ? 'win' : 'loss'), end2);
-    check('la partie se règle en une seule manche', end1.reason === 'normal', end1.reason);
+    const [re1a, re1b] = await Promise.all([roundEnd1a, roundEnd1b]);
+    check('manche 1 : le vainqueur de la manche est annoncé', re1a.roundWinner === winnerSlot, re1a);
+    check('manche 1 : la série indique 1 manche jouée sur 6', re1a.series.roundsPlayed === 1 && re1a.series.regularRounds === 6, re1a.series);
+    check('manche 1 : le score reflète la victoire', re1a.series.wins[winnerSlot] === 1 && re1a.series.wins[loserSlot] === 0, re1a.series);
+    check('manche 1 : le match continue (pas de fin de série)', re1a.series.roundsPlayed < re1a.series.regularRounds);
 
-    // Une fois la partie finie, plus aucun coup n'est accepté.
+    const roundStart2a = once(p1, 'gomoku_round_start');
+    const roundStart2b = once(p2, 'gomoku_round_start');
+    const [rs2a, rs2b] = await Promise.all([roundStart2a, roundStart2b]);
+    check('manche 2 : le plateau est réinitialisé et les deux joueurs sont resynchronisés',
+      rs2a.currentSlot === rs2b.currentSlot && (rs2a.currentSlot === 1 || rs2a.currentSlot === 2), { rs2a, rs2b });
+    check('manche 2 : le joueur qui commence alterne', rs2a.currentSlot === loserSlot, rs2a.currentSlot);
+
+    for (let round = 2; round <= 4; round++) {
+      const starterIsWinner = (round % 2 === 1);
+      const roundEndA = once(p1, 'gomoku_round_end');
+      const roundEndB = once(p2, 'gomoku_round_end');
+      await playRoundToWin(starterIsWinner);
+      const [reA] = await Promise.all([roundEndA, roundEndB]);
+      check(`manche ${round} : le vainqueur est annoncé`, reA.roundWinner === winnerSlot, reA);
+      check(`manche ${round} : le score de la série est correct`, reA.series.wins[winnerSlot] === round && reA.series.wins[loserSlot] === 0, reA.series);
+      if (round < 4) {
+        const rsA = once(p1, 'gomoku_round_start');
+        const rsB = once(p2, 'gomoku_round_start');
+        await Promise.all([rsA, rsB]);
+      }
+    }
+
+    check('aucun game:over prématuré pendant les manches 1 à 4', !prematureGameOver);
+    const over1 = once(p1, 'game:over');
+    const over2 = once(p2, 'game:over');
+    const [end1, end2] = await Promise.all([over1, over2]);
+    check('la série est gagnée par le joueur qui a mené 4 manches à 0',
+      end1.winnerSlot === winnerSlot && end1.result === (winnerSlot === 1 ? 'win' : 'loss'), end1);
+    check('l’adversaire est déclaré perdant de la série', end2.winnerSlot === winnerSlot && end2.result === (winnerSlot === 2 ? 'win' : 'loss'), end2);
+
     const afterEnd = once(responder, 'gomoku_move', 1500).catch(() => null);
     responder.emit('gomoku_move', { room: ROOM, player: responderSlot, data: { r: 5, c: 5 } });
-    check('aucun coup n’est accepté après la fin', !(await afterEnd));
+    check('aucun coup n’est accepté après la fin de la série', !(await afterEnd));
   } finally {
     for (const socket of sockets) socket.disconnect();
     server.kill('SIGKILL');

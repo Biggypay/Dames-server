@@ -213,9 +213,49 @@ async function main() {
     }
 
     await sleep(1500);
+    const afterRound1 = await readState(page1);
+    check('manche 1 gagnée : la SÉRIE ne se termine pas (6 manches réglementaires)',
+      afterRound1.gameOver === false, afterRound1);
+
+    await sleep(2600);
+    const round2State1 = await readState(page1);
+    check('manche 2 : le plateau est réinitialisé et rejouable', round2State1.gameReady === true && round2State1.stones === 0, round2State1);
+
+    async function playBrowserRoundToWin(winnerPage, loserPage, starterIsWinner) {
+      const wCells = [[7, 3], [7, 4], [7, 5], [7, 6], [7, 7]];
+      const lCells = [[0, 0], [2, 0], [4, 0], [6, 0], [8, 0]];
+      let wi = 0, li = 0;
+      let turn = starterIsWinner ? 'W' : 'L';
+      const totalMoves = starterIsWinner ? 9 : 10;
+      for (let i = 0; i < totalMoves; i++) {
+        if (turn === 'W') {
+          const [r, c] = wCells[wi++];
+          await clickCell(winnerPage, r, c);
+          await sleep(700);
+          turn = 'L';
+        } else {
+          const [r, c] = lCells[li++];
+          await clickCell(loserPage, r, c);
+          await sleep(700);
+          turn = 'W';
+        }
+      }
+    }
+
+    for (let round = 2; round <= 4; round++) {
+      const starterIsWinner = (round % 2 === 1);
+      await playBrowserRoundToWin(openerPage, responderPage, starterIsWinner);
+      if (round < 4) {
+        await sleep(2600);
+        const mid = await readState(page1);
+        check(`manche ${round} gagnée : la série continue`, mid.gameOver === false, mid);
+      }
+    }
+
+    await sleep(1800);
     const end1 = await readState(page1);
     const end2 = await readState(page2);
-    check('cinq alignés terminent la partie', end1.gameOver && end2.gameOver, { end1, end2 });
+    check('la série (4 manches à 0) termine bien la partie', end1.gameOver && end2.gameOver, { end1, end2 });
     check('la fenêtre de fin s’ouvre chez les deux joueurs', end1.modalShown && end2.modalShown, { end1, end2 });
     check('aucune exception pendant toute la partie', errors.length === 0, errors);
   } finally {

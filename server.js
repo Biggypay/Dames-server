@@ -21,6 +21,7 @@ const PUBLIC = path.join(__dirname, 'public');
 const { ChessEngineFactory } = require('./public/echecs-engine.js');
 const ChessEngine = ChessEngineFactory();
 const crypto     = require('crypto');
+const { ensureSeriesState, seriesPayload, recordRoundResult, advanceRoundStarter } = require('./lib/gomoku-series');
 const PORT       = process.env.PORT || 3000;
 
 // ── SÉCURITÉ : secret JWT ──────────────────────────────────
@@ -1634,6 +1635,7 @@ function clearGomokuTurnTimers(groom) {
 function gomokuSnapshot(groom) {
   const state = groom.gameState || gomokuInitialState();
   const gameState = {
+    series: seriesPayload(groom),
     board: Array.isArray(state.board) ? [...state.board] : Array(GOMOKU_CELLS).fill(0),
     moves: Math.max(0, Number(state.moves) || 0),
     last: state.last && gomokuInBounds(state.last.r, state.last.c) ? { r: state.last.r, c: state.last.c } : null,
@@ -2308,6 +2310,52 @@ function notifyQuoriRoomOver(qroom, roomId, winnerSlot, reason = 'normal') {
   if (winP?.socketId) { io.to(winP.socketId).emit('game:over', { ...base, result: 'win',  myResult: +netGain }); io.to(winP.socketId).emit('game:result', { postMessage: { ...base, result: 'win',  myResult: +netGain } }); }
   if (losP?.socketId) { io.to(losP.socketId).emit('game:over', { ...base, result: 'loss', myResult: -bet });     io.to(losP.socketId).emit('game:result', { postMessage: { ...base, result: 'loss', myResult: -bet } }); }
   io.to(roomId).emit('game:result', { postMessage: base });
+}
+
+function finishGomokuRound(groom, roomId, winnerSlot, reason = 'normal') {
+  if (!groom || groom.status !== 'playing') return;
+  clearGomokuTurnTimers(groom);
+  groom.status = 'round_break';
+
+  const summary = recordRoundResult(groom, winnerSlot);
+  const payload = {
+    room: roomId,
+    roundWinner: summary.roundWinner,
+    reason,
+    series: summary.series,
+    serverTime: Date.now()
+  };
+  io.to(roomId).emit('gomoku_round_end', payload);
+  persistRoomSoon('gomoku', groom);
+
+  if (summary.matchOver) {
+    return setTimeout(() => {
+      notifyGomokuRoomOver(groom, roomId, summary.matchWinner, reason);
+    }, 1600);
+  }
+
+  setTimeout(() => {
+    if (!groom || groom.status !== 'round_break') return;
+    const starter = advanceRoundStarter(groom);
+    groom.gameState = gomokuInitialState();
+    groom.currentSlot = starter;
+    groom.gameState.currentSlot = starter;
+    groom.gameState.slotSymbols = starter === 1 ? { 1: 'X', 2: 'O' } : { 1: 'O', 2: 'X' };
+    groom.stateVersion = Math.max(0, Number(groom.stateVersion) || 0) + 1;
+    groom.status = 'playing';
+    const nextPayload = {
+      room: roomId,
+      currentSlot: groom.currentSlot,
+      gameState: JSON.stringify(groom.gameState),
+      version: groom.stateVersion,
+      series: seriesPayload(groom),
+      serverTime: Date.now()
+    };
+    io.to(roomId).emit('gomoku_round_start', nextPayload);
+    io.to(roomId).emit('gomoku_state_sync', gomokuSnapshot(groom));
+    persistRoomSoon('gomoku', groom);
+    startGomokuTurnTimer(groom, roomId, groom.currentSlot);
+  }, 2200);
 }
 
 function notifyGomokuRoomOver(groom, roomId, winnerSlot, reason = 'normal') {
@@ -3534,6 +3582,7 @@ io.on('connection', (socket) => {
     let groom = gomokuRooms.get(room);
     if (!groom) {
       groom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, gameState: gomokuInitialState(), currentSlot: 1, stateVersion: 0, turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null, turnPlayer: null };
+      ensureSeriesState(groom);
       gomokuRooms.set(room, groom);
     }
     if (!bindDatabaseGame(groom, gameId)) return rejectSocket(socket, 'Cette room est déjà liée à une autre partie.');
@@ -3541,10 +3590,14 @@ io.on('connection', (socket) => {
     if (bet && !groom.betAmount) groom.betAmount = bet;
     persistRoomSoon('gomoku', groom);
 
-    if (groom.status === 'playing' || groom.status === 'paused') {
+    if (groom.status === 'playing' || groom.status === 'paused' || groom.status === 'round_break') {
       const p1 = groom.players[1], p2 = groom.players[2];
       const bothBack = p1?.connected && p2?.connected;
-      if (bothBack && groom.disconnectTimer && !groom.adminPaused) {
+      const inRoundBreak = groom.status === 'round_break';
+      if (inRoundBreak) {
+        // Between rounds the board resets automatically on its own timer; never
+        // force a status change or start a forfeit clock during this brief window.
+      } else if (bothBack && groom.disconnectTimer && !groom.adminPaused) {
         clearTimeout(groom.disconnectTimer); groom.disconnectTimer = null; groom.reconnectDeadline = null; groom.status = 'playing';
         startGomokuTurnTimer(groom, room, groom.pausedTurnPlayer || groom.currentSlot || 1);
         io.to(room).emit('gomoku_game_resumed', { message: 'Les deux joueurs sont de retour. La partie reprend !' });
@@ -3568,7 +3621,7 @@ io.on('connection', (socket) => {
       socket.to(room).emit('gomoku_player_status', { slot: player, connected: true, name });
       socket.to(room).emit('player:reconnected', { message: `${name} est de retour !` });
       const opponentName = player === 1 ? (groom.players[2]?.name || 'Adversaire') : (groom.players[1]?.name || 'Adversaire');
-      socket.emit('gomoku_start', { room, yourSlot: player, opponentName, bet: groom.betAmount, currency: groom.currency, reconnected: true, paused: groom.status === 'paused', gameState: groom.gameState || null, stateVersion: groom.stateVersion || 0, currentSlot: groom.currentSlot, turnPlayer: groom.turnPlayer, turnStartTime: groom.turnStartTime, graceStartTime: groom.graceStartTime });
+      socket.emit('gomoku_start', { room, yourSlot: player, opponentName, bet: groom.betAmount, currency: groom.currency, reconnected: true, paused: groom.status === 'paused', gameState: groom.gameState || null, stateVersion: groom.stateVersion || 0, currentSlot: groom.currentSlot, turnPlayer: groom.turnPlayer, turnStartTime: groom.turnStartTime, graceStartTime: groom.graceStartTime, series: seriesPayload(groom) });
       if (groom.turnPlayer !== null && groom.status === 'playing') {
         const now = Date.now();
         if (groom.graceStartTime) socket.emit('gomoku_turn_sync', { serverTime: now, turnPlayer: groom.turnPlayer, graceStartTime: groom.graceStartTime, duration: GRACE_DURATION });
@@ -3583,13 +3636,14 @@ io.on('connection', (socket) => {
       // Gomoku still starts with X, but the player assigned X is drawn by the
       // server so invitation order never decides who opens.
       groom.currentSlot = randomOpeningSlot();
+      ensureSeriesState(groom).roundStarter = groom.currentSlot;
       groom.gameState.currentSlot = groom.currentSlot;
       groom.gameState.slotSymbols = groom.currentSlot === 1 ? { 1: 'X', 2: 'O' } : { 1: 'O', 2: 'X' };
       groom.stateVersion = Math.max(0, Number(groom.stateVersion) || 0) + 1;
       persistRoomSoon('gomoku', groom);
       const p1 = groom.players[1], p2 = groom.players[2];
-      io.to(p1.socketId).emit('gomoku_start', { room, yourSlot: 1, opponentName: p2.name, bet: groom.betAmount, currency: groom.currency, reconnected: false, currentSlot: groom.currentSlot, slotSymbols: groom.gameState.slotSymbols });
-      io.to(p2.socketId).emit('gomoku_start', { room, yourSlot: 2, opponentName: p1.name, bet: groom.betAmount, currency: groom.currency, reconnected: false, currentSlot: groom.currentSlot, slotSymbols: groom.gameState.slotSymbols });
+      io.to(p1.socketId).emit('gomoku_start', { room, yourSlot: 1, opponentName: p2.name, bet: groom.betAmount, currency: groom.currency, reconnected: false, currentSlot: groom.currentSlot, slotSymbols: groom.gameState.slotSymbols, series: seriesPayload(groom) });
+      io.to(p2.socketId).emit('gomoku_start', { room, yourSlot: 2, opponentName: p1.name, bet: groom.betAmount, currency: groom.currency, reconnected: false, currentSlot: groom.currentSlot, slotSymbols: groom.gameState.slotSymbols, series: seriesPayload(groom) });
       const initialVersion = groom.stateVersion;
       setTimeout(() => {
         if (groom.status === 'playing' && groom.stateVersion === initialVersion && !groom.turnStartTime) {
@@ -3631,8 +3685,8 @@ io.on('connection', (socket) => {
     });
     persistRoomSoon('gomoku', groom);
 
-    if (winLine) return notifyGomokuRoomOver(groom, room, player, 'normal');
-    if (boardFull) return notifyGomokuRoomOver(groom, room, 0, 'draw');
+    if (winLine) return finishGomokuRound(groom, room, player, 'normal');
+    if (boardFull) return finishGomokuRound(groom, room, 0, 'draw');
     startGomokuTurnTimer(groom, room, groom.currentSlot);
   });
 
