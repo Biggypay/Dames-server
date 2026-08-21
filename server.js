@@ -3547,12 +3547,10 @@ io.on('connection', (socket) => {
       qroom.currentSlot = randomOpeningSlot();
       qroom.gameState.currentSlot = qroom.currentSlot;
       ensureSeriesState(qroom).roundStarter = qroom.currentSlot;
-      qroom.currentSlot = randomOpeningSlot();
-      qroom.gameState.currentSlot = qroom.currentSlot;
       persistRoomSoon('quoridor', qroom);
       const p1 = qroom.players[1], p2 = qroom.players[2];
-      io.to(p1.socketId).emit('quoridor_start', { room, yourSlot: 1, opponentName: p2.name, bet: qroom.betAmount, currency: qroom.currency, reconnected: false });
-      io.to(p2.socketId).emit('quoridor_start', { room, yourSlot: 2, opponentName: p1.name, bet: qroom.betAmount, currency: qroom.currency, reconnected: false });
+      io.to(p1.socketId).emit('quoridor_start', { room, yourSlot: 1, opponentName: p2.name, bet: qroom.betAmount, currency: qroom.currency, reconnected: false, currentSlot: qroom.currentSlot, series: seriesPayload(qroom) });
+      io.to(p2.socketId).emit('quoridor_start', { room, yourSlot: 2, opponentName: p1.name, bet: qroom.betAmount, currency: qroom.currency, reconnected: false, currentSlot: qroom.currentSlot, series: seriesPayload(qroom) });
       const initialVersion = qroom.stateVersion;
       setTimeout(() => {
         if (qroom.status === 'playing' && qroom.stateVersion === initialVersion && !qroom.turnStartTime) {
