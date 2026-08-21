@@ -31,6 +31,11 @@ jobs:
           sudo mkdir -p /opt/pw-browsers
           sudo chown -R "$USER":"$USER" /opt/pw-browsers
           PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers npx playwright-core install --with-deps chromium
+          for d in /opt/pw-browsers/chromium-*; do
+            if [ -x "$d/chrome-linux64/chrome" ] && [ ! -e "$d/chrome-linux" ]; then
+              ln -s chrome-linux64 "$d/chrome-linux"
+            fi
+          done
 
       - name: Test Gomoku series logic
         run: node tests/test_gomoku_series_logic.js
