@@ -1,0 +1,10 @@
+'use strict';
+const fs=require('fs');
+const p='server.js';
+let s=fs.readFileSync(p,'utf8').replace(/\r\n/g,'\n');
+const old="    if (eroom.currentPlayer !== player - 1) { rejectSocket(socket, 'Ce n’est pas votre tour.'); return void socket.emit('echecs_state_sync', echecsSnapshot(eroom)); }";
+const next="    if (echecsSlotForSide(eroom, eroom.currentPlayer) !== player) { rejectSocket(socket, 'Ce n’est pas votre tour.'); return void socket.emit('echecs_state_sync', echecsSnapshot(eroom)); }";
+if(!s.includes(old)) throw new Error('Chess turn guard anchor not found');
+s=s.replace(old,next);
+fs.writeFileSync(p,s);
+console.log('Chess turn guard now follows the round color mapping.');
