@@ -11,9 +11,9 @@ const PUBLIC_RUNTIME = path.join(ROOT, '.runtime-public');
 
 function replaceOnce(source, needle, replacement, label) {
   const index = source.indexOf(needle);
-  if (index === -1) throw new Error(`Gomoku series patch failed: ${label}`);
+  if (index === -1) throw new Error(`Runtime patch failed: ${label}`);
   if (source.indexOf(needle, index + needle.length) !== -1) {
-    throw new Error(`Gomoku series patch ambiguous: ${label}`);
+    throw new Error(`Runtime patch ambiguous: ${label}`);
   }
   return source.slice(0, index) + replacement + source.slice(index + needle.length);
 }
@@ -26,6 +26,13 @@ function patchServer(raw) {
     "const PUBLIC = path.join(__dirname, 'public');",
     "const PUBLIC = path.join(__dirname, '.runtime-public');",
     'runtime public directory'
+  );
+
+  source = replaceOnce(
+    source,
+    "const { ChessEngineFactory } = require('./public/echecs-engine.js');",
+    "const { ChessEngineFactory } = require('./lib/chess-competition-engine.js');",
+    'competition chess engine'
   );
 
   source = replaceOnce(
@@ -70,6 +77,13 @@ function patchServer(raw) {
     "if (winLine) return notifyGomokuRoomOver(groom, room, player, 'normal');\n    if (boardFull) return notifyGomokuRoomOver(groom, room, 0, 'draw');",
     "if (winLine) return finishGomokuRound(groom, room, player, 'normal');\n    if (boardFull) return finishGomokuRound(groom, room, 0, 'draw');",
     'move result routing'
+  );
+
+  source = replaceOnce(
+    source,
+    "  socket.on('echecs_result', (data) => {\n    if (!data || !validRoom(data.room)) return;\n    // Résultat d'affichage uniquement : seul le moteur autoritatif du serveur\n    // peut terminer un match d'échecs (mat, pat, nulle, temps, abandon).\n  });",
+    `  socket.on('echecs_claim_draw', ({ room, player } = {}) => {\n    if (!validRoom(room) || !validPlayerSlot(player)) return;\n    const eroom = echecsRooms.get(room);\n    if (!eroom || eroom.status !== 'playing' || eroom.players[player]?.socketId !== socket.id) return;\n    if (eroom.currentPlayer !== player - 1) {\n      rejectSocket(socket, 'La nulle ne peut être réclamée que lorsque vous avez le trait.');\n      return void socket.emit('echecs_state_sync', echecsSnapshot(eroom));\n    }\n    const state = ensureEchecsEngineState(eroom);\n    const status = ChessEngine.gameStatus(state);\n    if (!status.claimable) {\n      rejectSocket(socket, 'Aucune nulle FIDE ne peut être réclamée dans cette position.');\n      return void socket.emit('echecs_state_sync', echecsSnapshot(eroom));\n    }\n    eroom.endDetail = status.claimable;\n    io.to(room).emit('echecs_draw_claimed', { room, player, reason: status.claimable, serverTime: Date.now() });\n    return notifyEchecsRoomOver(eroom, room, 0, 'draw');\n  });\n\n  socket.on('echecs_result', (data) => {\n    if (!data || !validRoom(data.room)) return;\n    // Résultat d'affichage uniquement : seul le moteur autoritatif du serveur\n    // peut terminer un match d'échecs (mat, pat, nulle, temps, abandon).\n  });`,
+    'FIDE draw claim handler'
   );
 
   return source;
@@ -123,11 +137,77 @@ function patchGomokuHtml(raw) {
   return html;
 }
 
+function patchChessEngineRuntime(raw) {
+  const source = raw.replace(/\r\n/g, '\n');
+  return source + `\n\n/* Competition draw-rule facade injected at runtime. */\n(function(){\n  var BaseFactory = ChessEngineFactory;\n  ChessEngineFactory = function(){\n    var base = BaseFactory();\n    function normalize(next, light){\n      if(!next || next.ep < 0) return next;\n      var hasLegalEp = base.legalMoves(next).some(function(m){ return m && m.ep === true; });\n      if(hasLegalEp) return next;\n      var oldKey = next.key;\n      next.ep = -1;\n      next.key = base.positionKey(next);\n      if(!light && next.reps && oldKey !== next.key){\n        var reps = {}, k; for(k in next.reps) reps[k] = next.reps[k];\n        if(reps[oldKey]){ reps[oldKey]--; if(reps[oldKey] <= 0) delete reps[oldKey]; }\n        reps[next.key] = (reps[next.key] || 0) + 1;\n        next.reps = reps;\n      }\n      return next;\n    }\n    function applyMove(s,mv,light){ return normalize(base.applyMove(s,mv,light), !!light); }\n    function claimableDraw(s){\n      if(!s) return null;\n      var reps = s.reps && s.key ? Number(s.reps[s.key] || 0) : 0;\n      if(Number(s.h || 0) >= 100) return 'fifty';\n      if(reps >= 3) return 'repetition';\n      return null;\n    }\n    function gameStatus(s,moves){\n      moves = moves || base.legalMoves(s);\n      if(moves.length === 0){\n        if(base.inCheck(s,s.t)) return {over:true,winner:1-s.t,reason:'checkmate',claimable:null};\n        return {over:true,winner:null,reason:'stalemate',claimable:null};\n      }\n      var reps = s.reps && s.key ? Number(s.reps[s.key] || 0) : 0;\n      if(Number(s.h || 0) >= 150) return {over:true,winner:null,reason:'seventyfive',claimable:null};\n      if(reps >= 5) return {over:true,winner:null,reason:'fivefold',claimable:null};\n      if(base.insufficientMaterial(s.b)) return {over:true,winner:null,reason:'insufficient',claimable:null};\n      return {over:false,winner:null,reason:null,claimable:claimableDraw(s)};\n    }\n    return Object.assign({}, base, {applyMove:applyMove, gameStatus:gameStatus, claimableDraw:claimableDraw});\n  };\n})();\n`;
+}
+
+function patchEchecsHtml(raw) {
+  let html = raw.replace(/\r\n/g, '\n');
+
+  html = replaceOnce(
+    html,
+    `  <div class="btns">\n    <button class="btn" id="btn-cam">⟳ Auto</button>\n  </div>`,
+    `  <div class="btns">\n    <button class="btn" id="btn-claim-draw" style="display:none" title="Réclamer une nulle FIDE">½ Nulle</button>\n    <button class="btn" id="btn-cam">⟳ Auto</button>\n  </div>`,
+    'chess draw claim button'
+  );
+
+  html = replaceOnce(
+    html,
+    "var pendingPromotion = null;        // {fromIdx, toIdx} en attente du choix ♛♜♝♞",
+    "var pendingPromotion = null;        // {fromIdx, toIdx} en attente du choix ♛♜♝♞\nvar pendingDrawReason = null;",
+    'chess draw state'
+  );
+
+  html = replaceOnce(
+    html,
+    "  socket.on('game:over', function(d){\n    if(gameOver) return; hideLoading(); stopForfeitCountdown();",
+    "  socket.on('echecs_draw_claimed', function(d){\n    if(d && d.reason) pendingDrawReason = d.reason;\n  });\n\n  socket.on('game:over', function(d){\n    if(gameOver) return; hideLoading(); stopForfeitCountdown();",
+    'chess draw claim event'
+  );
+
+  html = replaceOnce(
+    html,
+    "      handleGameEnd(-1, d.reason || 'draw');",
+    "      handleGameEnd(-1, pendingDrawReason || d.reason || 'draw');",
+    'claimed draw reason on game over'
+  );
+
+  html = replaceOnce(
+    html,
+    "  if(reason === 'fifty') return 'Règle des 50 coups.';\n  if(reason === 'repetition') return 'Triple répétition de la position.';\n  if(reason === 'insufficient') return 'Matériel insuffisant pour mater.';",
+    "  if(reason === 'fifty') return 'Nulle réclamée — règle des 50 coups.';\n  if(reason === 'repetition') return 'Nulle réclamée — triple répétition.';\n  if(reason === 'seventyfive') return 'Nulle automatique — règle des 75 coups.';\n  if(reason === 'fivefold') return 'Nulle automatique — cinq répétitions.';\n  if(reason === 'insufficient') return 'Matériel insuffisant pour mater.';",
+    'FIDE draw labels'
+  );
+
+  html = replaceOnce(
+    html,
+    "  updateScores();\n  updateCheckDisplay();\n}",
+    `  updateScores();\n  updateCheckDisplay();\n  var claimBtn = document.getElementById('btn-claim-draw');\n  if(claimBtn){\n    var st = (!IS_SPECTATOR && gameReady && !gameOver) ? Chess.gameStatus(S) : null;\n    var canClaim = !!(st && !st.over && st.claimable && S.t === MY_PLAYER);\n    claimBtn.style.display = canClaim ? '' : 'none';\n    claimBtn.setAttribute('data-reason', canClaim ? st.claimable : '');\n  }\n}`,
+    'draw claim button visibility'
+  );
+
+  html = replaceOnce(
+    html,
+    "function startMultiGame(){",
+    `var _claimDrawButton = document.getElementById('btn-claim-draw');\nif(_claimDrawButton){\n  _claimDrawButton.addEventListener('click', function(){\n    if(IS_SPECTATOR || gameOver || !gameReady || !socket || !socket.connected) return;\n    var st = Chess.gameStatus(S);\n    if(!st || st.over || !st.claimable || S.t !== MY_PLAYER) return updUI();\n    pendingDrawReason = st.claimable;\n    this.style.display = 'none';\n    socket.emit('echecs_claim_draw', {room:ROOM_ID, player:MY_SLOT});\n  });\n}\n\nfunction startMultiGame(){`,
+    'draw claim click handler'
+  );
+
+  return html;
+}
+
 fs.rmSync(PUBLIC_RUNTIME, { recursive: true, force: true });
 fs.cpSync(PUBLIC_SRC, PUBLIC_RUNTIME, { recursive: true });
 
 const gomokuFile = path.join(PUBLIC_RUNTIME, 'gomoku-online.html');
 fs.writeFileSync(gomokuFile, patchGomokuHtml(fs.readFileSync(gomokuFile, 'utf8')), 'utf8');
+
+const chessEngineFile = path.join(PUBLIC_RUNTIME, 'echecs-engine.js');
+fs.writeFileSync(chessEngineFile, patchChessEngineRuntime(fs.readFileSync(chessEngineFile, 'utf8')), 'utf8');
+
+const chessMultiFile = path.join(PUBLIC_RUNTIME, 'echecs_multi.html');
+fs.writeFileSync(chessMultiFile, patchEchecsHtml(fs.readFileSync(chessMultiFile, 'utf8')), 'utf8');
 
 const patchedServer = patchServer(fs.readFileSync(SERVER_FILE, 'utf8'));
 const runtimeServer = path.join(ROOT, '.runtime-server.js');
