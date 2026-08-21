@@ -30,6 +30,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Normalize patcher inputs
+        run: node scripts/fix-series-patcher-line-endings.cjs
       - name: Apply source patch
         run: node scripts/apply-quoridor-chess-series.cjs
       - name: Check server syntax
@@ -57,6 +59,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git restore scripts/apply-quoridor-chess-series.cjs 2>/dev/null || true
           git add server.js public/quoridor-online.html public/quoridor_ai.html public/echecs_multi.html public/echecs_ai.html public/gomoku_ai.html
           git config user.name "Biggy"
           git config user.email "ritchysandersdossous@gmail.com"
