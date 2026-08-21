@@ -4,7 +4,11 @@ on:
   push:
     branches:
       - feat/quoridor-chess-six-rounds
+  pull_request:
+    branches:
+      - main
 
+action_permissions_placeholder: true
 permissions:
   contents: write
 
