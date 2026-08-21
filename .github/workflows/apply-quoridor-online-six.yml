@@ -1,0 +1,50 @@
+name: Apply Quoridor-only online six rounds
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  apply-test-commit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/correct-round-rules
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: node scripts/apply-quoridor-online-six.cjs
+      - run: node --check server.js
+      - run: node tests/test_html_syntax.js
+      - name: Verify game contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "finishQuoridorRound" server.js
+          grep -q "quoridor_round_start" server.js
+          grep -q "roundsProgress" public/quoridor-online.html
+          grep -q "regularRounds:6" public/quoridor_ai.html
+          grep -q "regularRounds:6" public/gomoku_ai.html
+          grep -q "P.get('manches')||'6'" public/ttt_ai.html
+          ! grep -q "finishEchecsRound" server.js
+          ! grep -q "echecs_round_start" server.js
+      - name: Commit actual sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add server.js public/quoridor-online.html
+          git config user.name "Biggy"
+          git config user.email "ritchysandersdossous@gmail.com"
+          if ! git diff --cached --quiet; then
+            git commit -m "feat(quoridor): use six-round series online without changing chess"
+            git push origin HEAD:fix/correct-round-rules
+          fi
