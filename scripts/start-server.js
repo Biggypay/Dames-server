@@ -81,42 +81,42 @@ function patchGomokuHtml(raw) {
   html = replaceOnce(
     html,
     '/* ── CANVAS ── */',
-    `.series-score{flex:0 0 auto;display:flex;align-items:center;justify-content:center;gap:9px;margin:0 auto 2px;padding:5px 12px;border:1px solid rgba(251,191,36,.28);border-radius:999px;background:rgba(15,23,42,.34);font-family:'Inter',sans-serif;font-size:10px;color:#fff;letter-spacing:.4px}\n.series-score strong{color:#fbbf24;font-size:12px}.series-score .sep{opacity:.45}.series-score .round{opacity:.7}\n\n/* ── CANVAS ── */`,
-    'series score styles'
+    `.rounds-progress{display:flex;gap:6px;margin-top:5px;align-items:center;justify-content:center}\n.round-dot{width:30px;height:6px;border-radius:3px;background:rgba(255,255,255,0.08);transition:all .3s ease}\n.round-dot.played{background:rgba(255,255,255,0.2)}\n.round-dot.win{background:#22c55e}\n.round-dot.lose{background:#ef4444}\n.round-dot.draw{background:#fbbf24}\n.round-dot.current{background:rgba(255,255,255,0.4);box-shadow:0 0 8px rgba(255,255,255,0.5)}\n\n/* ── CANVAS ── */`,
+    'round progress styles'
   );
 
   html = replaceOnce(
     html,
-    '</div>\n\n<div id="canvasWrap">',
-    `</div>\n<div class="series-score" id="seriesScore"><span>0</span><span class="sep">—</span><span>0</span><span class="round">Manche 1/6</span></div>\n\n<div id="canvasWrap">`,
-    'series score markup'
+    `    <div class="sub">ALIGNEZ CINQ PIONS</div>\n    <div class="bet-badge" id="betBadge"></div>`,
+    `    <div class="sub">ALIGNEZ CINQ PIONS</div>\n    <div class="rounds-progress" id="roundsProgress"></div>\n    <div class="bet-badge" id="betBadge"></div>`,
+    'round progress markup'
   );
 
   html = replaceOnce(
     html,
     "var board, currentSlot, lastMove, winLine;\nvar gameOver = false, gameReady = false, resultSent = false;",
-    `var board, currentSlot, lastMove, winLine;\nvar seriesState = { regularRounds: 6, roundsPlayed: 0, currentRound: 1, wins: {1:0,2:0}, draws: 0, suddenDeath: false };\nfunction updateSeriesUI(next) {\n  if (next && typeof next === 'object') seriesState = next;\n  var el = document.getElementById('seriesScore');\n  if (!el) return;\n  var wins = seriesState.wins || {1:0,2:0};\n  var mine = Number(wins[MY_SLOT]) || 0;\n  var theirs = Number(wins[MY_SLOT === 1 ? 2 : 1]) || 0;\n  var label = seriesState.suddenDeath ? ('Mort subite · manche ' + (seriesState.currentRound || 7)) : ('Manche ' + (seriesState.currentRound || 1) + '/' + (seriesState.regularRounds || 6));\n  el.innerHTML = '<strong>' + mine + '</strong><span class="sep">—</span><strong>' + theirs + '</strong><span class="round">' + label + '</span>';\n}\nvar gameOver = false, gameReady = false, resultSent = false;`,
+    `var board, currentSlot, lastMove, winLine;\nvar seriesState = { regularRounds: 6, roundsPlayed: 0, currentRound: 1, wins: {1:0,2:0}, draws: 0, history: [], suddenDeath: false };\nfunction updateSeriesUI(next) {\n  if (next && typeof next === 'object') seriesState = next;\n  var el = document.getElementById('roundsProgress');\n  if (!el) return;\n  var total = 6;\n  var history = Array.isArray(seriesState.history) ? seriesState.history : [];\n  var played = Math.min(total, Number(seriesState.roundsPlayed) || 0);\n  el.innerHTML = '';\n  for (var i = 0; i < total; i++) {\n    var bar = document.createElement('span');\n    bar.className = 'round-dot';\n    if (i < played) {\n      var result = history[i];\n      if (result === MY_SLOT) bar.className += ' win';\n      else if (result === 0) bar.className += ' draw';\n      else if (result === 1 || result === 2) bar.className += ' lose';\n      else bar.className += ' played';\n    } else if (i === played && played < total && !seriesState.suddenDeath) {\n      bar.className += ' current';\n    }\n    el.appendChild(bar);\n  }\n}\nvar gameOver = false, gameReady = false, resultSent = false;`,
     'series client state'
   );
 
   html = replaceOnce(
     html,
     "socket.on('gomoku_start', function (data) {\n    document.getElementById('waiting-overlay').classList.add('hidden');",
-    "socket.on('gomoku_start', function (data) {\n    document.getElementById('waiting-overlay').classList.add('hidden');\n    if (data && (data.yourSlot === 1 || data.yourSlot === 2)) MY_SLOT = data.yourSlot;\n    if (data && data.series) updateSeriesUI(data.series);",
+    "socket.on('gomoku_start', function (data) {\n    document.getElementById('waiting-overlay').classList.add('hidden');\n    if (data && (data.yourSlot === 1 || data.yourSlot === 2)) MY_SLOT = data.yourSlot;\n    if (data && data.series) updateSeriesUI(data.series); else updateSeriesUI(seriesState);",
     'authoritative player slot and series sync'
   );
 
   html = replaceOnce(
     html,
     "socket.on('gomoku_move', function (data) {",
-    `socket.on('gomoku_round_end', function (data) {\n    if (!data) return;\n    if (data.series) updateSeriesUI(data.series);\n    gameReady = false;\n    stopTimer(); stopGraceTimer();\n    var mineWon = data.roundWinner === MY_SLOT;\n    var drawn = !data.roundWinner;\n    var title = drawn ? 'Manche nulle' : (mineWon ? 'Manche gagnée' : 'Manche perdue');\n    var score = seriesState.wins || {1:0,2:0};\n    var sub = 'Score : ' + (Number(score[MY_SLOT]) || 0) + ' — ' + (Number(score[MY_SLOT === 1 ? 2 : 1]) || 0);\n    if (!data.series || !data.series.suddenDeath) sub += '\\nProchaine manche dans un instant';\n    showToast(drawn ? '🤝' : (mineWon ? '🏆' : '🎯'), title, sub, 1700);\n  });\n\n  socket.on('gomoku_round_start', function (data) {\n    if (!data || gameOver) return;\n    if (data.series) updateSeriesUI(data.series);\n    var st = data.gameState;\n    if (typeof st === 'string') { try { st = JSON.parse(st); } catch (e) { st = null; } }\n    winLine = null;\n    if (st) applyServerState(st, typeof data.version === 'number' ? data.version : null, true);\n    gameReady = true;\n    updUI(); draw();\n  });\n\n  socket.on('gomoku_move', function (data) {`,
+    `socket.on('gomoku_round_end', function (data) {\n    if (!data) return;\n    if (data.series) updateSeriesUI(data.series);\n    gameReady = false;\n    stopTimer(); stopGraceTimer();\n    var mineWon = data.roundWinner === MY_SLOT;\n    var drawn = !data.roundWinner;\n    var title = drawn ? 'Manche nulle' : (mineWon ? 'Manche gagnée' : 'Manche perdue');\n    var score = seriesState.wins || {1:0,2:0};\n    var sub = 'Score : ' + (Number(score[MY_SLOT]) || 0) + ' — ' + (Number(score[MY_SLOT === 1 ? 2 : 1]) || 0);\n    showToast(drawn ? '🤝' : (mineWon ? '🏆' : '🎯'), title, sub, 1700);\n  });\n\n  socket.on('gomoku_round_start', function (data) {\n    if (!data || gameOver) return;\n    if (data.series) updateSeriesUI(data.series);\n    var st = data.gameState;\n    if (typeof st === 'string') { try { st = JSON.parse(st); } catch (e) { st = null; } }\n    winLine = null;\n    if (st) applyServerState(st, typeof data.version === 'number' ? data.version : null, true);\n    gameReady = true;\n    updUI(); draw();\n  });\n\n  socket.on('gomoku_move', function (data) {`,
     'round event handlers'
   );
 
   html = replaceOnce(
     html,
     "socket.on('gomoku_state_sync', function (data) {\n    if (!data || gameOver) return;",
-    "socket.on('gomoku_state_sync', function (data) {\n    if (!data || gameOver) return;\n    if (data.series) updateSeriesUI(data.series);",
+    "socket.on('gomoku_state_sync', function (data) {\n    if (!data || gameOver) return;\n    if (data.series) updateSeriesUI(data.series);\n    else if (data.gameState && data.gameState.series) updateSeriesUI(data.gameState.series);",
     'state series sync'
   );
 
