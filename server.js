@@ -1572,6 +1572,7 @@ function clearQuoriTurnTimers(qroom) {
 function quoriSnapshot(qroom) {
   const state = qroom.gameState || quoriInitialState();
   const gameState = {
+    series: seriesPayload(qroom),
     s1Pos: { r: Number(state.s1Pos?.r), c: Number(state.s1Pos?.c) },
     s2Pos: { r: Number(state.s2Pos?.r), c: Number(state.s2Pos?.c) },
     s1Walls: Number(state.s1Walls),
@@ -2287,6 +2288,25 @@ function notifyTTTRoomOver(troom, roomId, winnerSlot, reason = 'normal') {
   if (winP?.socketId) { io.to(winP.socketId).emit('game:over', { ...base, result: 'win',  myResult: +netGain }); io.to(winP.socketId).emit('game:result', { postMessage: { ...base, result: 'win',  myResult: +netGain } }); }
   if (losP?.socketId) { io.to(losP.socketId).emit('game:over', { ...base, result: 'loss', myResult: -bet });     io.to(losP.socketId).emit('game:result', { postMessage: { ...base, result: 'loss', myResult: -bet } }); }
   io.to(roomId).emit('game:result', { postMessage: base });
+}
+
+function finishQuoridorRound(qroom, roomId, winnerSlot, reason='normal'){
+  if(!qroom || qroom.status!=='playing') return;
+  clearQuoriTurnTimers(qroom); qroom.status='round_break';
+  const summary=recordRoundResult(qroom,winnerSlot);
+  io.to(roomId).emit('quoridor_round_end',{room:roomId,roundWinner:summary.roundWinner,reason,series:summary.series,serverTime:Date.now()});
+  persistRoomSoon('quoridor',qroom);
+  if(summary.matchOver) return setTimeout(()=>notifyQuoriRoomOver(qroom,roomId,summary.matchWinner,reason),1600);
+  setTimeout(()=>{
+    if(!qroom||qroom.status!=='round_break') return;
+    const starter=advanceRoundStarter(qroom);
+    qroom.gameState=quoriInitialState(); qroom.currentSlot=starter; qroom.gameState.currentSlot=starter;
+    qroom.stateVersion=(Number(qroom.stateVersion)||0)+1; qroom.status='playing';
+    const payload={room:roomId,currentSlot:starter,gameState:JSON.stringify(qroom.gameState),version:qroom.stateVersion,series:seriesPayload(qroom),serverTime:Date.now()};
+    io.to(roomId).emit('quoridor_round_start',payload);
+    io.to(roomId).emit('quoridor_state_sync',quoriSnapshot(qroom));
+    persistRoomSoon('quoridor',qroom); startQuoriTurnTimer(qroom,roomId,starter);
+  },2200);
 }
 
 function notifyQuoriRoomOver(qroom, roomId, winnerSlot, reason = 'normal') {
@@ -3474,6 +3494,7 @@ io.on('connection', (socket) => {
     let qroom = quoriRooms.get(room);
     if (!qroom) {
       qroom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, gameState: quoriInitialState(), currentSlot: 1, stateVersion: 0, turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null, turnPlayer: null };
+      ensureSeriesState(qroom);
       quoriRooms.set(room, qroom);
     }
     if (!bindDatabaseGame(qroom, gameId)) return rejectSocket(socket, 'Cette room est déjà liée à une autre partie.');
@@ -3481,10 +3502,13 @@ io.on('connection', (socket) => {
     if (bet && !qroom.betAmount) qroom.betAmount = bet;
     persistRoomSoon('quoridor', qroom);
 
-    if (qroom.status === 'playing' || qroom.status === 'paused') {
+    if (qroom.status === 'playing' || qroom.status === 'paused' || qroom.status === 'round_break') {
       const p1 = qroom.players[1], p2 = qroom.players[2];
       const bothBack = p1?.connected && p2?.connected;
-      if (bothBack && qroom.disconnectTimer && !qroom.adminPaused) {
+      const inRoundBreak = qroom.status === 'round_break';
+      if (inRoundBreak) {
+        // Short inter-round pause: the next round is already scheduled.
+      } else if (bothBack && qroom.disconnectTimer && !qroom.adminPaused) {
         clearTimeout(qroom.disconnectTimer); qroom.disconnectTimer = null; qroom.reconnectDeadline = null; qroom.status = 'playing';
         startQuoriTurnTimer(qroom, room, qroom.pausedTurnPlayer || qroom.currentSlot || 1);
         io.to(room).emit('quoridor_game_resumed', { message: 'Les deux joueurs sont de retour. La partie reprend !' });
@@ -3508,7 +3532,7 @@ io.on('connection', (socket) => {
       socket.to(room).emit('quoridor_player_status', { slot: player, connected: true, name });
       socket.to(room).emit('player:reconnected', { message: `${name} est de retour !` });
       const opponentName = player === 1 ? (qroom.players[2]?.name || 'Adversaire') : (qroom.players[1]?.name || 'Adversaire');
-      socket.emit('quoridor_start', { room, yourSlot: player, opponentName, bet: qroom.betAmount, currency: qroom.currency, reconnected: true, paused: qroom.status === 'paused', gameState: qroom.gameState || null, stateVersion: qroom.stateVersion || 0, currentSlot: qroom.currentSlot, turnPlayer: qroom.turnPlayer, turnStartTime: qroom.turnStartTime, graceStartTime: qroom.graceStartTime });
+      socket.emit('quoridor_start', { room, yourSlot: player, opponentName, bet: qroom.betAmount, currency: qroom.currency, reconnected: true, paused: qroom.status === 'paused', gameState: qroom.gameState || null, stateVersion: qroom.stateVersion || 0, currentSlot: qroom.currentSlot, series: seriesPayload(qroom), turnPlayer: qroom.turnPlayer, turnStartTime: qroom.turnStartTime, graceStartTime: qroom.graceStartTime });
       if (qroom.turnPlayer !== null && qroom.status === 'playing') {
         const now = Date.now();
         if (qroom.graceStartTime) socket.emit('quoridor_turn_sync', { serverTime: now, turnPlayer: qroom.turnPlayer, graceStartTime: qroom.graceStartTime, duration: GRACE_DURATION });
@@ -3522,10 +3546,11 @@ io.on('connection', (socket) => {
       qroom.startedAt = Date.now();
       qroom.currentSlot = randomOpeningSlot();
       qroom.gameState.currentSlot = qroom.currentSlot;
+      ensureSeriesState(qroom).roundStarter = qroom.currentSlot;
       persistRoomSoon('quoridor', qroom);
       const p1 = qroom.players[1], p2 = qroom.players[2];
-      io.to(p1.socketId).emit('quoridor_start', { room, yourSlot: 1, opponentName: p2.name, bet: qroom.betAmount, currency: qroom.currency, reconnected: false });
-      io.to(p2.socketId).emit('quoridor_start', { room, yourSlot: 2, opponentName: p1.name, bet: qroom.betAmount, currency: qroom.currency, reconnected: false });
+      io.to(p1.socketId).emit('quoridor_start', { room, yourSlot: 1, opponentName: p2.name, bet: qroom.betAmount, currency: qroom.currency, reconnected: false, currentSlot: qroom.currentSlot, series: seriesPayload(qroom) });
+      io.to(p2.socketId).emit('quoridor_start', { room, yourSlot: 2, opponentName: p1.name, bet: qroom.betAmount, currency: qroom.currency, reconnected: false, currentSlot: qroom.currentSlot, series: seriesPayload(qroom) });
       const initialVersion = qroom.stateVersion;
       setTimeout(() => {
         if (qroom.status === 'playing' && qroom.stateVersion === initialVersion && !qroom.turnStartTime) {
@@ -3562,7 +3587,7 @@ io.on('connection', (socket) => {
     qroom.stateVersion = Math.max(0, Number(qroom.stateVersion) || 0) + 1;
     io.to(room).emit('quoridor_move', { room, player, moveType, data: { r: data.r, c: data.c }, gameState: JSON.stringify(state), version: qroom.stateVersion, nextPlayer: qroom.currentSlot - 1 });
     persistRoomSoon('quoridor', qroom);
-    if (winnerSlot) return notifyQuoriRoomOver(qroom, room, winnerSlot, 'normal');
+    if (winnerSlot) return finishQuoridorRound(qroom, room, winnerSlot, 'normal');
     startQuoriTurnTimer(qroom, room, qroom.currentSlot);
   });
 

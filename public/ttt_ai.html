@@ -130,7 +130,7 @@ body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%
       <span class="ssep">–</span>
       <span class="snum sr" id="score-r">0</span>
     </div>
-    <span class="manche-lbl" id="manche-lbl">Manche 1 / 5</span>
+    <span class="manche-lbl" id="manche-lbl">Manche 1 / 6</span>
     <div class="rounds-progress" id="roundsProgress"></div>
     <div class="bet-badge" id="betBadge" style="display:none;"></div>
   </div>
@@ -200,7 +200,7 @@ var P1_NAME   =P.get('p1Name')  ||'Joueur 1';
 var P2_NAME   =P.get('p2Name')  ||'Joueur 2';
 var BET_AMOUNT=0;
 var CURRENCY  =P.get('currency')||'HTG';
-var TOTAL_MANCHES=parseInt(P.get('manches')||'5',10);
+var TOTAL_MANCHES=parseInt(P.get('manches')||'6',10);
 
 if(!ROOM_ID&&P1_ID&&P2_ID){
   var _ids=[P1_ID,P2_ID].sort();

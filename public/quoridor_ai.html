@@ -43,6 +43,9 @@ body{background:linear-gradient(135deg,#1e1b4b 0%,#312e81 50%,#1e1b4b 100%);heig
 /* Badge de mise détaché */
 .bet-badge{font-size:9px;background:rgba(251,191,36,0.15);border:1px solid rgba(251,191,36,0.4);border-radius:99px;padding:2px 8px;color:#fbbf24;font-weight:600;letter-spacing:0.5px;margin-top:10px}
 
+.rounds-progress{display:flex;gap:5px;margin-top:5px;align-items:center;justify-content:center}
+.round-dot{width:24px;height:5px;border-radius:3px;background:rgba(255,255,255,.09);transition:all .25s ease}
+.round-dot.win{background:#22c55e}.round-dot.lose{background:#ef4444}.round-dot.draw{background:#fbbf24}.round-dot.current{background:rgba(255,255,255,.42);box-shadow:0 0 7px rgba(255,255,255,.45)}
 /* ── CANVAS ── */
 #canvasWrap{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:6px;width:100%;position:relative}
 canvas{display:block;touch-action:none}
@@ -114,6 +117,7 @@ canvas{display:block;touch-action:none}
   <div class="top-center">
     <h1>QUORIDOR</h1>
     <div class="sub">EN LIGNE</div>
+    <div class="rounds-progress" id="roundsProgress"></div>
     <div class="bet-badge" id="betBadge" style="display:none;"></div>
   </div>
 
@@ -197,6 +201,10 @@ var s1Walls, s2Walls;
 var currentSlot;
 var mode;
 var vmoves, vhw, vvw;
+var practiceSeries={regularRounds:6,roundsPlayed:0,currentRound:1,wins:{1:0,2:0},draws:0,history:[],suddenDeath:false,roundStarter:1};
+function updatePracticeBars(){var el=document.getElementById('roundsProgress');if(!el)return;el.innerHTML='';for(var i=0;i<6;i++){var d=document.createElement('span');d.className='round-dot';if(i<Math.min(6,practiceSeries.roundsPlayed)){var r=practiceSeries.history[i];d.className+=' '+(r===MY_SLOT?'win':r===0?'draw':'lose');}else if(i===Math.min(6,practiceSeries.roundsPlayed)&&!practiceSeries.suddenDeath)d.className+=' current';el.appendChild(d);}}
+function resetPracticeSeries(){practiceSeries={regularRounds:6,roundsPlayed:0,currentRound:1,wins:{1:0,2:0},draws:0,history:[],suddenDeath:false,roundStarter:1};updatePracticeBars();}
+function recordPracticeRound(w){practiceSeries.roundsPlayed++;if(w)practiceSeries.wins[w]=(practiceSeries.wins[w]||0)+1;else practiceSeries.draws++;if(practiceSeries.history.length<6)practiceSeries.history.push(w||0);var a=practiceSeries.wins[1]||0,b=practiceSeries.wins[2]||0,over=false,mw=0;if(practiceSeries.suddenDeath){if(w){over=true;mw=w;}}else if(practiceSeries.roundsPlayed<6){if(Math.abs(a-b)>6-practiceSeries.roundsPlayed){over=true;mw=a>b?1:2;}}else if(a!==b){over=true;mw=a>b?1:2;}else practiceSeries.suddenDeath=true;if(!over)practiceSeries.currentRound=practiceSeries.roundsPlayed+1;updatePracticeBars();return{matchOver:over,matchWinner:mw};}
 var gameOver = false, gameReady = false, resultSent = false;
 var isProcessing = false;
 
@@ -547,13 +555,8 @@ function updUI() {
 /* ══════════════════════════════════════════
    DESSIN
 ══════════════════════════════════════════ */
-function draw() {
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  drawCells();
-  drawGhosts();
-  drawWalls();
-  drawPawns();
-}
+function drawDirectionHint(){if(!gameReady||gameOver)return;var x=cx(s1Pos.c)+CS/2,y=cy(s1Pos.r)+CS/2,len=Math.max(28,CS*1.05);ctx.save();ctx.strokeStyle='rgba(251,191,36,.9)';ctx.fillStyle='rgba(251,191,36,.95)';ctx.lineWidth=Math.max(3,CS*.08);ctx.lineCap='round';ctx.beginPath();ctx.moveTo(x,y-CS*.7);ctx.lineTo(x,y-CS*.7-len);ctx.stroke();ctx.beginPath();ctx.moveTo(x,y-CS*.7-len-10);ctx.lineTo(x-8,y-CS*.7-len+3);ctx.lineTo(x+8,y-CS*.7-len+3);ctx.closePath();ctx.fill();ctx.restore();}
+function draw(){ctx.clearRect(0,0,canvas.width,canvas.height);drawCells();drawGhosts();drawWalls();drawPawns();drawDirectionHint();}
 
 function drawCells() {
   var r, c, x, y, isMove, i;
@@ -787,7 +790,9 @@ function applyOpponentMove(moveType, data) {
 /* ══════════════════════════════════════════
    FIN DE PARTIE
 ══════════════════════════════════════════ */
-function handleGameEnd(winnerSlot, reason) {
+function handleGameEnd(winnerSlot,reason){if(gameOver)return;var rr=recordPracticeRound(winnerSlot);if(rr.matchOver)return showFinalGameEnd(rr.matchWinner,reason);gameOver=true;stopTimer();stopGraceTimer();var mine=winnerSlot===MY_SLOT,drawn=!winnerSlot,sc=practiceSeries.wins;showToast(drawn?'🤝':mine?'🏆':'🎯',drawn?'Manche nulle':mine?'Manche gagnée':'Manche perdue','Score : '+(sc[MY_SLOT]||0)+' — '+(sc[MY_SLOT===1?2:1]||0),1500,function(){gameOver=false;practiceSeries.roundStarter=practiceSeries.roundStarter===1?2:1;startNewGame();});}
+
+function showFinalGameEnd(winnerSlot, reason) {
   if (gameOver) return;
   gameOver = true;
   stopTimer(); stopGraceTimer(); stopForfeitCountdown();
@@ -902,6 +907,7 @@ var socket = null;
    L'IA est le joueur 2 (rouge), objectif rangée 8.
 ══════════════════════════════════════════ */
 function startAIGame() {
+  resetPracticeSeries();
   var overlay = document.getElementById('waiting-overlay');
   if (overlay) { overlay.style.opacity = '0'; overlay.style.transition = 'opacity 0.4s'; setTimeout(function(){ overlay.style.display = 'none'; }, 400); }
   startNewGame();
@@ -972,6 +978,7 @@ function aiTurn() {
 ══════════════════════════════════════════ */
 function startNewGame() {
   initGame();   
+  currentSlot = practiceSeries.roundStarter;
   vmoves = []; vhw = []; vvw = [];
 
   document.getElementById('name-me').textContent = MY_NAME;
@@ -990,11 +997,12 @@ function startNewGame() {
   document.getElementById('arc-me').setAttribute('stroke', IS_P1 ? '#e2e8f0' : '#f87171');
   document.getElementById('arc-op').setAttribute('stroke', IS_P1 ? '#f87171' : '#e2e8f0');
 
-  var whoStarts = MY_SLOT === 1 ? 'Vous commencez (Blanc)' : OP_NAME + ' commence (Blanc)';
+  var whoStarts = currentSlot === MY_SLOT ? 'Vous commencez' : OP_NAME + ' commence';
   showToast('🎲', 'Partie commencée', whoStarts, 2400, function() {
     gameReady = true;
     updUI();
     applyPendingTimer();
+    if(currentSlot!==MY_SLOT)setTimeout(aiTurn,550);
   });
   calcLayout(); draw();
 }
