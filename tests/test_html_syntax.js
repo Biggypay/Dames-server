@@ -7,7 +7,8 @@ const files = [
   'public/chifoumi-online.html',
   'public/penalty-online.html',
   'public/gomoku-online.html',
-  'public/gomoku_ai.html'
+  'public/gomoku_ai.html',
+  'public/local-pass-and-play.html'
 ];
 
 for (const relativePath of files) {
