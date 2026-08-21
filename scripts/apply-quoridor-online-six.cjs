@@ -1,0 +1,30 @@
+'use strict';
+const fs=require('fs');
+const cp=require('child_process');
+function once(s,a,b,label){const i=s.indexOf(a);if(i<0)throw new Error('Missing '+label);if(s.indexOf(a,i+a.length)>=0)throw new Error('Ambiguous '+label);return s.slice(0,i)+b+s.slice(i+a.length);}
+function addBefore(s,a,b,label){const i=s.indexOf(a);if(i<0)throw new Error('Missing '+label);return s.slice(0,i)+b+s.slice(i);}
+
+// Reuse only the already validated Quoridor browser UI from the superseded branch.
+cp.execSync('git fetch origin feat/quoridor-chess-six-rounds --quiet');
+fs.writeFileSync('public/quoridor-online.html',cp.execFileSync('git',['show','origin/feat/quoridor-chess-six-rounds:public/quoridor-online.html'],{encoding:'utf8'}));
+
+// Production server: apply ONLY Quoridor series wiring. Chess and Checkers are untouched.
+const f='server.js';let s=fs.readFileSync(f,'utf8').replace(/\r\n/g,'\n');
+
+s=once(s,"  const gameState = {\n    s1Pos:","  const gameState = {\n    series: seriesPayload(qroom),\n    s1Pos:",'quoridor snapshot series');
+
+const finish=`function finishQuoridorRound(qroom, roomId, winnerSlot, reason='normal'){\n  if(!qroom || qroom.status!=='playing') return;\n  clearQuoriTurnTimers(qroom); qroom.status='round_break';\n  const summary=recordRoundResult(qroom,winnerSlot);\n  io.to(roomId).emit('quoridor_round_end',{room:roomId,roundWinner:summary.roundWinner,reason,series:summary.series,serverTime:Date.now()});\n  persistRoomSoon('quoridor',qroom);\n  if(summary.matchOver) return setTimeout(()=>notifyQuoriRoomOver(qroom,roomId,summary.matchWinner,reason),1600);\n  setTimeout(()=>{\n    if(!qroom||qroom.status!=='round_break') return;\n    const starter=advanceRoundStarter(qroom);\n    qroom.gameState=quoriInitialState(); qroom.currentSlot=starter; qroom.gameState.currentSlot=starter;\n    qroom.stateVersion=(Number(qroom.stateVersion)||0)+1; qroom.status='playing';\n    const payload={room:roomId,currentSlot:starter,gameState:JSON.stringify(qroom.gameState),version:qroom.stateVersion,series:seriesPayload(qroom),serverTime:Date.now()};\n    io.to(roomId).emit('quoridor_round_start',payload);\n    io.to(roomId).emit('quoridor_state_sync',quoriSnapshot(qroom));\n    persistRoomSoon('quoridor',qroom); startQuoriTurnTimer(qroom,roomId,starter);\n  },2200);\n}\n\n`;
+s=addBefore(s,"function notifyQuoriRoomOver(qroom, roomId, winnerSlot, reason = 'normal') {",finish,'finish Quoridor round');
+
+s=once(s,"qroom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, gameState: quoriInitialState(), currentSlot: 1, stateVersion: 0, turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null, turnPlayer: null };\n      quoriRooms.set(room, qroom);","qroom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, gameState: quoriInitialState(), currentSlot: 1, stateVersion: 0, turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null, turnPlayer: null };\n      ensureSeriesState(qroom);\n      quoriRooms.set(room, qroom);",'Quoridor room series init');
+
+s=s.replace("if (qroom.status === 'playing' || qroom.status === 'paused') {","if (qroom.status === 'playing' || qroom.status === 'paused' || qroom.status === 'round_break') {");
+s=s.replace("      const bothBack = p1?.connected && p2?.connected;\n      if (bothBack && qroom.disconnectTimer", "      const bothBack = p1?.connected && p2?.connected;\n      const inRoundBreak = qroom.status === 'round_break';\n      if (inRoundBreak) {\n        // Short inter-round pause: the next round is already scheduled.\n      } else if (bothBack && qroom.disconnectTimer");
+s=s.replace("paused: qroom.status === 'paused', gameState: qroom.gameState || null, stateVersion: qroom.stateVersion || 0, currentSlot: qroom.currentSlot", "paused: qroom.status === 'paused', gameState: qroom.gameState || null, stateVersion: qroom.stateVersion || 0, currentSlot: qroom.currentSlot, series: seriesPayload(qroom)");
+s=once(s,"      qroom.status = 'playing';\n      qroom.startedAt = Date.now();","      qroom.status = 'playing';\n      qroom.startedAt = Date.now();\n      qroom.currentSlot = randomOpeningSlot();\n      qroom.gameState.currentSlot = qroom.currentSlot;\n      ensureSeriesState(qroom).roundStarter = qroom.currentSlot;",'Quoridor opening starter');
+s=s.replace("reconnected: false, currentSlot: qroom.currentSlot });","reconnected: false, currentSlot: qroom.currentSlot, series: seriesPayload(qroom) });");
+s=once(s,"if (winnerSlot) return notifyQuoriRoomOver(qroom, room, winnerSlot, 'normal');","if (winnerSlot) return finishQuoridorRound(qroom, room, winnerSlot, 'normal');",'Quoridor normal win becomes round win');
+
+if(s.includes('finishEchecsRound')) throw new Error('Safety: Chess series wiring must not be present');
+fs.writeFileSync(f,s);
+console.log('Applied Quoridor-only online six-round series. Chess/Checkers remain single-game.');
