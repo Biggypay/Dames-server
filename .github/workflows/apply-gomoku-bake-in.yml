@@ -1,55 +1,36 @@
-name: Apply Gomoku six-round bake-in
+name: Verify Gomoku six-round bake-in
 
 on:
-  push:
+  pull_request:
     branches:
-      - fix/gomoku-six-rounds-baked-in
+      - main
 
 permissions:
-  contents: write
-
-concurrency:
-  group: gomoku-bake-in-${{ github.ref }}
-  cancel-in-progress: true
+  contents: read
 
 jobs:
-  apply-and-test:
-    if: github.actor != 'github-actions[bot]'
+  verify-gomoku:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - name: Checkout feature branch
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: fix/gomoku-six-rounds-baked-in
-          fetch-depth: 0
 
-      - name: Bake Gomoku series into tracked source
-        shell: bash
-        run: |
-          python3 <<'PY'
-          from pathlib import Path
-          p = Path('scripts/apply-gomoku-bake-in.js')
-          s = p.read_text()
-          s = s.replace("l'ouvreur est déclaré vainqueur", "l’ouvreur est déclaré vainqueur")
-          s = s.replace("l'adversaire est déclaré perdant", "l’adversaire est déclaré perdant")
-          s = s.replace("aucun coup n'est accepté après la fin', !(await afterEnd)", "aucun coup n’est accepté après la fin', !(await afterEnd)")
-          s = s.replace("la fenêtre de fin s'ouvre chez les deux joueurs", "la fenêtre de fin s’ouvre chez les deux joueurs")
-          s = s.replace("l'adversaire est déclaré perdant de la série", "l’adversaire est déclaré perdant de la série")
-          s = s.replace("aucun coup n'est accepté après la fin de la série", "aucun coup n’est accepté après la fin de la série")
-          p.write_text(s)
-          PY
-          node scripts/apply-gomoku-bake-in.js
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
 
       - name: Install dependencies
         run: npm install
 
-      - name: Install Chromium for the real-browser test
+      - name: Install Chromium
         shell: bash
         run: |
           sudo mkdir -p /opt/pw-browsers
           sudo chown -R "$USER":"$USER" /opt/pw-browsers
-          PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers npx playwright-core install chromium
+          PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers npx playwright-core install --with-deps chromium
 
       - name: Test Gomoku series logic
         run: node tests/test_gomoku_series_logic.js
@@ -64,37 +45,3 @@ jobs:
         env:
           PLAYWRIGHT_BROWSERS_PATH: /opt/pw-browsers
         run: node tests/test_gomoku_browser.js
-
-      - name: Create one clean commit on top of main
-        shell: bash
-        env:
-          BASE_SHA: 41274986fbe1ef7e95a303e9aa4e9744ec2a6bd1
-        run: |
-          set -euo pipefail
-          git restore package-lock.json 2>/dev/null || true
-          rm -f scripts/gomoku-bake-in.patch scripts/apply-gomoku-bake-in.js .github/workflows/apply-gomoku-bake-in.yml
-          git reset --mixed "$BASE_SHA"
-          git add -A
-          git config user.name "Biggy"
-          git config user.email "ritchysandersdossous@gmail.com"
-          git commit -F - <<'MSG'
-          fix(gomoku): bake 6-round series directly into server.js, drop runtime patcher
-
-          Root cause of 'changes invisible in prod': the round-series logic and the
-          progress-bar UI only existed as a build-time string patch applied by
-          scripts/start-server.js (Procfile: node scripts/start-server.js). A parallel
-          branch (feature/gomoku-six-round-series) reverted Procfile to 'node server.js'
-          directly, which bypasses the patcher entirely and boots the server with zero
-          round logic. If that branch (or its Procfile) is what production deploys,
-          none of the round-series behavior would ever run - matching exactly what was
-          observed (no round bars, single-match behavior).
-
-          This commit removes that whole class of risk by baking the six-round series
-          logic and the round-dot UI directly into the tracked source files, so the
-          deployed code is always exactly what's in git - no runtime transformation,
-          no dependency on which Procfile/entry point happens to be configured.
-
-          Verified: test_gomoku_series_logic.js, test_html_syntax.js, test_gomoku.js
-          and test_gomoku_browser.js (real two-browser Playwright run) pass end to end.
-          MSG
-          git push --force origin HEAD:fix/gomoku-six-rounds-baked-in
