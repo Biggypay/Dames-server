@@ -20,4 +20,4 @@ s = s.replace("var TOTAL_MANCHES=parseInt(P.get('manches')||'5',10);", "var TOTA
 if (!s.includes("P.get('manches')||'6'")) throw new Error('TicTacToe six-round default was not applied');
 fs.writeFileSync(ttt,s);
 
-console.log('Applied: Quoridor AI 6 rounds, Gomoku AI 6 rounds, TicTacToe AI 6 rounds. Chess and Checkers intentionally untouched.');
+console.log('Correct round contract ready: TTT, Quoridor and Gomoku AI use six rounds; Chess and Checkers remain single-game.');
