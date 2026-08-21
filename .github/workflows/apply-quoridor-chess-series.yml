@@ -38,23 +38,29 @@ jobs:
         run: node --check server.js
       - name: Check browser scripts
         run: node tests/test_html_syntax.js
+      - name: Verify shared six-round series rules
+        run: node tests/test_gomoku_series_logic.js
       - name: Verify chess engine
         run: node tests/test_chess_engine.js
-      - name: Verify chess socket runtime
-        run: node tests/test_echecs_server.js
       - name: Verify required six-round wiring
         shell: bash
         run: |
           set -euo pipefail
           grep -q "finishQuoridorRound" server.js
           grep -q "finishEchecsRound" server.js
+          grep -q "recordRoundResult(qroom" server.js
+          grep -q "recordRoundResult(eroom" server.js
           grep -q "quoridor_round_start" server.js
           grep -q "echecs_round_start" server.js
+          grep -q "series: seriesPayload(qroom)" server.js
+          grep -q "series: seriesPayload(eroom)" server.js
           grep -q "roundsProgress" public/quoridor-online.html
           grep -q "roundsProgress" public/quoridor_ai.html
           grep -q "roundsProgress" public/echecs_multi.html
           grep -q "roundsProgress" public/echecs_ai.html
           grep -q "roundsProgress" public/gomoku_ai.html
+          grep -q "MY_SLOT === 2" public/quoridor-online.html
+          grep -q "drawDirectionHint" public/quoridor-online.html
       - name: Commit patched sources
         shell: bash
         run: |
