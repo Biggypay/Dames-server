@@ -61,19 +61,15 @@ html = replace_once(html, old_turn, new_turn, 'local turn handoff')
 
 html = replace_once(html, "var msg = { type:'mindspille', source:'dames-ai', event:'practice_over', game:'dames', result:outcome, reason:reason||'normal', difficulty:DIFFICULTY };", "var msg = { type:'mindspille', source:'dames-local', event:'local_over', game:'dames', result:outcome, reason:reason||'normal' };", 'local result message')
 
-result_pattern = re.compile(
-    r"  var humanWon = \(winner === MY_PLAYER\);\n"
-    r"  var colorStr = MY_PLAYER === 0 \? 'blancs' : 'rouges';\n"
-    r"  var winnerEmoji = humanWon \? \(MY_PLAYER===0\?'⚪':'🔴'\) : \(MY_PLAYER===0\?'🔴':'⚪'\);\n"
-    r"  var title = humanWon \? 'Vous avez gagné cette partie !' : 'Vous avez perdu cette partie\.';\n"
-    r"  var sub;\n"
-    r"  if\(reason === 'forfeit'\) sub = humanWon \? 'L\\'adversaire a abandonné\.' : 'Vous avez abandonné la partie\.';\n"
-    r"  else if\(reason === 'draw'\) \{ title = 'Match Nul'; sub = '50 coups joués sans prise\.'; winnerEmoji = '🤝'; \}\n"
-    r"  else sub = humanWon \? \('Félicitations ! Victoire avec les pions '\+colorStr\+'\.\\\n'\+wc\+' pions restants contre '\+rc\+'\.'\) : \(OP_NAME\+' remporte la partie\.\\\n'\+wc\+' pions restants contre '\+rc\+'\.'\);\n"
-    r"  \n"
-    r"  if\(humanWon\) createConfetti\(\);\n"
-    r"  showToast\(winnerEmoji, title, sub, 4000, function\(\)\{ sendResult\(humanWon\?'win':\(reason==='draw'\?'draw':'loss'\), reason\|\|'normal'\); var rb=document\.getElementById\('replay-btn'\); if\(rb\) rb\.classList\.add\('show'\); \}\);"
-)
+# Result wording: replace the self/AI-oriented presentation only, keeping the
+# rule evaluation and sendResult mechanism intact.
+result_start = "  var humanWon = (winner === MY_PLAYER);"
+result_end = "  showToast(winnerEmoji, title, sub, 4000, function(){ sendResult(humanWon?'win':(reason==='draw'?'draw':'loss'), reason||'normal'); var rb=document.getElementById('replay-btn'); if(rb) rb.classList.add('show'); });"
+start_idx = html.find(result_start)
+end_idx = html.find(result_end, start_idx)
+if start_idx < 0 or end_idx < 0:
+    raise SystemExit(f'end-game local wording markers missing: start={start_idx}, end={end_idx}')
+end_idx += len(result_end)
 result_replacement = """  var isDraw = (reason === 'draw' || winner < 0);
   var winnerName = winner === 0 ? MY_NAME : OP_NAME;
   var winnerEmoji = isDraw ? '🤝' : (winner === 0 ? '⚪' : '🔴');
@@ -85,22 +81,23 @@ result_replacement = """  var isDraw = (reason === 'draw' || winner < 0);
 
   if(!isDraw) createConfetti();
   showToast(winnerEmoji, title, sub, 4000, function(){ sendResult(isDraw?'draw':(winner===MY_PLAYER?'win':'loss'), reason||'normal'); var rb=document.getElementById('replay-btn'); if(rb) rb.classList.add('show'); });"""
-html, n = result_pattern.subn(result_replacement, html, count=1)
-if n != 1:
-    raise SystemExit(f'end-game local wording: expected exactly 1 block, found {n}')
+html = html[:start_idx] + result_replacement + html[end_idx:]
 
-start_pattern = re.compile(
-    r"  var diffLbl = DIFFICULTY==='easy' \? 'Facile' : DIFFICULTY==='medium' \? 'Moyen' : DIFFICULTY==='expert' \? 'Expert' : 'Difficile';\n"
-    r"  showToast\('🎲','Entraînement', 'Vous commencez \(Blancs\)\\\nIA : niveau '\+diffLbl, 2400, function\(\)\{\n"
-    r"    gameReady = true; updUI\(\); startTimer\(true, Date\.now\(\)\);\n"
-    r"  \}\);"
-)
+# Startup toast: remove the difficulty copy and identify the local white player.
+start_toast_start = "  var diffLbl = DIFFICULTY==='easy' ? 'Facile' : DIFFICULTY==='medium' ? 'Moyen' : DIFFICULTY==='expert' ? 'Expert' : 'Difficile';"
+start_toast_end = "  });"
+st = html.find(start_toast_start)
+if st < 0:
+    raise SystemExit('start toast difficulty marker missing')
+# The first closing `  });` after diffLbl belongs to this showToast callback.
+et = html.find(start_toast_end, st)
+if et < 0:
+    raise SystemExit('start toast closing marker missing')
+et += len(start_toast_end)
 start_replacement = """  showToast('🎲','Jouer avec un ami', MY_NAME+' commence (Blancs)', 2400, function(){
     gameReady = true; updUI(); startTimer(true, Date.now());
   });"""
-html, n = start_pattern.subn(start_replacement, html, count=1)
-if n != 1:
-    raise SystemExit(f'start toast: expected exactly 1 block, found {n}')
+html = html[:st] + start_replacement + html[et:]
 
 dst_path.write_text(html, encoding='utf-8', newline='')
 
@@ -112,6 +109,7 @@ if local_route in server:
 server = replace_once(server, ai_route, ai_route + '\n' + local_route, 'server local route')
 server_path.write_text(server, encoding='utf-8', newline='')
 
+# Syntax checks required by the task.
 subprocess.run(['node', '--check', 'server.js'], check=True)
 scripts = re.findall(r'<script(?:\s[^>]*)?>([\s\S]*?)</script>', html, flags=re.I)
 checked = 0
@@ -125,7 +123,20 @@ for idx, script in enumerate(scripts):
 if checked == 0:
     raise SystemExit('no inline script found to validate')
 
+# Scope/contract checks.
 assert src_path.read_text(encoding='utf-8') == original
-for marker in ['var HOTSEAT = true;', "var ROOM_ID = 'local-hotseat';", "source:'dames-local'", "event:'local_over'", 'Jouer avec un ami', 'if(!HOTSEAT && currentPlayer !== MY_PLAYER) return;']:
+for marker in [
+    'var HOTSEAT = true;',
+    "var AI_DEBUG = !!P.get('debug');",
+    "var DIFFICULTY = 'expert';",
+    "var ROOM_ID = 'local-hotseat';",
+    "var MY_NAME = P.get('name') || P.get('p1Name') || 'Joueur 1';",
+    "var OP_NAME = P.get('p2Name') || 'Joueur 2';",
+    "source:'dames-local'",
+    "event:'local_over'",
+    'Jouer avec un ami',
+    'if(!HOTSEAT && currentPlayer !== MY_PLAYER) return;',
+    "animCamTo(camD, 0.72, nextTheta, 650, function(){",
+]:
     assert marker in html, marker
 print(f'OK: server.js syntax; {checked} inline script(s) syntax')
