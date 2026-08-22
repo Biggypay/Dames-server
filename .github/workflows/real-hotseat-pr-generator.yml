@@ -29,10 +29,16 @@ jobs:
           lines=[]
           for line in src[start:end].splitlines():
               lines.append(line[10:] if line.startswith('          ') else line)
-          Path('/tmp/generate_hotseat.py').write_text('\n'.join(lines)+'\n')
+          gen='\n'.join(lines)+'\n'
+          fixed=[]
+          for line in gen.splitlines():
+              if "e=regex1(e,r\"updUI\\(\\); stopTimer" in line and "'chess finish turn'" in line:
+                  line="e=regex1(e,r\"  updUI\\(\\); stopTimer\\(\\);\\n  if\\(S\\.t === 1\\)\\{\\n    startTimer\\(false, Date\\.now\\(\\)\\);\\n    setTimeout\\(aiTurn, 650\\);\\n  \\} else \\{\\n    startTimer\\(true, Date\\.now\\(\\)\\);\\n  \\}\",\"  updUI(); stopTimer();\\n  startTimer(S.t===MY_PLAYER,Date.now());\",'chess finish turn')"
+              fixed.append(line)
+          Path('/tmp/generate_hotseat.py').write_text('\n'.join(fixed)+'\n')
           PY
           python3 /tmp/generate_hotseat.py
-          rm -f .github/workflows/tmp-real-engine-hotseat.yml .hotseat-trigger
+          rm -f .github/workflows/tmp-real-engine-hotseat.yml .hotseat-trigger .pr-trigger
           git config user.name "Biggy"
           git config user.email "ritchysandersdossous@gmail.com"
           git add -A
