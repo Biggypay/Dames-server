@@ -2770,12 +2770,12 @@ app.get(['/local-pass-and-play', '/ami-offline', '/friend-offline'], (req, res) 
   res.redirect(302, '/local-pass-and-play.html' + (params.toString() ? '?' + params.toString() : ''));
 });
 
-app.get(['/ttt-local', '/tictactoe-local', '/ttt-ami', '/tictactoe-ami'], localFriendRoute('tictactoe'));
-app.get(['/quoridor-local', '/quoridor-ami'], localFriendRoute('quoridor'));
-app.get(['/chifoumi-local', '/chifoumi-ami'], localFriendRoute('rock_paper_scissors'));
-app.get(['/penalty-local', '/penalty-ami'], localFriendRoute('penalty_shootout'));
-app.get(['/echecs-local', '/chess-local', '/echecs-ami', '/chess-ami'], localFriendRoute('chess'));
-app.get(['/gomoku-local', '/morpion5-local', '/gomoku-ami', '/morpion5-ami'], localFriendRoute('gomoku'));
+app.get(['/ttt-local','/tictactoe-local','/ttt-ami','/tictactoe-ami'], serveSmart(['ttt_local.html']));
+app.get(['/quoridor-local','/quoridor-ami'], serveSmart(['quoridor_local.html']));
+app.get(['/chifoumi-local','/chifoumi-ami'], serveSmart(['chifoumi_local.html']));
+app.get(['/penalty-local','/penalty-ami'], serveSmart(['penalty_local.html'], true));
+app.get(['/echecs-local','/chess-local','/echecs-ami','/chess-ami'], serveSmart(['echecs_local.html']));
+app.get(['/gomoku-local','/morpion5-local','/gomoku-ami','/morpion5-ami'], serveSmart(['gomoku_local.html']));
 app.get(['/ludo-local', '/ludo-ami'], localFriendRoute('ludo'));
 
 
