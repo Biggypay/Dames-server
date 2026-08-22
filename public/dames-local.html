@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover" />
+  <title>Dames 3D · Jouer avec un ami</title>
+  <style>
+    html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#1e1b4b}
+    iframe{display:block;width:100%;height:100%;border:0;background:#1e1b4b}
+  </style>
+</head>
+<body>
+  <iframe id="game" title="Dames 3D · Jouer avec un ami" allow="fullscreen; autoplay"></iframe>
+  <script>
+    'use strict';
+    const p = new URLSearchParams(location.search);
+    const p1 = p.get('name') || 'Joueur 1';
+    const p2 = p.get('p2Name') || 'Joueur 2';
+    const frame = document.getElementById('game');
+    frame.src = '/dames-ai?name=' + encodeURIComponent(p1) + '&username=' + encodeURIComponent(p1) + '&hotseat=1';
+
+    function patchHotseat(){
+      const w = frame.contentWindow;
+      const d = frame.contentDocument;
+      if(!w || !d || typeof w.onCellClick !== 'function' || typeof w.updUI !== 'function'){
+        return setTimeout(patchHotseat, 120);
+      }
+
+      try {
+        w.MY_NAME = p1;
+        w.OP_NAME = p2;
+        const n1 = d.getElementById('name-human');
+        const n2 = d.getElementById('name-ai');
+        if(n1) n1.textContent = p1;
+        if(n2) n2.textContent = p2;
+        const mode = d.querySelector('.manche-lbl');
+        if(mode) mode.textContent = 'Ami · même appareil';
+
+        // Le moteur IA 3D reste le moteur graphique et de règles. En hotseat,
+        // aucune IA n'est autorisée à jouer : le joueur courant devient
+        // simplement le joueur humain actif, quelle que soit sa couleur.
+        w.aiTurn = function(){
+          if(w.gameOver) return;
+          w.isProcessing = false;
+          w.MY_PLAYER = w.currentPlayer;
+          try { w.updUI(); } catch(e) {}
+          try { w.startTimer(w.currentPlayer === 0, Date.now()); } catch(e) {}
+        };
+
+        const originalClick = w.onCellClick;
+        w.onCellClick = function(row, col){
+          w.MY_PLAYER = w.currentPlayer;
+          return originalClick.call(w, row, col);
+        };
+
+        // Les gestes tactiles/glissés du moteur passent aussi par MY_PLAYER.
+        // Le synchroniser en continu évite toute différence entre tap, pince,
+        // glisse et clic souris sur iPhone, Android et ordinateur.
+        setInterval(function(){
+          if(!w.gameOver) w.MY_PLAYER = w.currentPlayer;
+        }, 40);
+
+        w.MY_PLAYER = w.currentPlayer;
+        w.isProcessing = false;
+        try { w.updUI(); } catch(e) {}
+      } catch (e) {
+        console.error('[dames-hotseat]', e);
+      }
+    }
+
+    frame.addEventListener('load', patchHotseat, { once: true });
+  </script>
+</body>
+</html>
