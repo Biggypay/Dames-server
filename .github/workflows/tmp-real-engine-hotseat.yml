@@ -1,0 +1,298 @@
+name: Temporary real-engine hotseat generator
+
+on:
+  push:
+    branches:
+      - feat/real-engine-hotseat-all-games
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/real-engine-hotseat-all-games
+          fetch-depth: 0
+
+      - name: Build hotseat pages from real game engines
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, subprocess, tempfile
+
+          ROOT=Path('.')
+          PUB=ROOT/'public'
+
+          def rep(s,a,b,label):
+              n=s.count(a)
+              if n!=1: raise SystemExit(f'{label}: expected 1, found {n}')
+              return s.replace(a,b,1)
+
+          def regex1(s,pat,repl,label,flags=re.S):
+              out,n=re.subn(pat,repl,s,count=1,flags=flags)
+              if n!=1: raise SystemExit(f'{label}: expected 1 regex match, found {n}')
+              return out
+
+          # ── TIC TAC TOE: copy exact Three.js AI engine, replace only opponent source. ──
+          t=(PUB/'ttt_ai.html').read_text(encoding='utf-8')
+          t=t.replace("<title>Tic Tac Toe 3D | Entrainement contre l'IA | Mindspille</title>","<title>Tic Tac Toe 3D | Jouer avec un ami | Mindspille</title>")
+          t=rep(t,'<div class="profile-name" id="name-human">VOUS</div>','<div class="profile-name" id="name-human">JOUEUR 1</div>','ttt p1 label')
+          t=rep(t,'<div class="profile-name" id="name-ai">ADV</div>','<div class="profile-name" id="name-ai">JOUEUR 2</div>','ttt p2 label')
+          t=rep(t,"var ROOM_ID   ='solo-ia';","var HOTSEAT=true;\nvar ROOM_ID='local-hotseat';",'ttt hotseat room')
+          t=rep(t,"var MY_NAME        = P.get('name')||P.get('username')||'Vous';\nvar OP_NAME        = 'IA';","var MY_NAME=P.get('name')||P.get('p1Name')||'Joueur 1';\nvar OP_NAME=P.get('p2Name')||'Joueur 2';",'ttt names')
+          t=t.replace("source:'tictactoe-ai',event:'practice_over'","source:'tictactoe-local',event:'local_over'")
+          old='''function playCell(row,col){
+  if(!gameReady||mancheOver||matchOver||isProcessing)return;
+  if(currentPlayer!==MY_PLAYER)return;
+  if(board[bIdx(row,col)])return;
+
+  gameReady=false;isProcessing=true;
+  stopTimer();stopGraceTimer();
+  pendingTimerData=null;
+
+  placeSymbol(MY_SYMBOL,row,col);
+  clearHL();
+
+  /* Sans serveur, c'est cette page qui arbitre : elle conclut la manche
+     elle-meme puis laisse l'IA repondre. */
+  var win=checkWin(board,MY_SYMBOL);
+  if(win){handleWin(MY_SYMBOL,win);return;}
+  if(isDraw(board)){handleDraw();return;}
+
+  currentPlayer=1-MY_PLAYER;
+  isProcessing=false;
+  gameReady=true;
+  updUI();
+  scheduleAiMove();
+}'''
+          new='''function playCell(row,col){
+  if(!gameReady||mancheOver||matchOver||isProcessing)return;
+  if(board[bIdx(row,col)])return;
+  gameReady=false;isProcessing=true;
+  stopTimer();stopGraceTimer();pendingTimerData=null;
+  var symbol=currentPlayer===MY_PLAYER?MY_SYMBOL:OP_SYMBOL;
+  placeSymbol(symbol,row,col);clearHL();
+  var win=checkWin(board,symbol);
+  if(win){handleWin(symbol,win);return;}
+  if(isDraw(board)){handleDraw();return;}
+  currentPlayer=1-currentPlayer;
+  isProcessing=false;gameReady=true;updUI();
+  startTimer(currentPlayer===MY_PLAYER,Date.now());
+}'''
+          t=rep(t,old,new,'ttt playCell')
+          t=t.replace("if(mancheOver||isProcessing||currentPlayer!==MY_PLAYER)return;","if(mancheOver||isProcessing)return;")
+          t=rep(t,"if(currentPlayer===MY_PLAYER)startTimer(true);\n  else scheduleAiMove();","startTimer(currentPlayer===MY_PLAYER,Date.now());",'ttt reset round')
+          t=regex1(t,r"showToast\('🎲','Partie commencée',\s*\(MY_PLAYER===0\?'Vous commencez \(X\)':OP_NAME\+' commence \(X\)'\),","showToast('🎲','Jouer avec un ami', MY_NAME+' commence (X)',",'ttt start toast')
+          t=t.replace("winner&&humanWon?'Manche gagnée !':(winner&&!humanWon?'Manche perdue !':'Nul !')","winner?(humanWon?MY_NAME:OP_NAME)+' gagne la manche !':'Manche nulle !'")
+          t=t.replace("winner&&humanWon?'Vous gagnez !':(winner&&!humanWon?OP_NAME+' gagne !':'Nul !')","winner?(humanWon?MY_NAME:OP_NAME)+' gagne !':'Nul !'")
+          (PUB/'ttt_local.html').write_text(t,encoding='utf-8')
+
+          # ── QUORIDOR: keep exact canvas engine, make current slot the local actor. ──
+          q=(PUB/'quoridor_ai.html').read_text(encoding='utf-8')
+          q=q.replace('<title>Quoridor — Entraînement IA | Mindspille</title>','<title>Quoridor — Jouer avec un ami | Mindspille</title>')
+          q=q.replace('<div class="sub">EN LIGNE</div>','<div class="sub">JOUER AVEC UN AMI</div>')
+          q=rep(q,"var ROOM_ID    = 'solo-ia';","var HOTSEAT = true;\nvar ROOM_ID = 'local-hotseat';",'quori room')
+          q=rep(q,"var MY_NAME        = P.get('name') || P.get('username') || 'Vous';\nvar OP_NAME        = 'IA';","var MY_NAME=P.get('name')||P.get('p1Name')||'Joueur 1';\nvar OP_NAME=P.get('p2Name')||'Joueur 2';",'quori names')
+          q=regex1(q,r"function updWallsUI\(\) \{.*?\n\}",'''function updWallsUI() {
+  document.getElementById('walls-me').textContent=s1Walls;
+  document.getElementById('walls-op').textContent=s2Walls;
+}''','quori walls')
+          q=regex1(q,r"function setMode\(m\) \{.*?\n\}\n\nfunction lockButtons",'''function setMode(m) {
+  if(!gameReady||gameOver||isProcessing)return;
+  mode=m;vmoves=[];vhw=[];vvw=[];
+  var slot=currentSlot,myPos=slot===1?s1Pos:s2Pos,opPos=slot===1?s2Pos:s1Pos,myWalls=slot===1?s1Walls:s2Walls,r,c;
+  if(m==='move')vmoves=validMovesFor(myPos,opPos);
+  else if(m==='wallH'&&myWalls>0)for(r=0;r<8;r++)for(c=0;c<8;c++)if(canHW(r,c))vhw.push({r:r,c:c});
+  else if(m==='wallV'&&myWalls>0)for(r=0;r<8;r++)for(c=0;c<8;c++)if(canVW(r,c))vvw.push({r:r,c:c});
+  document.getElementById('btnMove').className='modeBtn'+(m==='move'?' active':'');
+  document.getElementById('btnH').className='modeBtn'+(m==='wallH'?' active':'');
+  document.getElementById('btnV').className='modeBtn'+(m==='wallV'?' active':'');
+  document.getElementById('btnH').disabled=myWalls<=0;document.getElementById('btnV').disabled=myWalls<=0;draw();
+}
+
+function lockButtons''','quori setMode')
+          q=regex1(q,r"function updUI\(\) \{.*?\n\}",'''function updUI() {
+  document.getElementById('statusTxt').innerHTML=(currentSlot===1?MY_NAME:OP_NAME)+'<br>joue';
+  setMode('move');
+}''','quori updUI')
+          q=q.replace("if (currentSlot !== MY_SLOT) return;","")
+          q=q.replace("if (IS_P1) s1Walls--; else s2Walls--;","if(currentSlot===1)s1Walls--;else s2Walls--;")
+          q=regex1(q,r"function doMyMove\(r, c\) \{.*?\n\}\n\nfunction endMyTurn",'''function doMyMove(r,c){
+  stopTimer();var slot=currentSlot;
+  if(slot===1)s1Pos={r:r,c:c};else s2Pos={r:r,c:c};
+  emitMyMove('move',{r:r,c:c});
+  var goalRow=slot===1?0:8;
+  if(r===goalRow){handleGameEnd(slot,'normal');return;}
+  endMyTurn();
+}
+
+function endMyTurn''','quori move')
+          q=regex1(q,r"function endMyTurn\(\) \{.*?\n\}\n\nfunction emitMyMove",'''function endMyTurn(){
+  currentSlot=currentSlot===1?2:1;mode='wait';vmoves=[];vhw=[];vvw=[];isProcessing=false;
+  updUI();startTimer(currentSlot===1,Date.now());draw();
+}
+
+function emitMyMove''','quori end turn')
+          q=regex1(q,r"function emitMyMove\(moveType, data\) \{.*?\n\}","function emitMyMove(moveType,data){ /* hotseat: aucun réseau */ }",'quori emit')
+          q=regex1(q,r"function drawDirectionHint\(\)\{.*?\}",'''function drawDirectionHint(){if(!gameReady||gameOver)return;var p=currentSlot===1?s1Pos:s2Pos,dir=currentSlot===1?-1:1,x=cx(p.c)+CS/2,y=cy(p.r)+CS/2,len=Math.max(28,CS*1.05);ctx.save();ctx.strokeStyle='rgba(251,191,36,.9)';ctx.fillStyle='rgba(251,191,36,.95)';ctx.lineWidth=Math.max(3,CS*.08);ctx.lineCap='round';var sy=y+dir*CS*.7,ey=sy+dir*len;ctx.beginPath();ctx.moveTo(x,sy);ctx.lineTo(x,ey);ctx.stroke();ctx.beginPath();ctx.moveTo(x,ey+dir*10);ctx.lineTo(x-8,ey-dir*3);ctx.lineTo(x+8,ey-dir*3);ctx.closePath();ctx.fill();ctx.restore();}''','quori hint')
+          q=q.replace("var mine=winnerSlot===MY_SLOT,drawn=!winnerSlot,sc=practiceSeries.wins;showToast(drawn?'🤝':mine?'🏆':'🎯',drawn?'Manche nulle':mine?'Manche gagnée':'Manche perdue'","var mine=winnerSlot===1,drawn=!winnerSlot,sc=practiceSeries.wins;showToast(drawn?'🤝':'🏆',drawn?'Manche nulle':(winnerSlot===1?MY_NAME:OP_NAME)+' gagne'")
+          q=q.replace("var iWon = winnerSlot === MY_SLOT;\n  var outcome = iWon ? 'win' : 'lose';","var iWon=winnerSlot===1;\n  var outcome=iWon?'win':'lose';")
+          q=q.replace("title = '🏆 VICTOIRE !';","title='🏆 '+MY_NAME+' GAGNE !';").replace("title = '💀 DÉFAITE';","title='🏆 '+OP_NAME+' GAGNE !';")
+          q=q.replace("source: 'quoridor-ai', event: 'practice_over'","source:'quoridor-local', event:'local_over'")
+          q=q.replace("if(currentSlot!==MY_SLOT)setTimeout(aiTurn,550);","")
+          q=q.replace("var whoStarts = currentSlot === MY_SLOT ? 'Vous commencez' : OP_NAME + ' commence';","var whoStarts=(currentSlot===1?MY_NAME:OP_NAME)+' commence';")
+          (PUB/'quoridor_local.html').write_text(q,encoding='utf-8')
+
+          # ── CHESS: exact 3D engine, both sides selectable locally. ──
+          e=(PUB/'echecs_ai.html').read_text(encoding='utf-8').replace('\r\n','\n')
+          e=e.replace('<title>Échecs 3D — Entraînement IA | Mindspille</title>','<title>Échecs 3D — Jouer avec un ami | Mindspille</title>')
+          e=rep(e,"var MY_NAME = P.get('name') || P.get('username') || 'Vous';\nvar OP_NAME = 'IA';","var HOTSEAT=true;\nvar MY_NAME=P.get('name')||P.get('p1Name')||'Joueur 1';\nvar OP_NAME=P.get('p2Name')||'Joueur 2';",'chess names')
+          e=e.replace("if(S.t !== MY_PLAYER) return;\n\n  var idx", "var idx")
+          e=rep(e,"var isMine = clicked !== 0 && (MY_PLAYER === 0 ? clicked > 0 : clicked < 0);","var isMine=clicked!==0&&(S.t===0?clicked>0:clicked<0);",'chess side select')
+          e=regex1(e,r"updUI\(\); stopTimer\(\);\n  if\(S\.t === 1\)\{.*?\n  \}","updUI();stopTimer();\n  startTimer(S.t===MY_PLAYER,Date.now());",'chess finish turn')
+          e=e.replace("side === MY_PLAYER ? '⚔️ Échec au roi ! Défendez-vous !' : '⚔️ Roi de l\\'IA en échec !'","(side===0?MY_NAME:OP_NAME)+' est en échec !'")
+          e=regex1(e,r"title = humanWon \? 'Vous avez gagné cette partie !' : 'Vous avez perdu cette partie\.';.*?else sub = humanWon \? 'Victoire !' : 'L\\'IA remporte la partie\.';",'''title=(winner===0?MY_NAME:OP_NAME)+' gagne !';
+  if(reason==='checkmate')sub='Échec et mat !';else sub='Victoire !';''','chess end text')
+          e=regex1(e,r"var diffLbl = .*?showToast\('🎲','Entraînement', 'Vous commencez \(Blancs\).*?\n  \}\);",'''showToast('🎲','Jouer avec un ami',MY_NAME+' commence (Blancs)',2400,function(){
+    gameReady=true;updUI();startTimer(true,Date.now());
+  });''','chess start toast')
+          e=e.replace("source:'echecs-ai'","source:'echecs-local'").replace("event:'practice_over'","event:'local_over'")
+          (PUB/'echecs_local.html').write_text(e,encoding='utf-8')
+
+          # ── GOMOKU: exact notebook/canvas engine, both symbols local, keep six rounds. ──
+          g=(PUB/'gomoku_ai.html').read_text(encoding='utf-8')
+          g=g.replace('<title>Morpion à cinq — Entraînement | Mindspille</title>','<title>Morpion à cinq — Jouer avec un ami | Mindspille</title>')
+          g=g.replace('<div class="sub">ENTRAÎNEMENT</div>','<div class="sub">JOUER AVEC UN AMI</div>')
+          g=g.replace('<div class="profile-name">Vous</div>','<div class="profile-name">Joueur 1</div>',1).replace('<div class="profile-name">Ordinateur</div>','<div class="profile-name">Joueur 2</div>',1)
+          g=regex1(g,r"function updUI\(\) \{.*?\n\}",'''function updUI(){
+  document.getElementById('profile-me').classList.toggle('active',currentSlot===HUMAN&&!gameOver);
+  document.getElementById('profile-op').classList.toggle('active',currentSlot===AI&&!gameOver);
+  var status=document.getElementById('statusTxt');
+  if(gameOver)status.textContent='TERMINÉ';else status.textContent=currentSlot===HUMAN?'JOUEUR 1':'JOUEUR 2';
+}''','gomoku ui')
+          g=regex1(g,r"function humanMove\(evt\) \{.*?\n\}",'''function humanMove(evt){
+  if(evt&&evt.cancelable)evt.preventDefault();
+  if(gameOver||thinking)return;
+  var cell=pointerCell(evt);if(!cell||board[idx(cell.r,cell.c)]!==0)return;
+  place(cell.r,cell.c,currentSlot);
+}''','gomoku input')
+          g=rep(g,"function startRoundOnly(){initGame();currentSlot=practiceSeries.roundStarter;document.getElementById('gameOverModal').classList.remove('show');calcLayout();draw();updUI();if(currentSlot===AI)setTimeout(aiMove,650);}","function startRoundOnly(){initGame();currentSlot=practiceSeries.roundStarter;document.getElementById('gameOverModal').classList.remove('show');calcLayout();draw();updUI();}",'gomoku round')
+          g=g.replace("title = 'Victoire !'; modalClass = 'win-modal';\n    message = 'Cinq pions alignés. Bien joué !';","title='Joueur 1 gagne !';modalClass='win-modal';message='Cinq pions alignés.';")
+          g=g.replace("title = 'Défaite'; modalClass = 'lose-modal';\n    message = 'L’ordinateur a aligné cinq pions.';","title='Joueur 2 gagne !';modalClass='win-modal';message='Cinq pions alignés.';")
+          g=g.replace("showToast('✏️', 'Morpion à cinq', 'Alignez CINQ pions.\\nVous jouez les croix.', 2200);","showToast('✏️','Jouer avec un ami','Joueur 1 commence avec les croix.',2200);")
+          # Hide AI-only difficulty controls without changing the board engine.
+          g=g.replace("<button class=\"modeBtn\" id=\"lvl1\">FACILE</button>","").replace("<button class=\"modeBtn active\" id=\"lvl2\">MOYEN</button>","").replace("<button class=\"modeBtn\" id=\"lvl3\">DIFFICILE</button>","")
+          g=g.replace("document.getElementById('lvl1').addEventListener('click', function () { setDifficulty(1); });\ndocument.getElementById('lvl2').addEventListener('click', function () { setDifficulty(2); });\ndocument.getElementById('lvl3').addEventListener('click', function () { setDifficulty(3); });\n","")
+          (PUB/'gomoku_local.html').write_text(g,encoding='utf-8')
+
+          # ── CHIFOUMI: same cards/animations; P1 chooses, device passes, then P2 chooses. ──
+          c=(PUB/'chifoumi_ai.html').read_text(encoding='utf-8').replace('\r\n','\n')
+          c=c.replace('<title>Chifoumi — Entraînement IA | Mindspille</title>','<title>Chifoumi — Jouer avec un ami | Mindspille</title>')
+          c=rep(c,"var ROOM_ID   = 'solo-ia';","var HOTSEAT=true;\nvar ROOM_ID='local-hotseat';",'rps room')
+          c=rep(c,"var MY_NAME        = P.get('name') || P.get('username') || 'Vous';\nvar OP_NAME        = 'IA';","var MY_NAME=P.get('name')||P.get('p1Name')||'Joueur 1';\nvar OP_NAME=P.get('p2Name')||'Joueur 2';",'rps names')
+          c=c.replace("var playerChoice = null, opponentChoice = null;","var playerChoice=null,opponentChoice=null,localChoosingPlayer=1;")
+          c=regex1(c,r"function playerMakesChoice\(choice\) \{.*?\n\}\n\n/\* ═+\n   REVEAL COUNTDOWN",'''function playerMakesChoice(choice){
+  if(!gameReady||gameOver||!roundInProgress)return;
+  if(localChoosingPlayer===1){
+    playerChoice=choice;localChoosingPlayer=2;
+    playerEmojiEl.textContent='🔒';playerLabelEl.textContent='Choix enregistré';playerCard.classList.add('hidden-choice');
+    profileHuman.className='profile';profileAi.className='profile active ai-active';
+    choiceBtns.forEach(function(btn){btn.classList.remove('disabled','selected','locked');});
+    statusEl.className='status visible';statusEl.textContent='Passez au '+OP_NAME+' — choisissez votre coup';
+    return;
+  }
+  opponentChoice=choice;playerLocked=true;opLocked=true;
+  aiEmojiEl.textContent='🔒';aiLabelEl.textContent='Choix enregistré';aiCard.classList.remove('waiting');aiCard.classList.add('hidden-choice','ai-active');
+  choiceBtns.forEach(function(btn){btn.classList.add('disabled');});
+  startRevealCountdown();
+}
+
+/* ══════════════════════════════════════════
+   REVEAL COUNTDOWN''','rps choose')
+          c=rep(c,"playerChoice   = null;\n  opponentChoice = null;\n  roundInProgress = true;","playerChoice=null;opponentChoice=null;localChoosingPlayer=1;playerLocked=false;opLocked=false;roundInProgress=true;",'rps round state')
+          c=c.replace("// Timer visuel local + l'IA fait son choix après un court délai (réflexion)\n  startTimer(Date.now());\n  scheduleAiChoice();","// Hotseat : Joueur 1 choisit, puis on passe l'appareil au Joueur 2.\n  startTimer(Date.now());\n  statusEl.className='status visible';statusEl.textContent=MY_NAME+' choisit';")
+          c=c.replace("if (result === 'win')       msg = myC && opC ? '🎉 Victoire ! ' + emojis[myC] + ' bat ' + emojis[opC] : '🎉 Victoire !';\n  else if (result === 'lose') msg = myC && opC ? '💀 Défaite... ' + emojis[opC] + ' bat ' + emojis[myC] : '💀 Défaite...';","if(result==='win')msg='🎉 '+MY_NAME+' gagne ! '+emojis[myC]+' bat '+emojis[opC];\n  else if(result==='lose')msg='🎉 '+OP_NAME+' gagne ! '+emojis[opC]+' bat '+emojis[myC];")
+          c=c.replace("source:'chifoumi-ai'","source:'chifoumi-local'").replace("event:'practice_over'","event:'local_over'")
+          (PUB/'chifoumi_local.html').write_text(c,encoding='utf-8')
+
+          # ── PENALTY: same pitch/goalkeeper/ball engine; sequential hidden choices. ──
+          p=(PUB/'penalty_ai.html').read_text(encoding='utf-8').replace('\r\n','\n')
+          p=p.replace('<title>Penalty — Entraînement IA | Mindspille</title>','<title>Penalty — Jouer avec un ami | Mindspille</title>')
+          p=rep(p,"var MY_NAME        = P.get('name') || P.get('username') || 'Vous';\nvar OP_NAME        = 'IA';","var HOTSEAT=true;\nvar MY_NAME=P.get('name')||P.get('p1Name')||'Joueur 1';\nvar OP_NAME=P.get('p2Name')||'Joueur 2';",'pen names')
+          p=p.replace("var myChoice      = null;","var myChoice=null;\nvar localChooser=1;")
+          # replace showZones and selectZone together up to checkBothReady
+          p=regex1(p,r"function showZones\(\) \{.*?\n\}\n\nfunction hideZones\(\).*?\n\}\n\nfunction selectZone\(idx\) \{.*?\n\}\n\nfunction checkBothReady",'''function renderLocalZones(which){
+  var layer=document.getElementById('spots-layer');layer.innerHTML='';layer.style.pointerEvents='all';
+  var p1Shooter=isMyShooter(currentRound),chooserShooter=which===1?p1Shooter:!p1Shooter;
+  var icon=chooserShooter?'⚽':'🧤';
+  SPOTS.forEach(function(sp,i){var btn=document.createElement('button');btn.className='zone-btn';var ring=document.createElement('div');ring.className='zone-ring';var ico=document.createElement('span');ico.className='zone-icon';ico.textContent=icon;ring.appendChild(ico);btn.appendChild(ring);btn.style.left=sp.x+'px';btn.style.top=sp.y+'px';btn.addEventListener('click',function(){selectZone(i);});layer.appendChild(btn);});
+  if(chooserShooter)showBallCenter();else hideBallCenter();
+  var sb=document.getElementById('status-bar');sb.className='show';sb.textContent=(which===1?MY_NAME:OP_NAME)+(chooserShooter?' : choisissez la zone de tir':' : choisissez la zone de parade');
+  document.getElementById('profile-me').className=which===1?'profile active choosing':'profile';
+  document.getElementById('profile-op').className=which===2?'profile active choosing':'profile';render();
+}
+function showZones(){localChooser=1;myChoice=null;aiChoice=null;myLocked=false;opLocked=false;renderLocalZones(1);startTimer(Date.now());}
+function hideZones(){var layer=document.getElementById('spots-layer');layer.innerHTML='';layer.style.pointerEvents='none';}
+function selectZone(idx){
+  if(phase!=='choosing')return;
+  if(localChooser===1){
+    myChoice=idx;myLocked=true;localChooser=2;
+    hideZones();
+    var sb=document.getElementById('status-bar');sb.className='show';sb.textContent='Passez au '+OP_NAME;sb.style.color='#fbbf24';
+    setTimeout(function(){renderLocalZones(2);},450);return;
+  }
+  aiChoice=idx;opLocked=true;hideZones();checkBothReady();
+}
+
+function checkBothReady''','penalty zones')
+          p=p.replace("myChoice = null; myLocked = false; opLocked = false;","myChoice=null;aiChoice=null;localChooser=1;myLocked=false;opLocked=false;")
+          p=p.replace("source: 'penalty-ai'","source:'penalty-local'").replace("event: 'practice_over'","event:'local_over'")
+          p=p.replace("title = 'Victoire !';","title=MY_NAME+' gagne !';").replace("title = 'Défaite';","title=OP_NAME+' gagne !';")
+          p=p.replace("Bravo, vous avez gagné !","Bravo, '+MY_NAME+' a gagné !")
+          (PUB/'penalty_local.html').write_text(p,encoding='utf-8')
+
+          # ── Server: serve dedicated real-engine local files instead of 2D generic redirect. ──
+          sp=Path('server.js');s=sp.read_text(encoding='utf-8')
+          route_map={
+            "app.get(['/ttt-local', '/tictactoe-local', '/ttt-ami', '/tictactoe-ami'], localFriendRoute('tictactoe'));":"app.get(['/ttt-local','/tictactoe-local','/ttt-ami','/tictactoe-ami'], serveSmart(['ttt_local.html']));",
+            "app.get(['/quoridor-local', '/quoridor-ami'], localFriendRoute('quoridor'));":"app.get(['/quoridor-local','/quoridor-ami'], serveSmart(['quoridor_local.html']));",
+            "app.get(['/chifoumi-local', '/chifoumi-ami'], localFriendRoute('rock_paper_scissors'));":"app.get(['/chifoumi-local','/chifoumi-ami'], serveSmart(['chifoumi_local.html']));",
+            "app.get(['/penalty-local', '/penalty-ami'], localFriendRoute('penalty_shootout'));":"app.get(['/penalty-local','/penalty-ami'], serveSmart(['penalty_local.html'], true));",
+            "app.get(['/echecs-local', '/chess-local', '/echecs-ami', '/chess-ami'], localFriendRoute('chess'));":"app.get(['/echecs-local','/chess-local','/echecs-ami','/chess-ami'], serveSmart(['echecs_local.html']));",
+            "app.get(['/gomoku-local', '/morpion5-local', '/gomoku-ami', '/morpion5-ami'], localFriendRoute('gomoku'));":"app.get(['/gomoku-local','/morpion5-local','/gomoku-ami','/morpion5-ami'], serveSmart(['gomoku_local.html']));",
+          }
+          for a,b in route_map.items(): s=rep(s,a,b,'server route '+a.split("'")[1])
+          sp.write_text(s,encoding='utf-8')
+
+          # Syntax and contract checks.
+          subprocess.run(['node','--check','server.js'],check=True)
+          made=['ttt_local.html','quoridor_local.html','echecs_local.html','gomoku_local.html','chifoumi_local.html','penalty_local.html','dames_local.html']
+          for name in made:
+              html=(PUB/name).read_text(encoding='utf-8')
+              scripts=re.findall(r'<script(?:\s[^>]*)?>([\s\S]*?)</script>',html,flags=re.I)
+              checked=0
+              for i,js in enumerate(scripts):
+                  if not js.strip(): continue
+                  tmp=Path(tempfile.gettempdir())/f'{name}-{i}.js';tmp.write_text(js,encoding='utf-8')
+                  subprocess.run(['node','--check',str(tmp)],check=True);checked+=1
+              if not checked: raise SystemExit('no inline JS in '+name)
+              print('OK',name,checked)
+          for path in ['/ttt-local','/quoridor-local','/chifoumi-local','/penalty-local','/echecs-local','/gomoku-local','/dames-local']:
+              if path not in s: raise SystemExit('missing route '+path)
+          if "localFriendRoute('tictactoe')" in s or "localFriendRoute('quoridor')" in s: raise SystemExit('generic 2D routes still active')
+          print('OK real-engine hotseat pages')
+          PY
+
+      - name: Commit generated game pages
+        shell: bash
+        run: |
+          rm -f .github/workflows/tmp-real-engine-hotseat.yml
+          git config user.name "Biggy"
+          git config user.email "ritchysandersdossous@gmail.com"
+          git add public/ttt_local.html public/quoridor_local.html public/echecs_local.html public/gomoku_local.html public/chifoumi_local.html public/penalty_local.html server.js .github/workflows/tmp-real-engine-hotseat.yml
+          git commit -m "Ajoute les vrais moteurs de jeu au mode ami offline"
+          git push origin HEAD:feat/real-engine-hotseat-all-games
