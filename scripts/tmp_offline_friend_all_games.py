@@ -18,8 +18,8 @@ def replace_once(text, old, new, label):
 
 dames = replace_once(
     dames,
-    "function animCamTo(targetD,targetPhi,targetTheta,duration,onDone){\n  if(topViewAnimating) return;",
-    "function animCamTo(targetD,targetPhi,targetTheta,duration,onDone){\n  if(boardLocked){ if(onDone) onDone(); return; }\n  if(topViewAnimating) return;",
+    "function animCamTo(tD, tPhi, tTheta, dur, onDone){\n  var sD=camD, sPhi=camPhi, sTheta=camTheta, t0=Date.now();",
+    "function animCamTo(tD, tPhi, tTheta, dur, onDone){\n  if(boardLocked){ if(onDone) onDone(); return; }\n  var sD=camD, sPhi=camPhi, sTheta=camTheta, t0=Date.now();",
     'animCamTo lock guard'
 )
 
