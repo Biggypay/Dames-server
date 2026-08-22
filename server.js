@@ -2747,6 +2747,38 @@ app.get(['/echecs-ai', '/echecs_ai.html', '/echecs-solo', '/echecs-entrainement'
 app.get(['/gomoku', '/gomoku.html', '/gomoku-online.html', '/gomoku_multi.html', '/morpion5', '/morpion-cinq'], serveSmart(['gomoku-online.html', 'gomoku_multi.html', 'gomoku.html']));
 app.get(['/gomoku-ai', '/gomoku_ai.html', '/gomoku-solo', '/gomoku-entrainement', '/gomoku-ia', '/morpion5-ai', '/morpion5-ia'], serveSmart(['gomoku_ai.html', 'gomoku-ai.html']));
 
+// ── MODES AMI OFFLINE / MÊME APPAREIL ─────────────────────
+// Conserve les noms éventuels passés par l'app et force seulement le type de jeu.
+function localFriendRoute(game) {
+  return (req, res) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(req.query || {})) {
+      if (Array.isArray(value)) value.forEach(item => params.append(key, String(item)));
+      else if (value !== undefined && value !== null) params.set(key, String(value));
+    }
+    params.set('game', game);
+    res.redirect(302, '/local-pass-and-play.html?' + params.toString());
+  };
+}
+
+app.get(['/local-pass-and-play', '/ami-offline', '/friend-offline'], (req, res) => {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(req.query || {})) {
+    if (Array.isArray(value)) value.forEach(item => params.append(key, String(item)));
+    else if (value !== undefined && value !== null) params.set(key, String(value));
+  }
+  res.redirect(302, '/local-pass-and-play.html' + (params.toString() ? '?' + params.toString() : ''));
+});
+
+app.get(['/ttt-local', '/tictactoe-local', '/ttt-ami', '/tictactoe-ami'], localFriendRoute('tictactoe'));
+app.get(['/quoridor-local', '/quoridor-ami'], localFriendRoute('quoridor'));
+app.get(['/chifoumi-local', '/chifoumi-ami'], localFriendRoute('rock_paper_scissors'));
+app.get(['/penalty-local', '/penalty-ami'], localFriendRoute('penalty_shootout'));
+app.get(['/echecs-local', '/chess-local', '/echecs-ami', '/chess-ami'], localFriendRoute('chess'));
+app.get(['/gomoku-local', '/morpion5-local', '/gomoku-ami', '/morpion5-ami'], localFriendRoute('gomoku'));
+app.get(['/ludo-local', '/ludo-ami'], localFriendRoute('ludo'));
+
+
 // Moteur d'échecs partagé : servi depuis la même origine (pages 3D + Worker IA).
 app.get(['/echecs-engine.js', '/chess-engine.js'], (req, res) => {
   res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
