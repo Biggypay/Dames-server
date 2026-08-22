@@ -1,0 +1,34 @@
+name: Temporary Dames hotseat PR generator
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    if: github.head_ref == 'tmp/dames-local-generation'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Generate and validate requested Dames-only changes
+        run: python3 scripts/tmp_generate_dames_local.py
+      - name: Commit requested result and remove temporary helpers
+        shell: bash
+        run: |
+          rm -f .github/workflows/tmp-dames-local-generation.yml
+          rm -f .github/workflows/tmp-dames-local-pr.yml
+          rm -f scripts/tmp_generate_dames_local.py
+          git config user.name "Biggy"
+          git config user.email "ritchysandersdossous@gmail.com"
+          git add public/dames_local.html server.js .github/workflows/tmp-dames-local-generation.yml .github/workflows/tmp-dames-local-pr.yml scripts/tmp_generate_dames_local.py
+          echo 'Final staged paths:'
+          git diff --cached --name-status
+          git commit -m "Ajoute mode hotseat Dames (jouer avec un ami, moteur 3D)"
+          git push origin HEAD:${{ github.head_ref }}
