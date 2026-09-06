@@ -2779,6 +2779,13 @@ app.get(['/gomoku-local','/morpion5-local','/gomoku-ami','/morpion5-ami'], serve
 app.get(['/ludo-local', '/ludo-ami'], localFriendRoute('ludo'));
 
 
+// Catalogue et affichage multilingue des plateaux, sans toucher aux parties.
+app.get('/mindspille-i18n.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(PUBLIC, 'mindspille-i18n.js'));
+});
+
 // Moteur d'échecs partagé : servi depuis la même origine (pages 3D + Worker IA).
 app.get(['/echecs-engine.js', '/chess-engine.js'], (req, res) => {
   res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
@@ -4395,4 +4402,3 @@ startServer().catch(error => {
   console.error('[startup] fatal error', error.message);
   process.exit(1);
 });
-
