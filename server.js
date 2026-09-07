@@ -19,6 +19,7 @@ const server = http.createServer(app);
 const PUBLIC = path.join(__dirname, 'public');
 // Moteur d'échecs FIDE partagé (même code que les pages 3D et le Worker IA).
 const { ChessEngineFactory } = require('./public/echecs-engine.js');
+const ChessClock = require('./lib/chess-clock.js');
 const ChessEngine = ChessEngineFactory();
 const crypto     = require('crypto');
 const { ensureSeriesState, seriesPayload, recordRoundResult, advanceRoundStarter } = require('./lib/gomoku-series');
@@ -278,9 +279,44 @@ async function callServerStateRpc(name, payload) {
   }
 }
 
+/**
+ * Signale un comportement à vérifier sur une partie d'échecs de tournoi.
+ *
+ * Le serveur ne bloque personne : il consigne, et l'administration tranche.
+ * Un envoi raté n'interrompt jamais la partie — une alerte perdue est moins
+ * grave qu'un plateau coupé au milieu d'une finale.
+ */
+function reportChessIntegritySignal(room, supabaseId, signal, details) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return;
+  if (!isUuid(supabaseId) || !isUuid(room?.databaseGameId)) return;
+  void callServerStateRpc('record_chess_integrity_signal', {
+    p_user_id: supabaseId,
+    p_signal: signal,
+    p_game_id: room.databaseGameId,
+    p_details: details || {}
+  }).catch(error => {
+    console.warn('[integrity] signalement non transmis', signal, error.message);
+  });
+}
+
+/** Coups refusés tolérés avant de prévenir l'arbitrage. */
+const CHESS_REJECTED_MOVES_BEFORE_SIGNAL = 5;
+
+function noteRejectedChessMove(eroom, slot, kind) {
+  if (!eroom.clock) return;                 // hors tournoi : rien à surveiller
+  eroom.rejectedMoves = eroom.rejectedMoves || {};
+  eroom.rejectedMoves[slot] = (eroom.rejectedMoves[slot] || 0) + 1;
+  if (eroom.rejectedMoves[slot] !== CHESS_REJECTED_MOVES_BEFORE_SIGNAL) return;
+  reportChessIntegritySignal(eroom, eroom.players?.[slot]?.supabaseId, 'impossible_move', {
+    rejected_moves: eroom.rejectedMoves[slot],
+    last_rejection: kind,
+    slot
+  });
+}
+
 function serializableRoomState(room) {
   const ignored = new Set([
-    'turnTimer', 'graceTimer', 'revealTimer', 'nextRoundTimer', 'disconnectTimer',
+    'turnTimer', 'graceTimer', 'flagTimer', 'revealTimer', 'nextRoundTimer', 'disconnectTimer',
     'settlementPromise', 'settlementRetryTimer', 'persistTimer', 'cleanupTimer',
     '_persistPromise', '_batchPersistPromise', '_lastPersistedFingerprint'
   ]);
@@ -429,7 +465,10 @@ function hydratePersistedRoom(record) {
     player.socketId = null;
     player.userId = null;
   }
-  room.turnTimer = null; room.graceTimer = null; room.revealTimer = null; room.nextRoundTimer = null; room.disconnectTimer = null;
+  room.turnTimer = null; room.graceTimer = null; room.flagTimer = null; room.revealTimer = null; room.nextRoundTimer = null; room.disconnectTimer = null;
+  // Une pendule d'échecs restaurée repart à l'arrêt : le temps passé serveur
+  // éteint n'est facturé à personne, et le reste exact est conservé.
+  if (record.game_type === 'echecs' && room.clock) room.clock = ChessClock.sanitizeClock(room.clock);
   if (record.game_type === 'chifoumi') room.revealPending = false;
   if (record.game_type === 'quoridor') {
     room.gameState = room.gameState && typeof room.gameState === 'object' ? room.gameState : quoriInitialState();
@@ -1433,16 +1472,73 @@ const _damesSyncLoop = setInterval(() => {
 }, DAMES_SYNC_INTERVAL);
 if (_damesSyncLoop.unref) _damesSyncLoop.unref();
 
-// ── ÉCHECS : timers de tour + re-synchro autoritative (même modèle que Dames) ──
+// ── ÉCHECS : pendule Fischer, ou chronomètre par tour ─────────────────────
+//
+// Une partie de tournoi porte une cadence officielle (10+5 par défaut) écrite
+// par la base dans `games.game_settings.chess_time_control`. Dans ce cas, le
+// temps est un budget pour toute la partie, avec un incrément rendu après
+// chaque coup accepté : c'est `eroom.clock` qui fait foi, et le chronomètre de
+// 30 s par coup ne s'applique plus.
+//
+// Une partie libre n'a pas de cadence déclarée : elle garde exactement le
+// chronomètre par tour d'origine, inchangé.
+
+/** Installe la pendule officielle d'une partie, une seule fois. */
+function attachEchecsClock(eroom, gameSettings) {
+  if (eroom.clock) return eroom.clock;
+  const timeControl = ChessClock.readTimeControl(gameSettings);
+  if (!timeControl) return null;
+  eroom.clock = ChessClock.createClock(timeControl);
+  return eroom.clock;
+}
+
+function clearEchecsFlagTimer(eroom) {
+  if (eroom.flagTimer) { clearTimeout(eroom.flagTimer); eroom.flagTimer = null; }
+}
+
+/** Le drapeau tombe. Article 6.9 : victoire, sauf mat devenu impossible. */
+function echecsFlagFall(eroom, roomId, playerSlot) {
+  if (eroom.status !== 'playing' || !eroom.clock) return;
+  const now = Date.now();
+  if (ChessClock.remainingFor(eroom.clock, playerSlot, now) > 0) return;
+  ChessClock.chargeElapsed(eroom.clock, now);
+  clearEchecsFlagTimer(eroom);
+  const verdict = ChessClock.flagFallOutcome(ensureEchecsEngineState(eroom), playerSlot);
+  eroom.endDetail = verdict.detail;
+  notifyEchecsRoomOver(eroom, roomId, verdict.winnerSlot, verdict.reason);
+}
+
+function startEchecsClock(eroom, roomId, playerSlot) {
+  const now = Date.now();
+  ChessClock.startSlot(eroom.clock, playerSlot, now);
+  eroom.turnPlayer = playerSlot;
+  eroom.turnStartTime = now;
+  eroom.graceStartTime = null;
+  const left = ChessClock.remainingFor(eroom.clock, playerSlot, now);
+  io.to(roomId).emit('echecs_clock', ChessClock.clockSnapshot(eroom.clock, now));
+  io.to(roomId).emit('echecs_turn_start', { player: playerSlot, startTime: now, duration: left, clock: true });
+  if (left <= 0) return void echecsFlagFall(eroom, roomId, playerSlot);
+  eroom.flagTimer = setTimeout(() => {
+    eroom.flagTimer = null;
+    if (eroom.status !== 'playing' || eroom.turnPlayer !== playerSlot) return;
+    echecsFlagFall(eroom, roomId, playerSlot);
+  }, left);
+}
+
 function clearEchecsTurnTimers(eroom) {
   if (eroom.turnTimer)  { clearTimeout(eroom.turnTimer);  eroom.turnTimer  = null; }
   if (eroom.graceTimer) { clearTimeout(eroom.graceTimer); eroom.graceTimer = null; }
+  clearEchecsFlagTimer(eroom);
+  // Une pendule qu'on arrête garde son reste exact : pause de tournoi,
+  // déconnexion ou redémarrage ne coûtent une seconde à personne.
+  if (eroom.clock) ChessClock.chargeElapsed(eroom.clock, Date.now());
   eroom.turnStartTime = null; eroom.graceStartTime = null; eroom.turnPlayer = null;
 }
 
 function startEchecsTurnTimer(eroom, roomId, playerSlot) {
   clearEchecsTurnTimers(eroom);
   if (eroom.status !== 'playing' || eroom.currentPlayer + 1 !== playerSlot) return;
+  if (eroom.clock) return void startEchecsClock(eroom, roomId, playerSlot);
   const now = Date.now();
   eroom.turnPlayer = playerSlot; eroom.turnStartTime = now; eroom.graceStartTime = null;
   io.to(roomId).emit('echecs_turn_start', { player: playerSlot, startTime: now, duration: TURN_DURATION });
@@ -1478,9 +1574,16 @@ function echecsSnapshot(eroom) {
     status: eroom.status,
     serverTime: Date.now()
   };
+  // La pendule voyage avec l'état : un joueur qui recharge, un spectateur qui
+  // arrive et une reprise après redémarrage lisent le même temps restant.
+  if (eroom.clock) snap.clock = ChessClock.clockSnapshot(eroom.clock, Date.now());
   if (eroom.turnPlayer !== null && eroom.status === 'playing') {
     snap.turnPlayer = eroom.turnPlayer;
-    if (eroom.graceStartTime) { snap.graceStartTime = eroom.graceStartTime; snap.graceDuration = GRACE_DURATION; }
+    if (eroom.clock) {
+      snap.turnStartTime = eroom.turnStartTime;
+      snap.turnDuration = ChessClock.remainingFor(eroom.clock, eroom.turnPlayer, Date.now());
+    }
+    else if (eroom.graceStartTime) { snap.graceStartTime = eroom.graceStartTime; snap.graceDuration = GRACE_DURATION; }
     else if (eroom.turnStartTime) { snap.turnStartTime = eroom.turnStartTime; snap.turnDuration = TURN_DURATION; }
   }
   return snap;
@@ -2433,7 +2536,12 @@ function notifyEchecsRoomOver(eroom, roomId, winnerSlot, reason = 'normal') {
   void settleRoomInSupabase(eroom, 'echecs', winnerSlot, reason);
 
   if (winnerSlot === 0) {
-    const base = { type: 'game_over', game: 'echecs', room: roomId, winner: 'draw', winnerSlot: 0, p1Id: p1?.supabaseId, p2Id: p2?.supabaseId, betAmount: bet, totalPot, commission: 0, netGain: bet, currency: eroom.currency || 'HTG', reason: 'draw', detail: eroom.endDetail || reason };
+    // Armageddon : la partie est bien NULLE aux échecs, et c'est ce résultat-là
+    // qui part en base — c'est elle, et elle seule, qui applique l'avantage du
+    // nul aux Noirs pour désigner le vainqueur de la confrontation. Le plateau
+    // le dit aux joueurs sans rien décider lui-même.
+    const armageddon = eroom.clock?.armageddon === true;
+    const base = { type: 'game_over', game: 'echecs', room: roomId, winner: 'draw', winnerSlot: 0, p1Id: p1?.supabaseId, p2Id: p2?.supabaseId, betAmount: bet, totalPot, commission: 0, netGain: bet, currency: eroom.currency || 'HTG', reason: 'draw', detail: eroom.endDetail || reason, armageddon, armageddonWinnerSlot: armageddon ? 2 : null };
     if (p1?.socketId) { io.to(p1.socketId).emit('game:over', { ...base, result: 'draw', myResult: 0 }); io.to(p1.socketId).emit('game:result', { postMessage: { ...base, result: 'draw' } }); }
     if (p2?.socketId) { io.to(p2.socketId).emit('game:over', { ...base, result: 'draw', myResult: 0 }); io.to(p2.socketId).emit('game:result', { postMessage: { ...base, result: 'draw' } }); }
     io.to(roomId).emit('game:result', { postMessage: base });
@@ -3286,12 +3394,19 @@ io.on('connection', (socket) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return rejectSocket(socket, 'Room ou joueur invalide.');
     const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'echecs', player, bet, room);
     if (!databaseCheck.ok) return rejectSocket(socket, databaseCheck.message);
+    // Cadence officielle : elle vient de la base, jamais du navigateur. La
+    // requête est déjà en cache après la vérification ci-dessus.
+    const databaseGame = isUuid(gameId) ? await loadDatabaseGameForJoin(gameId).catch(() => null) : null;
     let eroom = echecsRooms.get(room);
     if (!eroom) {
       eroom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, engineState: ChessEngine.initialState(), currentPlayer: 0, lastMove: null, stateVersion: 0, turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null, turnPlayer: null };
       echecsRooms.set(room, eroom);
     }
     ensureEchecsEngineState(eroom);
+    // Une pendule revenue de la persistance est revalidée et repart à l'arrêt ;
+    // sinon on installe celle de la partie, si elle en déclare une.
+    if (eroom.clock) eroom.clock = ChessClock.sanitizeClock(eroom.clock);
+    if (!eroom.clock && databaseGame) attachEchecsClock(eroom, databaseGame.game_settings);
     if (!bindDatabaseGame(eroom, gameId)) return rejectSocket(socket, 'Cette room est déjà liée à une autre partie.');
     if (!joinRoomAsAuthenticatedPlayer(socket, eroom, room, player, supabaseId, name)) return;
     if (bet && !eroom.betAmount) eroom.betAmount = bet;
@@ -3330,10 +3445,12 @@ io.on('connection', (socket) => {
       socket.to(room).emit('echecs_player_status', { slot: player, connected: true, name });
       socket.to(room).emit('player:reconnected', { message: `${name} est de retour !` });
       const opponentName = player === 1 ? (eroom.players[2]?.name || 'Adversaire') : (eroom.players[1]?.name || 'Adversaire');
-      socket.emit('echecs_start', { room, yourSlot: player, opponentName, bet: eroom.betAmount, currency: eroom.currency, reconnected: true, paused: eroom.status === 'paused', gameState: JSON.stringify(ChessEngine.exportState(ensureEchecsEngineState(eroom))), currentPlayer: eroom.currentPlayer !== undefined ? eroom.currentPlayer : 0, lastMove: eroom.lastMove || null, stateVersion: eroom.stateVersion || 0 });
+      socket.emit('echecs_start', { room, yourSlot: player, opponentName, bet: eroom.betAmount, currency: eroom.currency, reconnected: true, paused: eroom.status === 'paused', gameState: JSON.stringify(ChessEngine.exportState(ensureEchecsEngineState(eroom))), currentPlayer: eroom.currentPlayer !== undefined ? eroom.currentPlayer : 0, lastMove: eroom.lastMove || null, stateVersion: eroom.stateVersion || 0, clock: eroom.clock ? ChessClock.clockSnapshot(eroom.clock, Date.now()) : null });
+      if (eroom.clock) socket.emit('echecs_clock', ChessClock.clockSnapshot(eroom.clock, Date.now()));
       if (eroom.turnPlayer !== null && eroom.status === 'playing') {
         const now = Date.now();
-        if (eroom.graceStartTime) socket.emit('echecs_turn_sync', { serverTime: now, turnPlayer: eroom.turnPlayer, graceStartTime: eroom.graceStartTime, duration: GRACE_DURATION });
+        if (eroom.clock) socket.emit('echecs_turn_sync', { serverTime: now, turnPlayer: eroom.turnPlayer, turnStartTime: eroom.turnStartTime, duration: ChessClock.remainingFor(eroom.clock, eroom.turnPlayer, now), clock: true });
+        else if (eroom.graceStartTime) socket.emit('echecs_turn_sync', { serverTime: now, turnPlayer: eroom.turnPlayer, graceStartTime: eroom.graceStartTime, duration: GRACE_DURATION });
         else if (eroom.turnStartTime) socket.emit('echecs_turn_sync', { serverTime: now, turnPlayer: eroom.turnPlayer, turnStartTime: eroom.turnStartTime, duration: TURN_DURATION });
       }
       return;
@@ -3344,8 +3461,9 @@ io.on('connection', (socket) => {
       eroom.startedAt = Date.now();
       persistRoomSoon('echecs', eroom);
       const p1 = eroom.players[1], p2 = eroom.players[2];
-      io.to(p1.socketId).emit('echecs_start', { room, yourSlot: 1, opponentName: p2.name, bet: eroom.betAmount, currency: eroom.currency, reconnected: false });
-      io.to(p2.socketId).emit('echecs_start', { room, yourSlot: 2, opponentName: p1.name, bet: eroom.betAmount, currency: eroom.currency, reconnected: false });
+      const startClock = eroom.clock ? ChessClock.clockSnapshot(eroom.clock, Date.now()) : null;
+      io.to(p1.socketId).emit('echecs_start', { room, yourSlot: 1, opponentName: p2.name, bet: eroom.betAmount, currency: eroom.currency, reconnected: false, clock: startClock });
+      io.to(p2.socketId).emit('echecs_start', { room, yourSlot: 2, opponentName: p1.name, bet: eroom.betAmount, currency: eroom.currency, reconnected: false, clock: startClock });
       const initialVersion = eroom.stateVersion;
       setTimeout(() => {
         if (eroom.status === 'playing' && eroom.stateVersion === initialVersion && !eroom.turnStartTime) {
@@ -3361,16 +3479,28 @@ io.on('connection', (socket) => {
     if (!eroom || eroom.status !== 'playing' || eroom.players[player]?.socketId !== socket.id) return;
     // Sur rejet, on renvoie l'état autoritatif : un client dont le plateau a
     // divergé se recale au lieu de rester figé.
-    if (eroom.currentPlayer !== player - 1) { rejectSocket(socket, 'Ce n’est pas votre tour.'); return void socket.emit('echecs_state_sync', echecsSnapshot(eroom)); }
+    if (eroom.currentPlayer !== player - 1) { noteRejectedChessMove(eroom, player, 'out_of_turn'); rejectSocket(socket, 'Ce n’est pas votre tour.'); return void socket.emit('echecs_state_sync', echecsSnapshot(eroom)); }
     if (!from || !to || !Number.isInteger(from.row) || !Number.isInteger(from.col) || !Number.isInteger(to.row) || !Number.isInteger(to.col) ||
         from.row < 0 || from.row > 7 || from.col < 0 || from.col > 7 || to.row < 0 || to.row > 7 || to.col < 0 || to.col > 7) {
       return rejectSocket(socket, 'Coup d’échecs invalide.');
     }
     const state = ensureEchecsEngineState(eroom);
     const expectedSide = player === 1 ? 0 : 1;
-    if (state.t !== expectedSide) { rejectSocket(socket, 'Ce n’est pas votre tour.'); return void socket.emit('echecs_state_sync', echecsSnapshot(eroom)); }
+    if (state.t !== expectedSide) { noteRejectedChessMove(eroom, player, 'wrong_side'); rejectSocket(socket, 'Ce n’est pas votre tour.'); return void socket.emit('echecs_state_sync', echecsSnapshot(eroom)); }
     const mv = ChessEngine.findMove(state, from.row * 8 + from.col, to.row * 8 + to.col, promo);
-    if (!mv) { rejectSocket(socket, 'Coup d’échecs illégal.'); return void socket.emit('echecs_state_sync', echecsSnapshot(eroom)); }
+    // Un coup illégal ne coûte rien et ne rapporte rien : la pendule du joueur
+    // continue simplement de tourner, sans incrément.
+    if (!mv) { noteRejectedChessMove(eroom, player, 'illegal_move'); rejectSocket(socket, 'Coup d’échecs illégal.'); return void socket.emit('echecs_state_sync', echecsSnapshot(eroom)); }
+    // Le coup est accepté : on facture le temps de réflexion, puis on rend
+    // l'incrément. Si le drapeau était déjà tombé, le coup arrive trop tard.
+    if (eroom.clock) {
+      const moveAt = Date.now();
+      if (ChessClock.remainingFor(eroom.clock, player, moveAt) <= 0) {
+        return void echecsFlagFall(eroom, room, player);
+      }
+      ChessClock.chargeElapsed(eroom.clock, moveAt);
+      ChessClock.addIncrement(eroom.clock, player);
+    }
     eroom.engineState = ChessEngine.applyMove(state, mv);
     eroom.currentPlayer = eroom.engineState.t;
     eroom.stateVersion = (eroom.stateVersion || 0) + 1;

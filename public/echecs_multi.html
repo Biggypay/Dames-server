@@ -103,6 +103,13 @@ body.chrome-hidden #forfeit-bar,body.spectator #forfeit-bar{display:none!importa
 .promo-btns{display:flex;gap:10px;justify-content:center}
 .promo-btn{width:56px;height:56px;border-radius:14px;background:rgba(255,255,255,0.10);border:1.5px solid rgba(255,255,255,0.30);color:#fff;font-size:32px;line-height:1;cursor:pointer;transition:all .15s;-webkit-tap-highlight-color:transparent}
 .promo-btn:active{background:rgba(251,191,36,0.30);border-color:#fbbf24;transform:scale(0.94)}
+/* Pendule d'échecs : n'apparaît que pour une partie à cadence officielle. */
+.chess-clock{display:none;font-family:'Courier New',monospace;font-size:15px;font-weight:700;letter-spacing:.5px;color:#e8e8f0;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.15);border-radius:8px;padding:1px 7px;line-height:1.35;font-variant-numeric:tabular-nums}
+.chess-clock.show{display:block}
+.chess-clock.running{color:#fff;border-color:rgba(255,255,255,.45);background:rgba(255,255,255,.12)}
+.chess-clock.low{color:#fca5a5;border-color:rgba(248,113,113,.55)}
+#clock-label{display:none;font-size:10px;letter-spacing:1px;color:rgba(255,255,255,.55);margin-top:2px}
+#clock-label.show{display:block}
 </style>
   <script defer src="/mindspille-i18n.js"></script>
 </head>
@@ -114,11 +121,13 @@ body.chrome-hidden #forfeit-bar,body.spectator #forfeit-bar{display:none!importa
       <div class="profile-avatar" id="avatar-human"><div class="av-white av-king"></div></div>
     </div>
     <div class="profile-name" id="name-human">Vous</div>
+    <div class="chess-clock" id="clock-human">--:--</div>
     <div class="captured-row" id="cap-human"></div>
   </div>
   <div class="top-center">
     <div class="score-row"><span class="snum sw" id="score-w">16</span><span class="ssep">vs</span><span class="snum sr" id="score-r">16</span></div>
     <span class="manche-lbl">Échecs Multijoueur</span>
+    <div id="clock-label"></div>
     <div class="bet-badge" id="betBadge" style="display:none;"></div>
   </div>
   <div class="profile" id="profile-ai">
@@ -127,6 +136,7 @@ body.chrome-hidden #forfeit-bar,body.spectator #forfeit-bar{display:none!importa
       <div class="profile-avatar" id="avatar-ai"><div class="av-red av-king"></div></div>
     </div>
     <div class="profile-name" id="name-ai">Adv</div>
+    <div class="chess-clock" id="clock-ai">--:--</div>
     <div class="captured-row" id="cap-ai"></div>
   </div>
 </div>
@@ -283,6 +293,57 @@ var capturedBy = [0, 0];            // pièces prises PAR les Blancs / PAR les R
 var pendingPromotion = null;        // {fromIdx, toIdx} en attente du choix ♛♜♝♞
 
 var TIMER_DURATION = 30000, CIRC = 2*Math.PI*26;
+
+/* ── Pendule d'échecs (parties de tournoi) ──────────────────────────────────
+   Le serveur envoie le temps restant des DEUX camps ; le navigateur ne fait
+   que l'afficher et le laisser défiler entre deux messages. Il ne décide
+   jamais d'un dépassement de temps : c'est le serveur qui arbitre. */
+var chessClock = null;          // { white, black, runningSlot, serverTime, label, armageddon }
+var chessClockRAF = null;
+var chessClockOffset = 0;       // décalage entre l'horloge du serveur et la nôtre
+
+function formatClock(ms){
+  var total = Math.max(0, Math.round(ms / 1000));
+  var m = Math.floor(total / 60), sec = total % 60;
+  return (m < 10 ? '0' : '') + m + ':' + (sec < 10 ? '0' : '') + sec;
+}
+
+function clockRemaining(slot){
+  if(!chessClock) return 0;
+  var base = slot === 1 ? chessClock.white : chessClock.black;
+  if(chessClock.runningSlot !== slot) return base;
+  return Math.max(0, base - Math.max(0, (Date.now() - chessClockOffset) - chessClock.serverTime));
+}
+
+function renderChessClock(){
+  if(!chessClock) return;
+  var mine = MY_SLOT === 1 ? 1 : 2, theirs = mine === 1 ? 2 : 1;
+  var pairs = [['clock-human', mine], ['clock-ai', theirs]];
+  for(var i = 0; i < pairs.length; i++){
+    var el = document.getElementById(pairs[i][0]);
+    if(!el) continue;
+    var slot = pairs[i][1], left = clockRemaining(slot);
+    el.textContent = formatClock(left);
+    el.classList.add('show');
+    el.classList.toggle('running', chessClock.runningSlot === slot);
+    el.classList.toggle('low', left <= 30000);
+  }
+  chessClockRAF = requestAnimationFrame(renderChessClock);
+}
+
+function applyChessClock(snapshot){
+  if(!snapshot || typeof snapshot.white !== 'number') return;
+  chessClock = snapshot;
+  chessClockOffset = Date.now() - (snapshot.serverTime || Date.now());
+  chessClock.serverTime = snapshot.serverTime || Date.now();
+  var label = document.getElementById('clock-label');
+  if(label && snapshot.label){
+    label.textContent = snapshot.armageddon ? 'Armageddon ' + snapshot.label : 'Cadence ' + snapshot.label;
+    label.classList.add('show');
+  }
+  if(chessClockRAF) cancelAnimationFrame(chessClockRAF);
+  chessClockRAF = requestAnimationFrame(renderChessClock);
+}
 var timerStart = null, timerRAF = null, timerActive = false;
 var graceRAF = null, graceActive = false;
 
@@ -393,6 +454,9 @@ function initSocket(){
 
   socket.on('echecs_start', function(data){
     hideLoading();
+    // La pendule arrive avec le plateau : 10:00 s'affiche avant le premier coup,
+    // et un joueur qui se reconnecte retrouve le temps exact des deux camps.
+    if(data && data.clock) applyChessClock(data.clock);
     if(data.reconnected && data.gameState){
       /* On ne saute la restauration que si le serveur confirme (même version)
          qu'aucun coup n'a été manqué pendant la coupure. */
@@ -429,13 +493,15 @@ function initSocket(){
     }
   });
 
+  socket.on('echecs_clock', function(data){ applyChessClock(data); });
+
   socket.on('echecs_turn_start', function(data){
     if(gameOver) return;
-    pendingTimerData = {type:'turn_start', player:data.player, startTime:data.startTime};
+    pendingTimerData = {type:'turn_start', player:data.player, startTime:data.startTime, duration:data.duration, clock:data.clock};
     if(!gameReady) return;
     stopGraceTimer();
     var isMyTurn = (data.player === MY_SLOT);
-    startTimer(isMyTurn, data.startTime);
+    startTimer(isMyTurn, data.startTime, data.clock ? data.duration : undefined);
   });
 
   socket.on('echecs_turn_warning', function(data){
@@ -451,7 +517,7 @@ function initSocket(){
     var offset = Date.now() - data.serverTime;
     var isMyTurn = (data.turnPlayer === MY_SLOT);
     if(data.graceStartTime) startGraceTimer(isMyTurn, data.graceStartTime+offset, 60000);
-    else if(data.turnStartTime) startTimer(isMyTurn, data.turnStartTime+offset);
+    else if(data.turnStartTime) startTimer(isMyTurn, data.turnStartTime+offset, data.clock ? data.duration : undefined);
   });
 
   socket.on('echecs_move', function(data){
@@ -473,7 +539,9 @@ function initSocket(){
   /* Filet de sécurité : le serveur renvoie l'état exact toutes les quelques
      secondes (et sur demande). Si le plateau local a divergé, on se recale. */
   socket.on('echecs_state_sync', function(data){
-    if(gameOver || !gameReady || !data || data.room !== ROOM_ID) return;
+    if(!data || data.room !== ROOM_ID) return;
+    if(data.clock) applyChessClock(data.clock);
+    if(gameOver || !gameReady) return;
     if(isProcessing || ackTimer || pendingPromotion) return; // animation ou coup en vol : on laisse finir
     var serverState;
     try { serverState = Chess.sanitizeState(JSON.parse(data.gameState)); } catch(e){ return; }
@@ -628,11 +696,14 @@ function sendResult(outcome, reason){
 /* ══════════════════════════════════════════
    GESTION DES TIMERS (UI)
 ══════════════════════════════════════════ */
-function startTimer(isMyTurn, serverStartTime) {
+function startTimer(isMyTurn, serverStartTime, duration) {
   stopGraceTimer(); stopTimer();
   if(gameOver) return;
   timerActive = true;
   timerStart = serverStartTime || Date.now();
+  // Avec une pendule d'échecs, l'arc représente le temps restant du joueur,
+  // pas trente secondes : sinon il serait plein au bout d'une demi-minute.
+  var span = (typeof duration === 'number' && duration > 0) ? duration : TIMER_DURATION;
   var arcId = isMyTurn ? 'timer-arc-human' : 'timer-arc-ai';
   var profId = isMyTurn ? 'profile-human' : 'profile-ai';
   var arc = document.getElementById(arcId);
@@ -642,7 +713,7 @@ function startTimer(isMyTurn, serverStartTime) {
 
   function tick(){
     if(!timerActive) return;
-    var progress = Math.min((Date.now() - timerStart) / TIMER_DURATION, 1);
+    var progress = Math.min((Date.now() - timerStart) / span, 1);
     arc.style.strokeDashoffset = CIRC * progress;
     if(progress >= 0.67) prof.classList.add('timer-urgent');
     if(progress < 1) { timerRAF = requestAnimationFrame(tick); }
