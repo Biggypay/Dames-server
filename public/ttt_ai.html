@@ -1008,7 +1008,7 @@ function updUI(){
   if(matchW!==prevW){elW.textContent=matchW;elW.classList.remove('score-anim-human','score-glow-w');void elW.offsetWidth;elW.classList.add('score-anim-human','score-glow-w');}
   if(matchR!==prevR){elR.textContent=matchR;elR.classList.remove('score-anim-ai','score-glow-r');void elR.offsetWidth;elR.classList.add('score-anim-ai','score-glow-r');}
 
-  var maxM=isTiebreaker?6:TOTAL_MANCHES;
+  var maxM=isTiebreaker?TOTAL_MANCHES+1:TOTAL_MANCHES;
   document.getElementById('manche-lbl').textContent='Manche '+(Math.min(manchesDone+1,maxM))+' / '+maxM;
   updateDots();
 }
@@ -1018,7 +1018,7 @@ function updateDots(){
   var bar=document.getElementById('roundsProgress');
   if(!bar)return;
   bar.innerHTML='';
-  var total=isTiebreaker?6:TOTAL_MANCHES;
+  var total=isTiebreaker?TOTAL_MANCHES+1:TOTAL_MANCHES;
   for(var i=0;i<total;i++){
     var dot=document.createElement('div');
     dot.className='round-dot';

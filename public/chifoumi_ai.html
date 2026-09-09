@@ -567,7 +567,8 @@ var CIRC_SMALL = 163.4;
 var CIRC       = 2 * Math.PI * 48;
 var CHOICE_TIME = 15000;
 var REVEAL_TIME = 5;
-var MAX_ROUNDS  = 5;
+var MAX_ROUNDS  = 6;
+var isTiebreaker = false;   /* mort subite après une égalité */
 
 /* ══════════════════════════════════════════
    STATE
@@ -963,8 +964,16 @@ function revealBoth() {
 
   roundInProgress = false;
 
-  if (currentRound >= MAX_ROUNDS) {
-    setTimeout(function() { showGameOver(); }, 2500);
+  // ── Fin des manches réglementaires ────────────────────────────────────
+  // Un match ne se termine plus sur une égalité : à égalité au bout des
+  // manches réglementaires, on passe en mort subite et l'on rejoue jusqu'à
+  // ce qu'une manche désigne un vainqueur.
+  if (isTiebreaker) {
+    if (result !== 'draw') { setTimeout(function() { showGameOver(); }, 2500); }
+    else { currentRound++; setTimeout(function() { startRound(); }, 3000); }
+  } else if (currentRound >= MAX_ROUNDS) {
+    if (playerScore !== opScore) { setTimeout(function() { showGameOver(); }, 2500); }
+    else { isTiebreaker = true; currentRound++; setTimeout(function() { startRound(); }, 3000); }
   } else {
     currentRound++;
     setTimeout(function() { startRound(); }, 3000);
@@ -1015,7 +1024,7 @@ function rebuildProgressDots() {
    ROUND MANAGEMENT
 ══════════════════════════════════════════ */
 function startRound() {
-  roundLabelEl.textContent = 'Manche ' + currentRound + ' / ' + MAX_ROUNDS;
+  roundLabelEl.textContent = (isTiebreaker ? 'Manche décisive' : 'Manche ' + currentRound + ' / ' + MAX_ROUNDS);
 
   playerLocked   = false;
   playerChoice   = null;
@@ -1045,7 +1054,7 @@ function startRound() {
 }
 
 function startNewGame() {
-  playerScore = 0; opScore = 0; currentRound = 1; gameOver = false; resultSent = false;
+  playerScore = 0; opScore = 0; currentRound = 1; isTiebreaker = false; gameOver = false; resultSent = false;
   roundHistory = []; roundResults = []; roundInProgress = false;
   document.getElementById('playerScore').textContent = '0'; document.getElementById('aiScore').textContent = '0';
   var dots = roundsProgress.querySelectorAll('.round-dot'); dots.forEach(function(d){ d.className = 'round-dot'; });

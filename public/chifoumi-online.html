@@ -854,6 +854,8 @@ function initSocket() {
 
   /* ── Partie démarrée ── */
   socket.on('chifoumi_start', function(data) {
+    if (data && Number(data.totalRounds) > 0) MAX_ROUNDS = Number(data.totalRounds);
+    if (data && data.gameState) isTiebreaker = data.gameState.isTiebreaker === true;
     hideLoading();
     waitingOverlay.classList.remove('show');
 
@@ -872,7 +874,7 @@ function initSocket() {
         });
         document.getElementById('playerScore').textContent = playerScore;
         document.getElementById('aiScore').textContent     = opScore;
-        roundLabelEl.textContent = 'Manche ' + currentRound + ' / ' + MAX_ROUNDS;
+        roundLabelEl.textContent = (isTiebreaker ? 'Manche decisive' : 'Manche ' + currentRound + ' / ' + MAX_ROUNDS);
         rebuildProgressDots();
         showToast('📶','Partie restaurée','Reprise là où vous étiez !', 2400, function() {
           gameReady = true;
@@ -1327,7 +1329,7 @@ function rebuildProgressDots() {
 ══════════════════════════════════════════ */
 function startRound() {
   if (IS_SPECTATOR) { startSpectatorRound(); return; }
-  roundLabelEl.textContent = 'Manche ' + currentRound + ' / ' + MAX_ROUNDS;
+  roundLabelEl.textContent = (isTiebreaker ? 'Manche decisive' : 'Manche ' + currentRound + ' / ' + MAX_ROUNDS);
 
   playerLocked   = false;
   playerChoice   = null;
@@ -1359,7 +1361,7 @@ function startRound() {
 function startSpectatorRound() {
   if (!IS_SPECTATOR || gameOver) return;
   stopRevealCountdown();
-  roundLabelEl.textContent = 'Manche ' + currentRound + ' / ' + MAX_ROUNDS;
+  roundLabelEl.textContent = (isTiebreaker ? 'Manche decisive' : 'Manche ' + currentRound + ' / ' + MAX_ROUNDS);
   playerChoice = null; opponentChoice = null; playerLocked = true; roundInProgress = true;
   choiceBtns.forEach(function(btn){ btn.classList.add('disabled', 'locked'); btn.classList.remove('selected'); });
   playerEmojiEl.textContent = '❓'; playerLabelEl.textContent = 'Choix secret';
@@ -1416,7 +1418,7 @@ function showSpectatorGameEnd(data) {
 }
 
 function startNewGame() {
-  playerScore = 0; opScore = 0; currentRound = 1; gameOver = false; resultSent = false;
+  playerScore = 0; opScore = 0; currentRound = 1; isTiebreaker = false; gameOver = false; resultSent = false;
   roundHistory = []; roundResults = []; roundInProgress = false;
   document.getElementById('playerScore').textContent = '0'; document.getElementById('aiScore').textContent = '0';
   var dots = roundsProgress.querySelectorAll('.round-dot'); dots.forEach(function(d){ d.className = 'round-dot'; });

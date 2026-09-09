@@ -1079,7 +1079,7 @@ function checkersClientBoard(board) {
   }));
 }
 
-const TTT_TOTAL_ROUNDS = Math.max(1, Math.min(15, Number(process.env.TTT_TOTAL_ROUNDS) || 5));
+const TTT_TOTAL_ROUNDS = Math.max(1, Math.min(15, Number(process.env.TTT_TOTAL_ROUNDS) || 6));
 const TTT_LINES = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8], [0, 4, 8], [2, 4, 6]];
 function tttWinningLine(board, symbol) { return TTT_LINES.find(line => line.every(index => board[index] === symbol)) || null; }
 function tttState() { return { board: Array(9).fill(null), currentPlayer: 0, matchW: 0, matchR: 0, manchesDone: 0, mancheResults: [], isTiebreaker: false, mancheStarterPlayer: 0, slotSymbols: { 1: 'X', 2: 'O' }, resolvingRound: false, revision: 0 }; }
@@ -1953,17 +1953,24 @@ function chifoumiWinnerSlot(choice1, choice2) {
     (choice1 === 'ciseaux' && choice2 === 'feuille') ? 1 : 2;
 }
 
+// Manches réglementaires d'un match de Chifoumi. Six par défaut, comme le
+// Tic-Tac-Toe : au bout des six, une égalité n'est plus un match nul, elle
+// ouvre la mort subite (voir resolveChifoumiRound).
+const CHIFOUMI_TOTAL_ROUNDS = Math.max(1, Math.min(15, Number(process.env.CHIFOUMI_TOTAL_ROUNDS) || 6));
+
 function advanceChifoumiRound(croom, roomId, expectedRound) {
   if (!croom || croom.status !== 'playing' || croom.awaitingNextRound !== true) return false;
   const nextRound = croom.currentRound + 1;
   if (Number.isInteger(expectedRound) && expectedRound !== nextRound) return false;
-  if (croom.history.length !== croom.currentRound || nextRound > 5) return false;
+  if (croom.history.length !== croom.currentRound) return false;
+  // En mort subite on enchaîne autant de manches qu'il faut pour trancher.
+  if (!croom.isTiebreaker && nextRound > CHIFOUMI_TOTAL_ROUNDS) return false;
   clearChifoumiTurnTimers(croom);
   croom.currentRound = nextRound;
   croom.choices = {};
   croom.awaitingNextRound = false;
   persistRoomSoon('chifoumi', croom);
-  io.to(roomId).emit('chifoumi_round_ready', { round: nextRound, scores: [...croom.scores] });
+  io.to(roomId).emit('chifoumi_round_ready', { round: nextRound, scores: [...croom.scores], totalRounds: CHIFOUMI_TOTAL_ROUNDS, isTiebreaker: croom.isTiebreaker === true });
   startChifoumiTurnTimer(croom, roomId);
   return true;
 }
@@ -1995,7 +2002,9 @@ function resolveChifoumiRound(croom, roomId) {
     choice2,
     winnerSlot,
     scores: [...croom.scores],
-    nextRound: croom.currentRound + 1
+    nextRound: croom.currentRound + 1,
+    totalRounds: CHIFOUMI_TOTAL_ROUNDS,
+    isTiebreaker: croom.isTiebreaker === true
   });
 
   for (const slot of [1, 2]) {
@@ -2009,12 +2018,26 @@ function resolveChifoumiRound(croom, roomId) {
     });
   }
 
-  if (croom.currentRound >= 5) {
-    return setTimeout(() => {
-      if (croom.status !== 'playing') return;
-      const winner = croom.scores[0] === croom.scores[1] ? 0 : (croom.scores[0] > croom.scores[1] ? 1 : 2);
-      notifyChifoumiRoomOver(croom, roomId, winner, winner === 0 ? 'draw' : 'normal');
-    }, 3000);
+  // ── Fin des manches réglementaires ──────────────────────────────────────
+  // Un match ne se termine plus jamais sur une égalité : au bout des manches
+  // réglementaires, un score à égalité ouvre la mort subite, et l'on rejoue
+  // jusqu'à ce qu'une manche désigne un vainqueur. Une manche de mort subite
+  // nulle (les deux mêmes signes) ne tranche rien et enchaîne la suivante.
+  if (croom.isTiebreaker) {
+    if (winnerSlot) {
+      return setTimeout(() => {
+        if (croom.status !== 'playing') return;
+        notifyChifoumiRoomOver(croom, roomId, winnerSlot, 'normal');
+      }, 3000);
+    }
+  } else if (croom.currentRound >= CHIFOUMI_TOTAL_ROUNDS) {
+    if (croom.scores[0] !== croom.scores[1]) {
+      return setTimeout(() => {
+        if (croom.status !== 'playing') return;
+        notifyChifoumiRoomOver(croom, roomId, croom.scores[0] > croom.scores[1] ? 1 : 2, 'normal');
+      }, 3000);
+    }
+    croom.isTiebreaker = true;
   }
   croom.awaitingNextRound = true;
   persistRoomSoon('chifoumi', croom);
@@ -4011,7 +4034,7 @@ io.on('connection', (socket) => {
     if (!databaseCheck.ok) return rejectSocket(socket, databaseCheck.message);
     let croom = chifoumiRooms.get(room);
     if (!croom) {
-      croom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, currentRound: 1, scores: [0, 0], choices: {}, history: [], turnTimer: null, graceTimer: null, revealTimer: null, nextRoundTimer: null, awaitingNextRound: false, revealPending: false, revealStartTime: null, turnStartTime: null, graceStartTime: null };
+      croom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, currentRound: 1, scores: [0, 0], choices: {}, history: [], isTiebreaker: false, turnTimer: null, graceTimer: null, revealTimer: null, nextRoundTimer: null, awaitingNextRound: false, revealPending: false, revealStartTime: null, turnStartTime: null, graceStartTime: null };
       chifoumiRooms.set(room, croom);
     }
     if (!bindDatabaseGame(croom, gameId)) return rejectSocket(socket, 'Cette room est déjà liée à une autre partie.');
@@ -4051,9 +4074,12 @@ io.on('connection', (socket) => {
       socket.emit('chifoumi_start', {
         room, yourSlot: player, opponentName, bet: croom.betAmount,
         currency: croom.currency, reconnected: true, paused: croom.status === 'paused',
+        totalRounds: CHIFOUMI_TOTAL_ROUNDS,
         gameState: {
           scores: croom.scores,
           currentRound: croom.currentRound,
+          // Une reconnexion pendant la mort subite doit retrouver la mort subite.
+          isTiebreaker: croom.isTiebreaker === true,
           history: croom.history,
           currentChoice: croom.choices[player] ?? null,
           opponentHasChosen: croom.choices[player === 1 ? 2 : 1] !== undefined,
@@ -4074,8 +4100,8 @@ io.on('connection', (socket) => {
       croom.status = 'playing'; const p1 = croom.players[1], p2 = croom.players[2];
       croom.startedAt = Date.now();
       persistRoomSoon('chifoumi', croom);
-      io.to(p1.socketId).emit('chifoumi_start', { room, yourSlot: 1, opponentName: p2.name, bet: croom.betAmount, currency: croom.currency, reconnected: false });
-      io.to(p2.socketId).emit('chifoumi_start', { room, yourSlot: 2, opponentName: p1.name, bet: croom.betAmount, currency: croom.currency, reconnected: false });
+      io.to(p1.socketId).emit('chifoumi_start', { totalRounds: CHIFOUMI_TOTAL_ROUNDS, room, yourSlot: 1, opponentName: p2.name, bet: croom.betAmount, currency: croom.currency, reconnected: false });
+      io.to(p2.socketId).emit('chifoumi_start', { totalRounds: CHIFOUMI_TOTAL_ROUNDS, room, yourSlot: 2, opponentName: p1.name, bet: croom.betAmount, currency: croom.currency, reconnected: false });
       const initialRound = croom.currentRound;
       setTimeout(() => {
         if (croom.status === 'playing' && croom.currentRound === initialRound &&

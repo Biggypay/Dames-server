@@ -213,7 +213,7 @@ var P1_NAME   =P.get('p1Name')  ||'Joueur 1';
 var P2_NAME   =P.get('p2Name')  ||'Joueur 2';
 var BET_AMOUNT=parseFloat(P.get('bet')||'0');
 var CURRENCY  =P.get('currency')||'HTG';
-var TOTAL_MANCHES=parseInt(P.get('manches')||'5',10);
+var TOTAL_MANCHES=parseInt(P.get('manches')||'6',10);
 
 if(!ROOM_ID&&P1_ID&&P2_ID){
   var _ids=[P1_ID,P2_ID].sort();
@@ -767,7 +767,7 @@ function initSocket(){
 
   socket.on('ttt_start',function(data){
     hideLoading();
-    TOTAL_MANCHES=Math.max(1,Number(data.totalManches)||5);
+    TOTAL_MANCHES=Math.max(1,Number(data.totalManches)||6);
     if(data.gameState){
       gameOver=false;isProcessing=false;resultSent=false;
       mancheOver=data.gameState.resolvingRound===true;matchOver=false;roundAnimationActive=false;
@@ -1245,7 +1245,7 @@ function updUI(){
   if(matchW!==prevW){elW.textContent=matchW;elW.classList.remove('score-anim-human','score-glow-w');void elW.offsetWidth;elW.classList.add('score-anim-human','score-glow-w');}
   if(matchR!==prevR){elR.textContent=matchR;elR.classList.remove('score-anim-ai','score-glow-r');void elR.offsetWidth;elR.classList.add('score-anim-ai','score-glow-r');}
 
-  var maxM=isTiebreaker?6:TOTAL_MANCHES;
+  var maxM=isTiebreaker?TOTAL_MANCHES+1:TOTAL_MANCHES;
   document.getElementById('manche-lbl').textContent='Manche '+(Math.min(manchesDone+1,maxM))+' / '+maxM;
   updateDots();
 }
@@ -1255,7 +1255,7 @@ function updateDots(){
   var bar=document.getElementById('roundsProgress');
   if(!bar)return;
   bar.innerHTML='';
-  var total=isTiebreaker?6:TOTAL_MANCHES;
+  var total=isTiebreaker?TOTAL_MANCHES+1:TOTAL_MANCHES;
   for(var i=0;i<total;i++){
     var dot=document.createElement('div');
     dot.className='round-dot';
