@@ -43,7 +43,7 @@ body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%
 .ssep{color:rgba(255,255,255,.3);font-size:13px}
 .manche-lbl{font-size:9px;color:rgba(255,255,255,.35);letter-spacing:1px;font-family:'Cinzel',serif}
 
-/* ── PROGRESSION DES MANCHES (10 Rounds) ── */
+/* ── PROGRESSION DES MANCHES (manches reglementaires + mort subite) ── */
 .rounds-progress{display:flex;gap:3px;margin-top:5px;z-index:15;align-items:center}
 .round-dot{width:12px;height:5px;border-radius:3px;background:rgba(255,255,255,0.08);transition:all 0.3s ease}
 .round-dot.played{background:rgba(255,255,255,0.2)}
@@ -317,7 +317,7 @@ if (IS_SPECTATOR) try { document.body.classList.add('spectator'); } catch (_) {}
 /* ══════════════════════════════════════
    CONSTANTES
 ══════════════════════════════════════ */
-var TOTAL_ROUNDS    = 10;
+var TOTAL_ROUNDS    = 6;
 var TIMER_DURATION  = 15000;   /* 15s par manche (sync avec serveur) */
 var CIRC            = 2 * Math.PI * 26;
 var SPOT_GK_ANGLE   = [0, -0.75, 0.75];
@@ -710,7 +710,7 @@ function updateDots(){
   if (!bar) return;
   bar.innerHTML = '';
   
-  for(var i=0; i<TOTAL_ROUNDS; i++){
+  for(var i=0; i<Math.max(TOTAL_ROUNDS, currentRound); i++){
     var dot = document.createElement('div');
     dot.className = 'round-dot';
     

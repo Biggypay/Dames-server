@@ -1844,6 +1844,11 @@ function startPenaltyTurnTimer(proom, roomId) {
   }, PENALTY_TURN_DURATION);
 }
 
+// Manches réglementaires d'une séance de tirs au but. Six par défaut, comme
+// les autres jeux à manches : trois tirs chacun, le tireur alternant à chaque
+// manche.
+const PENALTY_TOTAL_ROUNDS = Math.max(2, Math.min(20, Number(process.env.PENALTY_TOTAL_ROUNDS) || 6));
+
 function resolvePenaltyRound(proom, roomId) {
   clearPenaltyTurnTimers(proom);
   if (proom.status === 'finished') return;
@@ -1858,14 +1863,22 @@ function resolvePenaltyRound(proom, roomId) {
   let isGoal = (shooterZone !== keeperZone);
   if (isGoal) proom.scores['p' + shooterSlot]++;
 
-  const nextRound  = round + 1;
-  const gameIsOver = nextRound > 10;
+  const nextRound = round + 1;
+  // Une séance ne se termine plus sur une égalité : au bout des manches
+  // réglementaires, on enchaîne la mort subite. Elle se joue par PAIRES de
+  // manches — le tireur alterne, donc conclure sur une manche isolée ferait
+  // gagner celui qui a tiré en dernier sans que l'autre ait répliqué.
+  const regulationDone   = round >= PENALTY_TOTAL_ROUNDS;
+  const bothShotAsOften  = round % 2 === 0;
+  const gameIsOver = regulationDone && bothShotAsOften && proom.scores.p1 !== proom.scores.p2;
+  const isTiebreaker = regulationDone && !gameIsOver;
 
   io.to(roomId).emit('penalty_round_result', {
     p1Zone: proom.choices[1] !== undefined ? proom.choices[1] : null,
     p2Zone: proom.choices[2] !== undefined ? proom.choices[2] : null,
     isGoal, shooterSlot, keeperSlot, scores: { p1: proom.scores.p1, p2: proom.scores.p2 },
-    nextRound, gameOver: gameIsOver
+    nextRound, gameOver: gameIsOver,
+    totalRounds: PENALTY_TOTAL_ROUNDS, isTiebreaker
   });
 
   persistRoomSoon('penalty', proom);
@@ -1878,12 +1891,9 @@ function resolvePenaltyRound(proom, roomId) {
         if (proom.status === 'finished') return;
         const p1Score = proom.scores.p1;
         const p2Score = proom.scores.p2;
-        if (p1Score === p2Score) {
-          notifyPenaltyRoomOver(proom, roomId, 0, 'draw');
-        } else {
-          const winnerSlot = p1Score > p2Score ? 1 : 2;
-          notifyPenaltyRoomOver(proom, roomId, winnerSlot, 'normal');
-        }
+        // La séance n'est close que sur un score départagé ; l'égalité a
+        // déjà été renvoyée en mort subite plus haut.
+        notifyPenaltyRoomOver(proom, roomId, p1Score > p2Score ? 1 : 2, 'normal');
     }, 4000);
   }
 }
@@ -3975,7 +3985,7 @@ io.on('connection', (socket) => {
       socket.to(room).emit('penalty_player_status', { slot: player, connected: true, name });
       socket.to(room).emit('player:reconnected', { message: `${name} est de retour !` });
       const opponentName = player === 1 ? (proom.players[2]?.name || 'Adversaire') : (proom.players[1]?.name || 'Adversaire');
-      socket.emit('penalty_start', { room, yourSlot: player, opponentName, bet: proom.betAmount, currency: proom.currency, reconnected: true, paused: proom.status === 'paused', gameState: { round: proom.currentRound, scores: proom.scores, phase: 'choosing', yourChoice: proom.choices[player] ?? null, opponentHasChosen: proom.choices[player === 1 ? 2 : 1] !== undefined } });
+      socket.emit('penalty_start', { totalRounds: PENALTY_TOTAL_ROUNDS, room, yourSlot: player, opponentName, bet: proom.betAmount, currency: proom.currency, reconnected: true, paused: proom.status === 'paused', gameState: { round: proom.currentRound, scores: proom.scores, phase: 'choosing', yourChoice: proom.choices[player] ?? null, opponentHasChosen: proom.choices[player === 1 ? 2 : 1] !== undefined } });
       
       if (proom.status === 'playing') {
         const now = Date.now();
@@ -3990,8 +4000,8 @@ io.on('connection', (socket) => {
       proom.startedAt = Date.now();
       persistRoomSoon('penalty', proom);
       const p1 = proom.players[1], p2 = proom.players[2];
-      io.to(p1.socketId).emit('penalty_start', { room, yourSlot: 1, opponentName: p2.name, bet: proom.betAmount, currency: proom.currency, reconnected: false });
-      io.to(p2.socketId).emit('penalty_start', { room, yourSlot: 2, opponentName: p1.name, bet: proom.betAmount, currency: proom.currency, reconnected: false });
+      io.to(p1.socketId).emit('penalty_start', { totalRounds: PENALTY_TOTAL_ROUNDS, room, yourSlot: 1, opponentName: p2.name, bet: proom.betAmount, currency: proom.currency, reconnected: false });
+      io.to(p2.socketId).emit('penalty_start', { totalRounds: PENALTY_TOTAL_ROUNDS, room, yourSlot: 2, opponentName: p1.name, bet: proom.betAmount, currency: proom.currency, reconnected: false });
       const initialRound = proom.currentRound;
       setTimeout(() => {
         if (proom.status === 'playing' && proom.currentRound === initialRound && !proom.turnStartTime) {
