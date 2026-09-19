@@ -468,7 +468,12 @@ canvas.addEventListener('click', humanMove);
 canvas.addEventListener('touchend', humanMove, { passive: false });
 
 function endGame(winnerSlot){if(gameOver)return;var rr=recordPracticeRound(winnerSlot);if(rr.matchOver)return showFinalEndGame(rr.matchWinner);gameOver=true;var mine=winnerSlot===HUMAN,drawn=!winnerSlot,sc=practiceSeries.wins;showToast(drawn?'🤝':mine?'🏆':'🎯',drawn?'Manche nulle':mine?'Manche gagnée':'Manche perdue','Score : '+(sc[HUMAN]||0)+' — '+(sc[AI]||0),1500,function(){practiceSeries.roundStarter=practiceSeries.roundStarter===HUMAN?AI:HUMAN;startRoundOnly();});}
-function startRoundOnly(){initGame();currentSlot=practiceSeries.roundStarter;document.getElementById('gameOverModal').classList.remove('show');calcLayout();draw();updUI();if(currentSlot===AI)setTimeout(aiMove,650);}
+/* Une manche sur deux commence par l'IA : sans cet appel le plateau resterait
+   fige a attendre un coup adverse qui n'arriverait jamais. La fonction
+   s'appelle aiPlay ; elle a longtemps ete invoquee ici sous le nom aiMove,
+   qui n'existe pas : la manche 2 levait une ReferenceError et le jeu ne
+   repartait plus. */
+function startRoundOnly(){initGame();currentSlot=practiceSeries.roundStarter;document.getElementById('gameOverModal').classList.remove('show');calcLayout();draw();updUI();if(currentSlot===AI)setTimeout(aiPlay,650);}
 
 function showFinalEndGame(winnerSlot) {
   gameOver = true;
