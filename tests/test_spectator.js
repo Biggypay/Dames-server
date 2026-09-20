@@ -141,7 +141,14 @@ async function main() {
       room: ROOM, player: 2, supabaseId: PLAYER_2, name: 'Bob',
       bet: 0, currency: 'HTG', manches: 1, gameId: GAME_ID
     });
-    await Promise.all([start1, start2]);
+    const [tttStarted] = await Promise.all([start1, start2]);
+    /* Qui ouvre — et avec quel symbole — est tire au sort par le serveur. Ce
+       scenario faisait jouer le slot 1 avec X en dur : une fois sur deux le
+       coup etait refuse, aucun ttt_move n'etait relaye au spectateur et le
+       test expirait sur « timeout ttt_move ». */
+    const moverSlot = Number(tttStarted.gameState.currentPlayer) === 1 ? 2 : 1;
+    const moverSymbol = tttStarted.gameState.slotSymbols[moverSlot];
+    const moverSocket = moverSlot === 1 ? p1 : p2;
 
     const joinedPromise = once(spectator, 'spectator:joined');
     const statePromise = once(spectator, 'spectator_state');
@@ -159,7 +166,7 @@ async function main() {
     const resynced = await resyncPromise;
     check('spectator can safely resync the read-only board', resynced.gameId === GAME_ID && resynced.state?.gameState?.board?.length === 9, resynced);
 
-    spectator.emit('ttt_move', { room: ROOM, player: 1, row: 0, col: 0, symbol: 'X' });
+    spectator.emit('ttt_move', { room: ROOM, player: moverSlot, row: 0, col: 0, symbol: moverSymbol });
     await sleep(100);
     const unchangedPromise = once(spectator, 'spectator_state');
     spectator.emit('spectator_join', { gameId: GAME_ID });
@@ -167,9 +174,9 @@ async function main() {
     check('spectator cannot inject a move', unchanged.state.gameState.board[0] === null, unchanged.state.gameState.board);
 
     const relayedMove = once(spectator, 'ttt_move');
-    p1.emit('ttt_move', { room: ROOM, player: 1, row: 0, col: 0, symbol: 'X' });
+    moverSocket.emit('ttt_move', { room: ROOM, player: moverSlot, row: 0, col: 0, symbol: moverSymbol });
     const move = await relayedMove;
-    check('real player move is streamed to spectator', move.row === 0 && move.col === 0 && move.symbol === 'X', move);
+    check('real player move is streamed to spectator', move.row === 0 && move.col === 0 && move.symbol === moverSymbol, move);
 
     const anonymous = io(GAME_URL, { transports: ['websocket'], reconnection: false });
     sockets.push(anonymous);

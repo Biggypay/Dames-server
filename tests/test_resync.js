@@ -27,6 +27,21 @@ function once(socket, event, timeoutMs = 4000) {
     socket.once(event, (data) => { clearTimeout(t); resolve(data); });
   });
 }
+/* `once` prend le PROCHAIN evenement, quel qu'il soit. Or le serveur diffuse
+   chaque coup aux DEUX sockets : la copie non consommee du coup precedent
+   satisfait aussitot l'attente suivante, et le test enchaine alors qu'un coup
+   est encore en vol. Le suivant part hors tour et se fait refuser. D'ou cette
+   variante, qui attend l'evenement correspondant au coup reellement envoye. */
+function onceMatching(socket, event, predicate, timeoutMs = 4000) {
+  return new Promise((resolve, reject) => {
+    const handler = (data) => {
+      if (!predicate(data)) return;
+      clearTimeout(timer); socket.off(event, handler); resolve(data);
+    };
+    const timer = setTimeout(() => { socket.off(event, handler); reject(new Error('timeout en attendant ' + event)); }, timeoutMs);
+    socket.on(event, handler);
+  });
+}
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 async function emitAndWait(sender, receiver, emitEvent, payload, receiveEvent) {
   const received = once(receiver, receiveEvent);
@@ -195,27 +210,56 @@ async function main() {
     const [tttStarted1, tttStarted2] = await Promise.all([tttStart1, tttStart2]);
     check('TTT uses the server-owned round count', tttStarted1.totalManches === 1 && tttStarted2.totalManches === 1);
     check('TTT start contains the authoritative empty board', Array.isArray(tttStarted1.gameState?.board) && tttStarted1.gameState.board.every(cell => cell === null));
-    const invalidTurnError = once(p2b.socket, 'game:error');
-    const invalidTurnSync = once(p2b.socket, 'ttt_state_sync');
-    p2b.socket.emit('ttt_move', { room: tttRoom, player: 2, row: 2, col: 2, symbol: 'O' });
+
+    /* Qui ouvre la partie est TIRE AU SORT par le serveur (randomOpeningSlot),
+       et les symboles suivent ce tirage. Ce scenario supposait que le slot 1
+       commence avec X : une fois sur deux le "coup hors tour" ci-dessous etait
+       en realite un coup legal, toute la choregraphie se desynchronisait et le
+       test mourait plus loin sur un timeout dont le message changeait d'une
+       execution a l'autre. On lit donc l'ouverture annoncee par ttt_start. */
+    const tttSockets = { 1: p1.socket, 2: p2b.socket };
+
+    const tttOpener = Number(tttStarted1.gameState.currentPlayer) === 1 ? 2 : 1;
+    const tttFollower = tttOpener === 1 ? 2 : 1;
+    const tttSymbol = slot => tttStarted1.gameState.slotSymbols[slot];
+    const tttStartRevision = Number(tttStarted1.revision);
+    /* Chaque coup accepte est diffuse aux deux joueurs : on attend les deux
+       copies, et on les identifie par la case jouee. Rien ne reste en file
+       pour parasiter l'attente suivante. */
+    const tttPlay = (slot, row, col) => {
+      const matches = m => m.player === slot && m.row === row && m.col === col;
+      const mine = onceMatching(tttSockets[slot], 'ttt_move', matches);
+      const theirs = onceMatching(tttSockets[slot === 1 ? 2 : 1], 'ttt_move', matches);
+      tttSockets[slot].emit('ttt_move', { room: tttRoom, player: slot, row, col, symbol: tttSymbol(slot) });
+      return Promise.all([mine, theirs]);
+    };
+
+    const invalidTurnError = once(tttSockets[tttFollower], 'game:error');
+    const invalidTurnSync = once(tttSockets[tttFollower], 'ttt_state_sync');
+    tttSockets[tttFollower].emit('ttt_move', { room: tttRoom, player: tttFollower, row: 2, col: 2, symbol: tttSymbol(tttFollower) });
     const [tttInvalidError, tttInvalidSync] = await Promise.all([invalidTurnError, invalidTurnSync]);
     check('TTT rejects an out-of-turn move', tttInvalidError.recoverable === true, tttInvalidError);
-    check('TTT repairs the rejected client with an unchanged board', tttInvalidSync.revision === 0 && tttInvalidSync.gameState.board.every(cell => cell === null), tttInvalidSync);
+    /* "Inchange" se mesure par rapport a ce que le client connait deja, pas
+       par rapport a zero : le serveur incremente la revision en faisant passer
+       la partie en "playing", si bien que ttt_start annonce deja 1. */
+    check('TTT repairs the rejected client with an unchanged board',
+      tttInvalidSync.revision === tttStartRevision && tttInvalidSync.gameState.board.every(cell => cell === null),
+      { syncRevision: tttInvalidSync.revision, startRevision: tttStartRevision, board: tttInvalidSync.gameState.board });
     const firstMoveAt = Date.now();
-    await emitAndWait(p1.socket, p2b.socket, 'ttt_move', { room: tttRoom, player: 1, row: 0, col: 0, symbol: 'X' }, 'ttt_move');
+    await tttPlay(tttOpener, 0, 0);
     await sleep(3200);
     // Compare the authoritative startTime, not the local receive time: on a
     // fast runner the legitimate initial timer and the move can be received in
     // the same millisecond.
-    const lateWrongTimer = tttTurnEvents.find(event => event.startTime > firstMoveAt && event.player === 1);
-    check('TTT never restores the clock to player 1 after the first move', !lateWrongTimer, tttTurnEvents);
-    check('TTT starts player 2 clock after player 1 move', tttTurnEvents.some(event => event.startTime >= firstMoveAt && event.player === 2), tttTurnEvents);
-    await emitAndWait(p2b.socket, p1.socket, 'ttt_move', { room: tttRoom, player: 2, row: 1, col: 0, symbol: 'O' }, 'ttt_move');
-    await emitAndWait(p1.socket, p2b.socket, 'ttt_move', { room: tttRoom, player: 1, row: 0, col: 1, symbol: 'X' }, 'ttt_move');
-    await emitAndWait(p2b.socket, p1.socket, 'ttt_move', { room: tttRoom, player: 2, row: 1, col: 1, symbol: 'O' }, 'ttt_move');
-    const tttOver1 = once(p1.socket, 'game:over', 6000);
-    const tttOver2 = once(p2b.socket, 'game:over', 6000);
-    p1.socket.emit('ttt_move', { room: tttRoom, player: 1, row: 0, col: 2, symbol: 'X' });
+    const lateWrongTimer = tttTurnEvents.find(event => event.startTime > firstMoveAt && event.player === tttOpener);
+    check("TTT never restores the clock to the opening player after the first move", !lateWrongTimer, tttTurnEvents);
+    check('TTT starts the other player clock after the opening move', tttTurnEvents.some(event => event.startTime >= firstMoveAt && event.player === tttFollower), tttTurnEvents);
+    await tttPlay(tttFollower, 1, 0);
+    await tttPlay(tttOpener, 0, 1);
+    await tttPlay(tttFollower, 1, 1);
+    const tttOver1 = once(tttSockets[tttOpener], 'game:over', 6000);
+    const tttOver2 = once(tttSockets[tttFollower], 'game:over', 6000);
+    tttSockets[tttOpener].emit('ttt_move', { room: tttRoom, player: tttOpener, row: 0, col: 2, symbol: tttSymbol(tttOpener) });
     const [tttResult1, tttResult2] = await Promise.all([tttOver1, tttOver2]);
     check('TTT winner receives only a win', tttResult1.game === 'tictactoe' && tttResult1.result === 'win' && tttResult1.myResult > 0, tttResult1);
     check('TTT loser receives only a loss', tttResult2.game === 'tictactoe' && tttResult2.result === 'loss' && tttResult2.myResult < 0, tttResult2);
@@ -226,51 +270,114 @@ async function main() {
     const quoriStart2 = once(p2b.socket, 'quoridor_start');
     p1.socket.emit('quoridor_join', { room: quoriRoom, player: 1, supabaseId: 'test-user-aaa', name: 'Alice', bet: 5000, currency: 'HTG' });
     p2b.socket.emit('quoridor_join', { room: quoriRoom, player: 2, supabaseId: 'test-user-bbb', name: 'Bob', bet: 5000, currency: 'HTG' });
-    await Promise.all([quoriStart1, quoriStart2]);
-    const p1Path = [{r:7,c:4},{r:6,c:4},{r:5,c:4},{r:4,c:4},{r:3,c:4},{r:2,c:4},{r:1,c:4}];
-    const p2Path = [{r:0,c:3},{r:0,c:2},{r:0,c:1},{r:0,c:0},{r:1,c:0},{r:1,c:1},{r:1,c:2}];
-    const quoriWrongTurnError = once(p2b.socket, 'game:error');
-    const quoriWrongTurnRepair = once(p2b.socket, 'quoridor_state_sync');
-    p2b.socket.emit('quoridor_move', { room: quoriRoom, player: 2, moveType: 'move', data: { r: 1, c: 4 } });
+    const [quoriStarted1] = await Promise.all([quoriStart1, quoriStart2]);
+
+    /* Meme tirage au sort que pour le Tic-Tac-Toe : quoridor_start annonce
+       currentSlot. Le camp qui ouvre court jusqu'a son but par la colonne 4,
+       l'autre pietine dans son coin, hors du couloir. Les deux itineraires
+       sont le miroir exact l'un de l'autre — slot 1 part de (8,4) et gagne en
+       r=0, slot 2 part de (0,4) et gagne en r=8 — si bien que le scenario est
+       identique quel que soit le tirage. */
+    const quoriSockets = { 1: p1.socket, 2: p2b.socket };
+    const QUORI_ROUTES = {
+      1: {
+        run:  [{r:7,c:4},{r:6,c:4},{r:5,c:4},{r:4,c:4},{r:3,c:4},{r:2,c:4},{r:1,c:4}],
+        goal: {r:0,c:4},
+        idle: [{r:8,c:3},{r:8,c:2},{r:8,c:1},{r:8,c:0},{r:7,c:0},{r:7,c:1},{r:7,c:2},{r:7,c:3}]
+      },
+      2: {
+        run:  [{r:1,c:4},{r:2,c:4},{r:3,c:4},{r:4,c:4},{r:5,c:4},{r:6,c:4},{r:7,c:4}],
+        goal: {r:8,c:4},
+        idle: [{r:0,c:3},{r:0,c:2},{r:0,c:1},{r:0,c:0},{r:1,c:0},{r:1,c:1},{r:1,c:2},{r:1,c:3}]
+      }
+    };
+    const quoriOpener = Number(quoriStarted1.currentSlot) === 2 ? 2 : 1;
+    const quoriFollower = quoriOpener === 1 ? 2 : 1;
+    const runnerPath = QUORI_ROUTES[quoriOpener].run;
+    const idlePath = QUORI_ROUTES[quoriFollower].idle;
+
+    const quoriWrongTurnError = once(quoriSockets[quoriFollower], 'game:error');
+    const quoriWrongTurnRepair = once(quoriSockets[quoriFollower], 'quoridor_state_sync');
+    quoriSockets[quoriFollower].emit('quoridor_move', { room: quoriRoom, player: quoriFollower, moveType: 'move', data: QUORI_ROUTES[quoriFollower].run[0] });
     const [quoriError, quoriRepair] = await Promise.all([quoriWrongTurnError, quoriWrongTurnRepair]);
     check('Quoridor rejects an out-of-turn move', typeof quoriError.message === 'string', quoriError);
-    check('Quoridor repairs a rejected optimistic client', quoriRepair.version === 0 && quoriRepair.gameState.s2Pos.r === 0, quoriRepair);
+    check('Quoridor repairs a rejected optimistic client',
+      quoriRepair.version === 0 && quoriRepair.gameState.s1Pos.r === 8 && quoriRepair.gameState.s2Pos.r === 0, quoriRepair);
 
-    const quoriAck1 = once(p1.socket, 'quoridor_move');
-    const quoriMove1 = once(p2b.socket, 'quoridor_move');
-    p1.socket.emit('quoridor_move', { room: quoriRoom, player: 1, moveType: 'move', data: p1Path[0] });
+    const quoriAck1 = once(quoriSockets[quoriOpener], 'quoridor_move');
+    const quoriMove1 = once(quoriSockets[quoriFollower], 'quoridor_move');
+    quoriSockets[quoriOpener].emit('quoridor_move', { room: quoriRoom, player: quoriOpener, moveType: 'move', data: runnerPath[0] });
     const [quoriOwnAck, quoriOpponentMove] = await Promise.all([quoriAck1, quoriMove1]);
-    check('Quoridor acknowledges the accepted move to its sender', quoriOwnAck.version === 1 && JSON.parse(quoriOwnAck.gameState).s1Pos.r === 7, quoriOwnAck);
+    const quoriAckState = JSON.parse(quoriOwnAck.gameState);
+    const quoriOpenerPos = quoriOpener === 1 ? quoriAckState.s1Pos : quoriAckState.s2Pos;
+    check('Quoridor acknowledges the accepted move to its sender', quoriOwnAck.version === 1 && quoriOpenerPos.r === runnerPath[0].r, quoriOwnAck);
     check('Quoridor streams the same authoritative version to the opponent', quoriOpponentMove.version === 1, quoriOpponentMove);
-    // The introductory 3-second delay must not restore player 1 after a fast
-    // first move. That race made Quoridor appear frozen or reject player 2.
+    // The introductory 3-second delay must not restore the opening player after
+    // a fast first move. That race made Quoridor appear frozen or reject the
+    // second player.
     await sleep(3200);
-    const quoriAfterIntro = once(p2b.socket, 'quoridor_state_sync');
-    p2b.socket.emit('quoridor_request_state', { room: quoriRoom });
+    const quoriAfterIntro = once(quoriSockets[quoriFollower], 'quoridor_state_sync');
+    quoriSockets[quoriFollower].emit('quoridor_request_state', { room: quoriRoom });
     const quoriAfterIntroSnapshot = await quoriAfterIntro;
-    check('Quoridor keeps player 2 active after the delayed intro timer', quoriAfterIntroSnapshot.currentSlot === 2 && quoriAfterIntroSnapshot.turnPlayer === 2, quoriAfterIntroSnapshot);
-    await emitAndWait(p2b.socket, p1.socket, 'quoridor_move', { room: quoriRoom, player: 2, moveType: 'move', data: p2Path[0] }, 'quoridor_move');
-    const requestedQuoriState = once(p1.socket, 'quoridor_state_sync');
-    p1.socket.emit('quoridor_request_state', { room: quoriRoom });
+    check('Quoridor keeps the second player active after the delayed intro timer',
+      quoriAfterIntroSnapshot.currentSlot === quoriFollower && quoriAfterIntroSnapshot.turnPlayer === quoriFollower, quoriAfterIntroSnapshot);
+    const idleFirstAck = once(quoriSockets[quoriFollower], 'quoridor_move');
+    const idleFirstRelay = once(quoriSockets[quoriOpener], 'quoridor_move');
+    quoriSockets[quoriFollower].emit('quoridor_move', { room: quoriRoom, player: quoriFollower, moveType: 'move', data: idlePath[0] });
+    await Promise.all([idleFirstAck, idleFirstRelay]);
+    const requestedQuoriState = once(quoriSockets[quoriOpener], 'quoridor_state_sync');
+    quoriSockets[quoriOpener].emit('quoridor_request_state', { room: quoriRoom });
     const quoriSnapshot = await requestedQuoriState;
-    check('Quoridor state can be resynchronised on demand', quoriSnapshot.version === 2 && quoriSnapshot.currentSlot === 1, quoriSnapshot);
+    check('Quoridor state can be resynchronised on demand', quoriSnapshot.version === 2 && quoriSnapshot.currentSlot === quoriOpener, quoriSnapshot);
 
-    for (let i = 1; i < p1Path.length; i++) {
-      const p1MoveForP1 = once(p1.socket, 'quoridor_move');
-      const p1MoveForP2 = once(p2b.socket, 'quoridor_move');
-      p1.socket.emit('quoridor_move', { room: quoriRoom, player: 1, moveType: 'move', data: p1Path[i] });
-      await Promise.all([p1MoveForP1, p1MoveForP2]);
-      const p2MoveForP1 = once(p1.socket, 'quoridor_move');
-      const p2MoveForP2 = once(p2b.socket, 'quoridor_move');
-      p2b.socket.emit('quoridor_move', { room: quoriRoom, player: 2, moveType: 'move', data: p2Path[i] });
-      await Promise.all([p2MoveForP1, p2MoveForP2]);
+    /* Quoridor se joue en SERIE : lib/gomoku-series.js compte six manches
+       reglementaires et ne tranche le match que lorsque l'ecart ne peut plus
+       etre rattrape — soit quatre manches gagnees. Ce scenario n'en jouait
+       qu'une seule et attendait game:over : il ne pouvait qu'expirer, quel
+       que soit le tirage. On joue donc la serie pour de vrai, ce qui couvre
+       au passage l'enchainement des manches et l'alternance du starter. */
+    const quoriRunner = quoriOpener, quoriIdler = quoriFollower;
+    const quoriStep = async (slot, data) => {
+      const ack = once(quoriSockets[slot], 'quoridor_move');
+      const relay = once(quoriSockets[slot === 1 ? 2 : 1], 'quoridor_move');
+      quoriSockets[slot].emit('quoridor_move', { room: quoriRoom, player: slot, moveType: 'move', data });
+      await Promise.all([ack, relay]);
+    };
+    /* Deroule une manche jusqu'au coup gagnant du coureur. `ri`/`ii` permettent
+       de reprendre la premiere manche la ou les verifications ci-dessus l'ont
+       laissee. Renvoie la fin de manche, et la fin de match sur la derniere. */
+    const quoriPlayRound = async ({ starter, ri = 0, ii = 0, expectMatchOver = false }) => {
+      const run = QUORI_ROUTES[quoriRunner].run, idle = QUORI_ROUTES[quoriIdler].idle;
+      let turn = starter;
+      while (ri < run.length) {
+        if (turn === quoriRunner) await quoriStep(quoriRunner, run[ri++]);
+        else await quoriStep(quoriIdler, idle[ii++]);
+        turn = turn === 1 ? 2 : 1;
+      }
+      if (turn !== quoriRunner) { await quoriStep(quoriIdler, idle[ii++]); turn = quoriRunner; }
+      const roundEnd = once(quoriSockets[quoriRunner], 'quoridor_round_end', 8000);
+      const overWinner = expectMatchOver ? once(quoriSockets[quoriRunner], 'game:over', 8000) : null;
+      const overLoser = expectMatchOver ? once(quoriSockets[quoriIdler], 'game:over', 8000) : null;
+      quoriSockets[quoriRunner].emit('quoridor_move', { room: quoriRoom, player: quoriRunner, moveType: 'move', data: QUORI_ROUTES[quoriRunner].goal });
+      const ended = await roundEnd;
+      if (!expectMatchOver) return { ended };
+      return { ended, winner: await overWinner, loser: await overLoser };
+    };
+
+    const quoriRound1 = await quoriPlayRound({ starter: quoriRunner, ri: 1, ii: 1 });
+    check('Quoridor attributes the round to the pawn that reached its goal', quoriRound1.ended.roundWinner === quoriRunner, quoriRound1.ended);
+    check('Quoridor does not end the match on the first round of a six-round series',
+      quoriRound1.ended.series.roundsPlayed === 1 && quoriRound1.ended.series.wins[quoriRunner] === 1, quoriRound1.ended.series);
+
+    /* Quatre manches suffisent : 4 - 0 avec deux manches restantes, l'ecart
+       n'est plus rattrapable. Le starter alterne a chaque manche, et
+       quoridor_round_start l'annonce — on le lit plutot que de le deduire. */
+    let quoriResult1, quoriResult2;
+    for (let round = 2; round <= 4; round++) {
+      const nextRound = await once(quoriSockets[quoriRunner], 'quoridor_round_start', 8000);
+      const outcome = await quoriPlayRound({ starter: Number(nextRound.currentSlot), expectMatchOver: round === 4 });
+      if (round === 4) { quoriResult1 = outcome.winner; quoriResult2 = outcome.loser; }
     }
-    const quoriOver1 = once(p1.socket, 'game:over');
-    const quoriOver2 = once(p2b.socket, 'game:over');
-    const quoriFinalMove1 = once(p1.socket, 'quoridor_move');
-    const quoriFinalMove2 = once(p2b.socket, 'quoridor_move');
-    p1.socket.emit('quoridor_move', { room: quoriRoom, player: 1, moveType: 'move', data: { r: 0, c: 4 } });
-    const [quoriResult1, quoriResult2] = await Promise.all([quoriOver1, quoriOver2, quoriFinalMove1, quoriFinalMove2]);
     check('Quoridor winner receives only a win', quoriResult1.game === 'quoridor' && quoriResult1.result === 'win' && quoriResult1.myResult > 0, quoriResult1);
     check('Quoridor loser receives only a loss', quoriResult2.game === 'quoridor' && quoriResult2.result === 'loss' && quoriResult2.myResult < 0, quoriResult2);
     check('Sync de reprise diffusée à la reconnexion (version 2)', rsync.version === 2, rsync.version);

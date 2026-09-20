@@ -31,5 +31,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Sans navigateur, tests/test_gomoku_browser.js et
+      # tests/test_gomoku_ai_browser.js s'annoncent « ignorés » et ne verifient
+      # rien. C'est ce silence qui a laissé passer une ReferenceError bloquant
+      # le mode IA du Gomoku des la deuxieme manche. PLAYWRIGHT_BROWSERS_PATH
+      # est partage par l'installation et par la detection cote test.
+      - name: Install Chromium for the browser tests
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.pw-browsers
+        run: npx playwright-core install --with-deps chromium
+
       - name: Run full test suite
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.pw-browsers
         run: npm test

@@ -3,6 +3,7 @@ const fs = require('fs');
 const http = require('http');
 const path = require('path');
 const { chromium } = require('playwright-core');
+const { chromiumBinary } = require('./helpers/chromium');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const PORT = 3154;
@@ -24,16 +25,6 @@ async function waitForHealth() {
   throw new Error('game server unavailable');
 }
 
-function chromiumBinary() {
-  const candidates = process.platform === 'win32'
-    ? [
-        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-        'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-        'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'
-      ]
-    : [];
-  return candidates.find(candidate => fs.existsSync(candidate));
-}
 
 async function main() {
   const executablePath = chromiumBinary();
@@ -136,12 +127,43 @@ async function main() {
     if (finalState.human < 1 || finalState.ai < 1 || !finalState.animationsFinished) {
       throw new Error(`l'IA n'a pas répondu: ${JSON.stringify(finalState)}`);
     }
+    /* ── Manche suivante : c'est l'IA qui ouvre ──────────────────────────
+       practiceSeries.roundStarter alterne a chaque manche. Les manches paires
+       commencent donc par l'IA, et l'humain ne peut rien jouer tant qu'elle
+       n'a pas pose sa pierre : si elle reste muette, la partie est bloquee et
+       ne peut plus se terminer. C'est exactement ce qui arrivait quand
+       startRoundOnly() appelait un aiMove() inexistant. */
+    await page.evaluate(() => endGame(HUMAN));
+    /* Toast de fin de manche (1500) + relance (650) + reflexion de l'IA
+       (STONE_ANIMATION_MS + AI_RESPONSE_PAUSE_MS + jitter). On laisse large. */
+    /* Le plateau de la manche 1 porte encore deux pierres : attendre "au moins
+       une pierre" serait donc satisfait avant meme la reinitialisation. La
+       signature propre a la manche 2 ouverte par l'IA est : aucune pierre
+       humaine, exactement une pierre de l'IA. */
+    await page.waitForFunction(
+      () => practiceSeries.roundStarter === AI
+        && board.filter(value => value === HUMAN).length === 0
+        && board.filter(value => value === AI).length === 1,
+      null,
+      { timeout: 12000 }
+    ).catch(() => { throw new Error("l'IA n'ouvre pas la manche 2 : plateau fige"); });
+    const round2 = await page.evaluate(() => ({
+      roundsPlayed: practiceSeries.roundsPlayed,
+      aiStones: board.filter(value => value === AI).length,
+      handedBack: currentSlot === HUMAN,
+      gameOver: gameOver
+    }));
+    if (round2.roundsPlayed !== 1 || round2.gameOver || !round2.handedBack) {
+      throw new Error(`manche 2 non jouable: ${JSON.stringify(round2)}`);
+    }
+
     if (errors.length) throw new Error(`exceptions navigateur: ${errors.join(' | ')}`);
 
     console.log('  OK les cases touchées correspondent exactement aux cases jouées, même après redimensionnement');
     console.log('  OK le X humain démarre avec son animation progressive');
     console.log('  OK l’IA attend la fin complète du X avant de jouer');
     console.log('  OK l’IA répond, dessine son O et termine les deux animations');
+    console.log('  OK l\u2019IA ouvre bien la manche suivante et rend la main au joueur');
     console.log('  OK aucune exception JavaScript dans le mode IA');
     console.log('OK parcours navigateur Gomoku IA passé');
   } finally {

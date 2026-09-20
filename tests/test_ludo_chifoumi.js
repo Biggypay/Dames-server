@@ -94,9 +94,18 @@ async function main() {
     p1.emit('chifoumi_choice', { room: rpsRoom, player: 1, choice: 'pierre' });
     p2.emit('chifoumi_choice', { room: rpsRoom, player: 2, choice: 'ciseaux' });
     const [cd1, cd2] = await Promise.all([countdown1, countdown2]);
-    check('both players receive the same 5-second deadline', cd1.duration === 5000 && cd2.startTime === cd1.startTime, { cd1, cd2 });
-    await sleep(4300);
-    check('choices are not revealed before five seconds', !revealedEarly);
+    /* La duree du suspense est un reglage produit (CHIFOUMI_REVEAL_DURATION,
+       passee de 5 s a 3 s). Ce qui doit etre garanti n'est pas sa valeur, mais
+       que les deux joueurs recoivent LA MEME echeance et que rien ne soit
+       revele avant : on verifie la propriete, et on lit la duree annoncee par
+       le serveur au lieu de la figer. Cette assertion attendait toujours
+       5000 et echouait donc a chaque execution. */
+    const revealDuration = Number(cd1.duration);
+    check('both players receive the same reveal deadline',
+      Number.isFinite(revealDuration) && revealDuration > 0
+      && cd2.duration === cd1.duration && cd2.startTime === cd1.startTime, { cd1, cd2 });
+    await sleep(Math.max(0, revealDuration - 700));
+    check('choices are not revealed before the announced deadline', !revealedEarly);
     p1.off('chifoumi_reveal', earlyHandler);
     const reveal1 = onceWhere(p1, 'chifoumi_reveal', () => true, 2500);
     const reveal2 = onceWhere(p2, 'chifoumi_reveal', () => true, 2500);
@@ -113,7 +122,11 @@ async function main() {
     const [ls1, ls2] = await Promise.all([ludoStart1, ludoStart2]);
     check('Ludo starts with four home tokens per player', ls1.yourSlot === 1 && ls2.yourSlot === 2 && ls1.state.tokens[1].every(value => value === -1), ls1.state);
 
-    let current = 1;
+    /* Le Ludo aussi tire au sort qui ouvre (randomOpeningSlot), et ludo_start
+       l'annonce dans state.currentPlayer. Partir de 1 en dur faisait lancer le
+       de hors tour une fois sur deux : le coup etait refuse, aucun ludo_state
+       n'arrivait et le scenario expirait. */
+    let current = Number(ls1.state.currentPlayer) === 2 ? 2 : 1;
     let movedSlot = 0;
     for (let attempt = 0; attempt < 60 && !movedSlot; attempt++) {
       const actor = current === 1 ? p1 : p2;

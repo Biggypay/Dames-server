@@ -56,7 +56,12 @@ async function move(sender, receiver, player, from, to) {
 }
 
 async function main() {
-  const server = spawn('node', ['scripts/start-server.js'], {
+  /* Point d'entree de PRODUCTION : c'est lui que lancent package.json et le
+     Procfile, et c'est lui qui enveloppe express avant de charger server.js.
+     Le test visait encore scripts/start-server.js, disparu lors du renommage :
+     le spawn echouait aussitot et le scenario ne pouvait qu'annoncer
+     « serveur runtime injoignable ». */
+  const server = spawn('node', ['server-entry.js'], {
     cwd: ROOT,
     env: {
       ...process.env,
@@ -77,7 +82,7 @@ async function main() {
   try {
     await waitHealth();
     console.log('— runtime production patch —');
-    check('start-server.js démarre avec les patches', true);
+    check('server-entry.js démarre avec les patches', true);
 
     p1 = await connectPlayer('33333333-3333-4333-8333-333333333333', 'Blanc');
     p2 = await connectPlayer('44444444-4444-4444-8444-444444444444', 'Noir');

@@ -20,6 +20,7 @@ const http = require('http');
 const path = require('path');
 const jwt = require('jsonwebtoken');
 const { chromium } = require('playwright-core');
+const { chromiumBinary } = require('./helpers/chromium');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const GAME_PORT = 3152;
@@ -75,27 +76,6 @@ function startMockDatabase() {
  * build (chromium-1194). Le chercher evite que le test casse a la prochaine
  * mise a jour de l'image.
  */
-function chromiumBinary() {
-  if (process.platform === 'win32') {
-    const windowsCandidates = [
-      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-      'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'
-    ];
-    return windowsCandidates.find(candidate => fs.existsSync(candidate));
-  }
-  const root = process.env.PLAYWRIGHT_BROWSERS_PATH || '/opt/pw-browsers';
-  if (!fs.existsSync(root)) return undefined;
-  const candidates = fs.readdirSync(root)
-    .filter(name => name.startsWith('chromium'))
-    .sort()
-    .reverse()
-    .flatMap(name => [
-      path.join(root, name, 'chrome-linux', 'chrome'),
-      path.join(root, name, 'chrome-linux', 'headless_shell')
-    ]);
-  return candidates.find(candidate => fs.existsSync(candidate));
-}
 
 const tokenFor = p => jwt.sign({ userId: p.user, supabaseId: p.supabase, username: p.name }, JWT_SECRET);
 
