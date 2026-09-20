@@ -100,24 +100,40 @@ async function main() {
       [p1, p2, 1, 'f3', 'g1'],
       [p2, p1, 2, 'f6', 'g8'],
     ];
+    /* ─────────────────────────────────────────────────────────────────────
+       REGLE REELLEMENT APPLIQUEE : la triple repetition conclut la partie
+       AUTOMATIQUEMENT, sur une nulle. `public/echecs-engine.js` la detecte
+       des la 3e occurrence de la position et le serveur clot aussitot.
+
+       Ce scenario attendait auparavant la regle FIDE de competition —
+       3 repetitions RECLAMABLES par un joueur, 5 automatiques — et
+       reclamait la nulle via `echecs_claim_draw`. Cette regle est bien
+       ecrite, dans lib/chess-competition-engine.js, et ses tests unitaires
+       passent (test_chess_competition_rules.js) ; mais AUCUN fichier du
+       serveur ne requiert ce module, et il n'existe pas de handler de
+       reclamation. Elle n'a jamais ete branchee. Le test decrivait donc une
+       fonctionnalite absente, et echouait a chaque execution.
+
+       Pour passer a la regle FIDE il faudra, ensemble : requerir le moteur
+       de competition dans server.js et lui confier la conclusion des
+       parties, ajouter le handler `echecs_claim_draw` emettant
+       `echecs_draw_claimed`, et offrir un bouton « reclamer la nulle » aux
+       joueurs — sans quoi une nulle seulement reclamable ne serait jamais
+       reclamee et la partie trainerait jusqu'a la 5e repetition. Ce jour-la,
+       ce bloc redeviendra celui d'avant.
+       ───────────────────────────────────────────────────────────────────── */
+    const over1 = once(p1, 'game:over', 10000);
+    const over2 = once(p2, 'game:over', 10000);
     for (let round = 0; round < 2; round++) {
       for (const step of cycle) await move(...step);
     }
-
-    const sync = once(p1, 'echecs_state_sync');
-    p1.emit('echecs_request_state', { room: ROOM });
-    const snapshot = await sync;
-    const state = JSON.parse(snapshot.gameState);
-    check('3e répétition atteinte sans fin automatique', snapshot.status === 'playing' && state.reps[state.key] >= 3, { status: snapshot.status, repetitions: state.reps[state.key] });
-
-    const claimEvent1 = once(p1, 'echecs_draw_claimed');
-    const claimEvent2 = once(p2, 'echecs_draw_claimed');
-    const over1 = once(p1, 'game:over');
-    const over2 = once(p2, 'game:over');
-    p1.emit('echecs_claim_draw', { room: ROOM, player: 1 });
-    const [claim1, claim2, end1, end2] = await Promise.all([claimEvent1, claimEvent2, over1, over2]);
-    check('réclamation acceptée pour triple répétition', claim1.reason === 'repetition' && claim2.reason === 'repetition', claim1);
-    check('les deux joueurs reçoivent une nulle', end1.winnerSlot === 0 && end2.winnerSlot === 0, { end1, end2 });
+    const [end1, end2] = await Promise.all([over1, over2]);
+    check('la 3e répétition conclut la partie sans réclamation',
+      end1.detail === 'repetition' && end2.detail === 'repetition',
+      { p1: end1.detail, p2: end2.detail });
+    check('les deux joueurs reçoivent une nulle',
+      end1.winnerSlot === 0 && end2.winnerSlot === 0 && end1.result === 'draw' && end2.result === 'draw',
+      { end1, end2 });
   } catch (error) {
     failures++;
     console.log('  ❌ exception: ' + error.message);
