@@ -21,7 +21,7 @@ const ORDER = [
   'test_chess_engine', 'test_chess_competition_rules', 'test_chess_clock', 'test_echecs_server',
   'test_chess_clock_runtime', 'test_chess_competition_runtime', 'test_ludo_chifoumi',
   'test_chifoumi_rounds', 'test_penalty_rounds', 'test_spectator', 'test_tournament_pause',
-  'test_gomoku', 'test_gomoku_browser', 'test_gomoku_ai_browser'
+  'test_gomoku', 'test_gomoku_browser', 'test_gomoku_ai_browser', 'test_split_layout_browser'
 ];
 
 const failed = [];

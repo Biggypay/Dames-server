@@ -2927,6 +2927,14 @@ app.get('/mindspille-i18n.js', (req, res) => {
   res.sendFile(path.join(PUBLIC, 'mindspille-i18n.js'));
 });
 
+// Écran partagé de l'application : retire du plateau ce que son panneau
+// affiche déjà (profils, score, bandeaux). Voir public/mindspille-split.js.
+app.get('/mindspille-split.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(PUBLIC, 'mindspille-split.js'));
+});
+
 // Moteur d'échecs partagé : servi depuis la même origine (pages 3D + Worker IA).
 app.get(['/echecs-engine.js', '/chess-engine.js'], (req, res) => {
   res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
