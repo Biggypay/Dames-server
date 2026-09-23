@@ -8,6 +8,8 @@ const GAME_PORT = 3152;
 const DB_PORT = 3153;
 const GAME_URL = `http://127.0.0.1:${GAME_PORT}`;
 const GAME_ID = '30000000-0000-4000-8000-000000000001';
+// Un second match du même tournoi, lancé APRÈS une pause et sa reprise.
+const LATE_GAME_ID = '30000000-0000-4000-8000-000000000003';
 const TOURNAMENT_ID = '30000000-0000-4000-8000-000000000002';
 const P1 = '30000000-0000-4000-8000-000000000011';
 const P2 = '30000000-0000-4000-8000-000000000012';
@@ -49,8 +51,9 @@ function mockDatabase() {
     const requestUrl = new URL(request.url, `http://127.0.0.1:${DB_PORT}`);
     response.setHeader('Content-Type', 'application/json');
     if (request.method === 'GET' && requestUrl.pathname === '/rest/v1/games') {
+      const id = String(requestUrl.searchParams.get('id') || '').replace(/^eq\./, '');
       return response.end(JSON.stringify([{
-        id: GAME_ID, game_type: 'tictactoe', player1_id: P1, player2_id: P2,
+        id: id === LATE_GAME_ID ? LATE_GAME_ID : GAME_ID, game_type: 'tictactoe', player1_id: P1, player2_id: P2,
         bet_amount: 0, status: 'in_progress', is_ai_opponent: false,
         is_tournament: true, game_settings: { tournament_paused: paused }
       }]));
@@ -59,10 +62,10 @@ function mockDatabase() {
       return response.end('[]');
     }
     if (request.method === 'POST' && requestUrl.pathname.endsWith('/server_tournament_game_controls')) {
-      return response.end(JSON.stringify([{
-        game_id: GAME_ID, tournament_id: TOURNAMENT_ID,
+      return response.end(JSON.stringify([GAME_ID, LATE_GAME_ID].map(game_id => ({
+        game_id, tournament_id: TOURNAMENT_ID,
         is_paused: paused, pause_revision: revision
-      }]));
+      }))));
     }
     if (request.method === 'POST' && requestUrl.pathname.startsWith('/rest/v1/rpc/')) {
       return response.end('null');
@@ -131,6 +134,26 @@ async function main() {
     secondSocket.emit('ttt_move', { room: GAME_ID, player: secondSlot, row: 1, col: 1, symbol: secondSymbol });
     const move = await resumedMove;
     check('the same board continues after resume', move.row === 1 && move.col === 1, move);
+
+    // A match of the same tournament created AFTER that pause and resume. The
+    // tournament's pause revision is no longer 0, so the control loop's first
+    // pass over the new room applies a "resume". Player 2 arrives after that
+    // pass: the room used to be flipped to `paused`, the arrival was taken for
+    // a reconnection, and the match never started.
+    const late1 = await connect(P1, 'Alice');
+    const late2 = await connect(P2, 'Bob');
+    sockets.push(late1, late2);
+    const lateStart1 = once(late1, 'ttt_start', 9000);
+    late1.emit('ttt_join', { room: LATE_GAME_ID, player: 1, supabaseId: P1, name: 'Alice', bet: 0, currency: 'HTG', gameId: LATE_GAME_ID });
+    await sleep(2600);                              // at least one control pass
+    const lateStart2 = once(late2, 'ttt_start', 9000);
+    const lateTurn = once(late2, 'ttt_turn_start', 9000);
+    late2.emit('ttt_join', { room: LATE_GAME_ID, player: 2, supabaseId: P2, name: 'Bob', bet: 0, currency: 'HTG', gameId: LATE_GAME_ID });
+    const [started1, started2] = await Promise.all([lateStart1, lateStart2]);
+    check('a match joined after a control pass still starts for both players',
+      started1.reconnected === false && started2.reconnected === false && started2.paused !== true, { started1: started1.reconnected, started2: started2.reconnected });
+    const turn = await lateTurn;
+    check('and its turn clock runs', turn.duration > 0, turn);
   } finally {
     for (const socket of sockets) socket.disconnect();
     server.kill('SIGTERM');

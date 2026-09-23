@@ -606,7 +606,8 @@ var choices    = ['pierre','feuille','ciseaux'];
 var emojis     = {pierre:'✊', feuille:'✋', ciseaux:'✌️'};
 var CIRC_SMALL = 163.4;
 var CIRC       = 2 * Math.PI * 48;
-var CHOICE_TIME = 15000;
+var CHOICE_TIME = 30000; /* la durée envoyée par le serveur fait foi */
+var choiceDuration = CHOICE_TIME;
 var REVEAL_TIME = 5;
 var MAX_ROUNDS  = 5;
 
@@ -847,7 +848,7 @@ function initSocket() {
     if (snapshot.state.graceStartTime || snapshot.state.turnStartTime) {
       var offset = Date.now() - (snapshot.serverTime || Date.now());
       if (snapshot.state.graceStartTime) startGraceTimer(snapshot.state.graceStartTime + offset, snapshot.state.graceDuration || 60000);
-      else startTimer(snapshot.state.turnStartTime + offset);
+      else startTimer(snapshot.state.turnStartTime + offset, snapshot.state.turnDuration);
     }
   });
 
@@ -929,10 +930,10 @@ function initSocket() {
   /* ── Les Timers Pilotés par le Serveur ── */
   socket.on('chifoumi_turn_start', function(data) {
     if (gameOver) return;
-    pendingTimerData = { type: 'turn_start', startTime: data.startTime };
+    pendingTimerData = { type: 'turn_start', startTime: data.startTime, duration: data.duration };
     if (!gameReady) return;
     pendingTimerData = null;
-    startTimer(data.startTime);
+    startTimer(data.startTime, data.duration);
   });
 
   socket.on('chifoumi_turn_warning', function(data) {
@@ -950,7 +951,7 @@ function initSocket() {
     pendingTimerData = null;
     var offset = Date.now() - data.serverTime;
     if (data.graceStartTime) startGraceTimer(data.graceStartTime + offset, data.duration);
-    else if (data.turnStartTime) startTimer(data.turnStartTime + offset);
+    else if (data.turnStartTime) startTimer(data.turnStartTime + offset, data.duration);
   });
 
   /* ── Adversaire a choisi (Mise à jour UI de verrouillage) ── */
@@ -1073,33 +1074,34 @@ function initSocket() {
 }
 
 /* ══════════════════════════════════════════
-   GESTION DES TIMERS SYNC (15s puis 60s Grâce)
+   GESTION DES TIMERS SYNC (30 s puis 60 s de grâce)
 ══════════════════════════════════════════ */
 function applyPendingTimer() {
   if (!pendingTimerData) return;
   var d = pendingTimerData; pendingTimerData = null;
   if (d.type === 'turn_start') {
-      startTimer(d.startTime);
+      startTimer(d.startTime, d.duration);
   } else if (d.type === 'turn_warning') {
       startGraceTimer(d.startTime, d.duration);
   } else if (d.type === 'sync') {
       var offset = Date.now() - d.serverTime;
       if (d.graceStartTime) startGraceTimer(d.graceStartTime + offset, d.duration);
-      else if (d.turnStartTime) startTimer(d.turnStartTime + offset);
+      else if (d.turnStartTime) startTimer(d.turnStartTime + offset, d.duration);
   }
 }
 
-function startTimer(serverStartTime) {
+function startTimer(serverStartTime, duration) {
   stopGraceTimer(); stopTimersVisuals();
   if (gameOver || !roundInProgress) return;
   timerActive = true; timerStart = serverStartTime || Date.now();
+  choiceDuration = duration || CHOICE_TIME;
   
   profileHuman.classList.add('active', 'human-active');
   profileAi.classList.add('active', 'ai-active');
 
   function tick() {
     if (!timerActive) return;
-    var progress = Math.min((Date.now() - timerStart) / CHOICE_TIME, 1);
+    var progress = Math.min((Date.now() - timerStart) / choiceDuration, 1);
     
     // Figer visuellement si le joueur a joué
     if (!playerLocked) timerArcHuman.style.strokeDashoffset = CIRC_SMALL * progress;
@@ -1445,6 +1447,8 @@ function startNewGame() {
   updUI();
   showToast('🎲','Partie commencée', BET_AMOUNT > 0 ? 'Mise : ' + BET_AMOUNT + ' ' + CURRENCY : MAX_ROUNDS + ' manches !', 2000, function() {
     gameReady = true; startRound();
+    // Le serveur a pu annoncer la manche pendant ce message : on applique son chrono.
+    applyPendingTimer();
   });
 }
 

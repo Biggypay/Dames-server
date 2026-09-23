@@ -233,6 +233,13 @@ async function penalty(browser, game) {
   const timing = await waitFor(async () => (await Promise.all(match.pages.map(p =>
     p.evaluate(() => parseFloat(document.getElementById('timer-fill').style.width) < 100)))).every(Boolean), 4000);
   check('Penalty : le minuteur de la manche tourne', timing === true);
+  // 30 s par manche, comme tous les jeux : en 2 s, la barre perd ~6,7 %
+  // (elle en perdait ~13,3 % quand la manche durait 15 s).
+  const fill = () => match.pages[0].evaluate(() => parseFloat(document.getElementById('timer-fill').style.width));
+  const fillBefore = await fill();
+  await sleep(2000);
+  const fillDrop = fillBefore - await fill();
+  check('Penalty : la manche dure 30 s', fillDrop > 4.5 && fillDrop < 9.5, { fillDrop });
 
   await match.pages[0].evaluate(() => document.querySelectorAll('.zone-btn')[0].click());
   await match.pages[1].evaluate(() => document.querySelectorAll('.zone-btn')[1].click());
@@ -258,6 +265,15 @@ async function chifoumi(browser, game) {
       && buttons.length === 3 && buttons.every(b => !b.classList.contains('disabled') && !b.classList.contains('locked'));
   })))).every(Boolean), 12000);
   check('Chifoumi : les boutons Pierre / Feuille / Ciseaux sont jouables', ready === true);
+  // 30 s par manche, comme tous les jeux : l'anneau avance de ~6,7 % en 2 s.
+  // Il restait immobile toute la première manche : la page ignorait le
+  // chrono que le serveur annonçait pendant son message d'accueil.
+  await waitFor(() => p1.evaluate(() => parseFloat(document.getElementById('timer-arc-human').style.strokeDashoffset) > 0), 6000);
+  const arc = () => p1.evaluate(() => parseFloat(document.getElementById('timer-arc-human').style.strokeDashoffset) / 163.4);
+  const arcBefore = await arc();
+  await sleep(2000);
+  const arcAdvance = (await arc()) - arcBefore;
+  check('Chifoumi : la manche dure 30 s', arcAdvance > 0.045 && arcAdvance < 0.095, { arcAdvance });
 
   const dots = await p1.evaluate(() => ({
     dots: document.querySelectorAll('#roundsProgress .round-dot').length,
@@ -276,6 +292,31 @@ async function chifoumi(browser, game) {
   }, 15000);
   check('Chifoumi : pierre bat ciseaux, le point est compté des deux côtés', scored === true);
   return match;
+}
+
+// L'anneau du chronomètre de chaque page doit avancer chez les deux joueurs.
+// Ce contrôle a révélé deux défauts : la page Chifoumi ignorait le chrono
+// annoncé pendant son message d'accueil, et un match de tournoi lancé après
+// une pause ne démarrait jamais (voir test_tournament_pause).
+const TURN_RINGS = {
+  quoridor: '#arc-me, #arc-op',
+  gomoku: '#arc-me, #arc-op',
+  penalty: '#timer-arc-me, #timer-arc-op'
+};
+async function turnRingMoves(game, match) {
+  const selector = TURN_RINGS[game.key] || '#timer-arc-human, #timer-arc-ai';
+  const sample = page => page.evaluate(sel =>
+    [...document.querySelectorAll(sel)].map(arc => parseFloat(arc.style.strokeDashoffset) || 0), selector);
+  let last = null;
+  const moving = await waitFor(async () => {
+    const before = await Promise.all(match.pages.map(sample));
+    // Deux secondes d'écart : sur 30 s, l'anneau avance peu à chaque image.
+    await sleep(2000);
+    const after = await Promise.all(match.pages.map(sample));
+    last = { before, after };
+    return before.every((values, i) => values.some((value, j) => after[i][j] !== value)) ? true : null;
+  }, 15000);
+  check(`${game.key} : le chrono du tour avance à l écran chez les deux joueurs`, moving === true, JSON.stringify(last));
 }
 
 /* Les autres pages : la partie démarre, sans erreur. */
@@ -325,6 +366,7 @@ async function main() {
     for (const game of GAMES) {
       console.log(`  — ${game.key}`);
       const match = await (scenarios[game.key] || startsCleanly)(browser, game);
+      await turnRingMoves(game, match);
       await tournamentPause(game, match);
       check(`${game.key} : aucune exception JavaScript, aucune ressource manquante`, match.errors.length === 0, [...new Set(match.errors)]);
       await match.close();

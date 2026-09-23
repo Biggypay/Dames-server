@@ -20,6 +20,7 @@ const PUBLIC = path.join(__dirname, 'public');
 // Moteur d'échecs FIDE partagé (même code que les pages 3D et le Worker IA).
 const { ChessEngineFactory } = require('./public/echecs-engine.js');
 const ChessClock = require('./lib/chess-clock.js');
+const TurnClock = require('./lib/turn-clock.js');
 const ChessEngine = ChessEngineFactory();
 const crypto     = require('crypto');
 const { ensureSeriesState, seriesPayload, recordRoundResult, advanceRoundStarter } = require('./lib/gomoku-series');
@@ -316,7 +317,7 @@ function noteRejectedChessMove(eroom, slot, kind) {
 
 function serializableRoomState(room) {
   const ignored = new Set([
-    'turnTimer', 'graceTimer', 'flagTimer', 'revealTimer', 'nextRoundTimer', 'disconnectTimer',
+    'turnTimer', 'graceTimer', 'absenceTimer', 'flagTimer', 'revealTimer', 'nextRoundTimer', 'disconnectTimer',
     'settlementPromise', 'settlementRetryTimer', 'persistTimer', 'cleanupTimer',
     '_persistPromise', '_batchPersistPromise', '_lastPersistedFingerprint'
   ]);
@@ -325,6 +326,8 @@ function serializableRoomState(room) {
     if (value instanceof Set) return [...value];
     return value;
   }));
+  // Le temps déjà consommé du tour est acquis : il repart avec la partie.
+  state.turnClock = TurnClock.forSave(room.turnClock, Date.now());
   state.players = {};
   for (const slot of [1, 2]) {
     const player = room.players?.[slot];
@@ -465,7 +468,11 @@ function hydratePersistedRoom(record) {
     player.socketId = null;
     player.userId = null;
   }
-  room.turnTimer = null; room.graceTimer = null; room.flagTimer = null; room.revealTimer = null; room.nextRoundTimer = null; room.disconnectTimer = null;
+  room.turnTimer = null; room.graceTimer = null; room.absenceTimer = null; room.flagTimer = null; room.revealTimer = null; room.nextRoundTimer = null; room.disconnectTimer = null;
+  // Le tour sauvegardé reprend avec le temps qu'il avait déjà consommé ; le
+  // temps passé serveur éteint n'est facturé à personne.
+  room.turnClock = TurnClock.sanitize(room.turnClock);
+  room.turnClockPhase = null;
   // Une pendule d'échecs restaurée repart à l'arrêt : le temps passé serveur
   // éteint n'est facturé à personne, et le reste exact est conservé.
   if (record.game_type === 'echecs' && room.clock) room.clock = ChessClock.sanitizeClock(room.clock);
@@ -1115,10 +1122,7 @@ function finishTTTRound(room, roomId, winnerSlot, winLine) {
     state.resolvingRound = false;
     state.revision++;
     persistRoomSoon('tictactoe', room);
-    if (room.status !== 'playing') {
-      room.pausedTurnPlayer = state.currentPlayer + 1;
-      return;
-    }
+    if (room.status !== 'playing') return;
     io.to(roomId).emit('ttt_state_sync', tttSnapshot(room));
     startTTTTurnTimer(room, roomId, state.currentPlayer + 1);
   }, 2800);
@@ -1406,37 +1410,244 @@ function calcFinancial(betAmount) {
 }
 
 // ══════════════════════════════════════════════════════════
-//  TIMERS GÉNÉRIQUES (30s de jeu + 60s de Grâce)
+//  CHRONOMÈTRE PAR COUP : 30 s pour jouer, 60 s de grâce, puis défaite
 // ══════════════════════════════════════════════════════════
-const TURN_DURATION  = 30 * 1000;
-const GRACE_DURATION = 60 * 1000;
+//
+// Une seule règle pour tous les jeux en ligne, appliquée ici et nulle part
+// ailleurs (le calcul pur est dans lib/turn-clock.js) :
+//  - un tour a un budget de 90 s. Ni une reconnexion, ni un redémarrage du
+//    serveur ne le rechargent : recharger la page reprend le même tour ;
+//  - celui qui doit jouer consomme son temps même absent : se déconnecter ne
+//    gèle pas son tour, et la défaite tombe à l'échéance ;
+//  - le temps n'est gelé que quand il ne peut pas jouer sans que ce soit de
+//    son fait : adversaire déconnecté, pause d'arbitrage ;
+//  - un coup arrivé après l'échéance est refusé, la défaite est appliquée.
+// Le joueur chronométré est toujours celui que l'état du plateau désigne,
+// jamais un joueur « mémorisé » : une valeur périmée laissait un tour sans
+// aucune limite après un redémarrage.
 
-function clearDamesTurnTimers(droom) {
-  if (droom.turnTimer)  { clearTimeout(droom.turnTimer);  droom.turnTimer  = null; }
-  if (droom.graceTimer) { clearTimeout(droom.graceTimer); droom.graceTimer = null; }
-  droom.turnStartTime = null; droom.graceStartTime = null; droom.turnPlayer = null;
+// Les tests d'exécution raccourcissent ces durées ; hors tests, elles sont fixes.
+const testDurationMs = (name, fallback) =>
+  (process.env.NODE_ENV === 'test' && Number(process.env[name]) > 0 ? Number(process.env[name]) : fallback);
+const TURN_DURATION  = testDurationMs('TURN_DURATION_MS', 30 * 1000);
+const GRACE_DURATION = testDurationMs('GRACE_DURATION_MS', 60 * 1000);
+
+const opponentOf = slot => (slot === 1 ? 2 : 1);
+const onlySlots = slots => slots.filter(slot => slot === 1 || slot === 2);
+const standardTiming = () => [TURN_DURATION, GRACE_DURATION];
+
+// Pour chaque jeu : qui doit jouer (`debtors`), ce qui identifie le tour
+// (`key` : il change à chaque coup et à chaque manche), et ce qui arrive à
+// l'échéance. Penalty et Chifoumi sont simultanés : chacun doit son choix.
+const TURN_GAMES = {
+  dames: {
+    event: 'dames', timing: standardTiming,
+    key: room => `v${Number(room.stateVersion) || 0}`,
+    debtors: room => onlySlots([Number(room.currentPlayer) + 1]),
+    expire: (room, roomId, [late]) => notifyDamesRoomOver(room, roomId, opponentOf(late), 'timeout')
+  },
+  echecs: {
+    event: 'echecs', timing: standardTiming,
+    key: room => `v${Number(room.stateVersion) || 0}`,
+    debtors: room => onlySlots([Number(room.currentPlayer) + 1]),
+    expire: (room, roomId, [late]) => notifyEchecsRoomOver(room, roomId, opponentOf(late), 'timeout')
+  },
+  tictactoe: {
+    event: 'ttt', timing: standardTiming,
+    key: room => `r${Number(room.gameState?.revision) || 0}`,
+    ready: room => !!room.gameState && room.gameState.resolvingRound !== true,
+    debtors: room => onlySlots([Number(room.gameState?.currentPlayer) + 1]),
+    expire: (room, roomId, [late]) => notifyTTTRoomOver(room, roomId, opponentOf(late), 'timeout')
+  },
+  quoridor: {
+    event: 'quoridor', timing: standardTiming,
+    key: room => `v${Number(room.stateVersion) || 0}`,
+    debtors: room => onlySlots([room.currentSlot]),
+    expire: (room, roomId, [late]) => notifyQuoriRoomOver(room, roomId, opponentOf(late), 'timeout')
+  },
+  gomoku: {
+    event: 'gomoku', timing: standardTiming,
+    key: room => `v${Number(room.stateVersion) || 0}`,
+    debtors: room => onlySlots([room.currentSlot]),
+    expire: (room, roomId, [late]) => notifyGomokuRoomOver(room, roomId, opponentOf(late), 'timeout')
+  },
+  penalty: {
+    event: 'penalty', simultaneous: true,
+    timing: () => [PENALTY_TURN_DURATION, PENALTY_GRACE_DURATION],
+    key: room => `round${Number(room.currentRound) || 0}`,
+    debtors: room => [1, 2].filter(slot => room.choices?.[slot] === undefined),
+    expire: (room, roomId, late) => {
+      if (late.length === 2) return finishBothDisconnected(room, 'penalty', roomId);
+      if (late.length === 1) return notifyPenaltyRoomOver(room, roomId, opponentOf(late[0]), 'timeout');
+      resolvePenaltyRound(room, roomId);
+    }
+  },
+  chifoumi: {
+    event: 'chifoumi', simultaneous: true,
+    timing: () => [CHIFOUMI_TURN_DURATION, CHIFOUMI_GRACE_DURATION],
+    key: room => `round${Number(room.currentRound) || 0}`,
+    ready: room => room.revealPending !== true && room.awaitingNextRound !== true,
+    debtors: room => [1, 2].filter(slot => room.choices?.[slot] === undefined),
+    expire: (room, roomId, late) => {
+      if (late.length === 2) return finishBothDisconnected(room, 'chifoumi', roomId);
+      if (late.length === 1) return notifyChifoumiRoomOver(room, roomId, opponentOf(late[0]), 'timeout');
+      scheduleChifoumiReveal(room, roomId);
+    }
+  }
+};
+
+const turnReady = (game, room) => !game.ready || game.ready(room);
+
+/** Le tour en cours est-il toujours celui que mesure cette horloge ? */
+function isSameTurn(gameName, room, clock) {
+  const game = TURN_GAMES[gameName];
+  return !!clock && room.turnClock === clock && clock.key === game.key(room) && turnReady(game, room);
 }
 
-function startDamesTurnTimer(droom, roomId, playerSlot) {
-  clearDamesTurnTimers(droom);
-  if (droom.status !== 'playing' || droom.currentPlayer + 1 !== playerSlot) return;
+function stopTurnClockTimers(room) {
+  if (room.turnTimer)    { clearTimeout(room.turnTimer);    room.turnTimer    = null; }
+  if (room.graceTimer)   { clearTimeout(room.graceTimer);   room.graceTimer   = null; }
+  if (room.absenceTimer) { clearTimeout(room.absenceTimer); room.absenceTimer = null; }
+}
+
+/** Plus de minuterie ; le temps déjà consommé du tour reste acquis. */
+function pauseTurnClock(room) {
+  stopTurnClockTimers(room);
+  if (room.turnClock) TurnClock.freeze(room.turnClock, Date.now());
+  room.turnPlayer = null; room.turnStartTime = null; room.graceStartTime = null; room.turnClockPhase = null;
+}
+
+/**
+ * Chronomètre le tour que l'état désigne : le même tour reprend là où il en
+ * était (reconnexion, fin de pause), un nouveau tour repart à zéro. C'est la
+ * clé du tour qui en décide, jamais l'appelant.
+ */
+function runTurnClock(gameName, room, roomId) {
+  const game = TURN_GAMES[gameName];
+  stopTurnClockTimers(room);
+  if (!game || room.status !== 'playing' || !turnReady(game, room) || !game.debtors(room).length) return;
   const now = Date.now();
-  droom.turnPlayer = playerSlot; droom.turnStartTime = now; droom.graceStartTime = null;
-  io.to(roomId).emit('dames_turn_start', { player: playerSlot, startTime: now, duration: TURN_DURATION });
-  droom.turnTimer = setTimeout(() => {
-    droom.turnTimer = null;
-    if (droom.status !== 'playing' || droom.currentPlayer + 1 !== playerSlot || droom.turnPlayer !== playerSlot) return;
-    const graceNow = Date.now();
-    droom.graceStartTime = graceNow;
-    io.to(roomId).emit('dames_turn_warning', { player: playerSlot, startTime: graceNow, duration: GRACE_DURATION });
-    droom.graceTimer = setTimeout(() => {
-      droom.graceTimer = null;
-      if (droom.status !== 'playing' || droom.currentPlayer + 1 !== playerSlot || droom.turnPlayer !== playerSlot) return;
-      const winnerSlot = playerSlot === 1 ? 2 : 1;
-      notifyDamesRoomOver(droom, roomId, winnerSlot, 'timeout');
-    }, GRACE_DURATION);
-  }, TURN_DURATION);
+  const key = game.key(room);
+  if (!room.turnClock || room.turnClock.key !== key) {
+    const [turnMs, graceMs] = game.timing();
+    room.turnClock = TurnClock.create(key, now, turnMs, graceMs);
+    room.turnClockPhase = null;
+  }
+  TurnClock.run(room.turnClock, now);
+  armTurnClock(gameName, room, roomId, true);
 }
+
+function armTurnClock(gameName, room, roomId, announce) {
+  const game = TURN_GAMES[gameName], clock = room.turnClock, now = Date.now();
+  stopTurnClockTimers(room);
+  const phase = TurnClock.phase(clock, now);
+  if (phase === 'expired') return void expireTurn(gameName, room, roomId);
+  // Début « virtuel » de la phase : les pages affichent startTime + duration,
+  // donc un tour repris montre le temps qui lui reste vraiment.
+  const starts = TurnClock.phaseStarts(clock, now);
+  if (!game.simultaneous) room.turnPlayer = game.debtors(room)[0];
+  room.turnStartTime = starts.turnStartTime;
+  room.graceStartTime = starts.graceStartTime;
+  if (announce || room.turnClockPhase !== phase) {
+    room.turnClockPhase = phase;
+    const payload = phase === 'turn'
+      ? { startTime: starts.turnStartTime, duration: clock.turnMs }
+      : { startTime: starts.graceStartTime, duration: clock.graceMs };
+    if (!game.simultaneous) payload.player = room.turnPlayer;
+    io.to(roomId).emit(`${game.event}_${phase === 'turn' ? 'turn_start' : 'turn_warning'}`, payload);
+  }
+  const timerField = phase === 'turn' ? 'turnTimer' : 'graceTimer';
+  room[timerField] = setTimeout(() => {
+    room[timerField] = null;
+    if (room.status !== 'playing' || !isSameTurn(gameName, room, clock)) return;
+    armTurnClock(gameName, room, roomId, false);
+  }, TurnClock.msUntilNextPhase(clock, now));
+}
+
+/** L'échéance est passée : ceux qui devaient jouer perdent. */
+function expireTurn(gameName, room, roomId) {
+  const game = TURN_GAMES[gameName];
+  if (room.status === 'finished') return;
+  const late = game.debtors(room);
+  pauseTurnClock(room);
+  room.turnClock = null;
+  // La défaite s'applique aussi pendant une absence : le délai de
+  // reconnexion ne prolonge pas le tour de celui qui doit jouer.
+  if (room.disconnectTimer) { clearTimeout(room.disconnectTimer); room.disconnectTimer = null; }
+  room.reconnectDeadline = null;
+  room.status = 'playing';
+  game.expire(room, roomId, late);
+}
+
+/**
+ * Un coup ou un choix arrivé après l'échéance est refusé. La minuterie peut
+ * avoir quelques millisecondes de retard : c'est l'horloge qui fait foi.
+ */
+function turnExpiredOnArrival(gameName, room, roomId) {
+  const clock = room.turnClock;
+  if (!clock || room.status !== 'playing' || !isSameTurn(gameName, room, clock)) return false;
+  if (TurnClock.phase(clock, Date.now()) !== 'expired') return false;
+  expireTurn(gameName, room, roomId);
+  return true;
+}
+
+/** Les seuls absents sont ceux qui doivent jouer, et l'autre est là. */
+function onlyLatePlayersAway(room, late) {
+  const present = slot => room.players?.[slot]?.connected === true;
+  return late.length > 0
+    && [1, 2].some(present)
+    && [1, 2].every(slot => (late.includes(slot) ? !present(slot) : present(slot)));
+}
+
+/**
+ * Pendant une déconnexion. Si les seuls absents sont ceux qui doivent jouer,
+ * leur temps continue de couler et la défaite tombe à l'échéance, sans
+ * attendre la fin du délai de reconnexion. Sinon — l'autre est absent aussi,
+ * ou c'est lui seul qui manque, ou pause d'arbitrage — le tour est gelé.
+ * Appelé à chaque déconnexion et à chaque retour tant que la partie est en pause.
+ */
+function followAbsentTurn(gameName, room, roomId) {
+  if (gameName === 'echecs' && room.clock) return void followAbsentChessClock(room, roomId);
+  const game = TURN_GAMES[gameName], clock = room.turnClock;
+  if (!game || !clock) return;
+  if (room.absenceTimer) { clearTimeout(room.absenceTimer); room.absenceTimer = null; }
+  const now = Date.now();
+  const running = room.status === 'paused' && room.adminPaused !== true
+    && clock.key === game.key(room) && turnReady(game, room)
+    && onlyLatePlayersAway(room, game.debtors(room));
+  if (!running) return void TurnClock.freeze(clock, now);
+  TurnClock.run(clock, now);
+  room.absenceTimer = setTimeout(() => {
+    room.absenceTimer = null;
+    if (room.status !== 'paused' || room.turnClock !== clock) return;
+    if (TurnClock.phase(clock, Date.now()) === 'expired' && onlyLatePlayersAway(room, game.debtors(room))) {
+      return void expireTurn(gameName, room, roomId);
+    }
+    followAbsentTurn(gameName, room, roomId);
+  }, TurnClock.remainingMs(clock, now));
+}
+
+/** Même règle pour la pendule d'un tournoi d'échecs : le drapeau peut tomber absent. */
+function followAbsentChessClock(eroom, roomId) {
+  if (eroom.absenceTimer) { clearTimeout(eroom.absenceTimer); eroom.absenceTimer = null; }
+  const now = Date.now();
+  ChessClock.chargeElapsed(eroom.clock, now);
+  const mover = Number(eroom.currentPlayer) + 1;
+  if (eroom.status !== 'paused' || eroom.adminPaused === true || !onlyLatePlayersAway(eroom, onlySlots([mover]))) return;
+  ChessClock.startSlot(eroom.clock, mover, now);
+  eroom.absenceTimer = setTimeout(() => {
+    eroom.absenceTimer = null;
+    const stillAway = eroom.status === 'paused' && eroom.adminPaused !== true && onlyLatePlayersAway(eroom, [mover]);
+    if (!stillAway || ChessClock.remainingFor(eroom.clock, mover, Date.now()) > 0) return void followAbsentChessClock(eroom, roomId);
+    if (eroom.disconnectTimer) { clearTimeout(eroom.disconnectTimer); eroom.disconnectTimer = null; }
+    eroom.reconnectDeadline = null;
+    eroom.status = 'playing';
+    echecsFlagFall(eroom, roomId, mover);
+  }, ChessClock.remainingFor(eroom.clock, mover, now));
+}
+
+function clearDamesTurnTimers(droom) { pauseTurnClock(droom); }
+function startDamesTurnTimer(droom, roomId) { runTurnClock('dames', droom, roomId); }
 
 // ── RE-SYNCHRO AUTORITATIVE DAMES ──────────────────────────
 // Le serveur est la seule source de vérité du plateau. Un événement socket
@@ -1526,35 +1737,18 @@ function startEchecsClock(eroom, roomId, playerSlot) {
 }
 
 function clearEchecsTurnTimers(eroom) {
-  if (eroom.turnTimer)  { clearTimeout(eroom.turnTimer);  eroom.turnTimer  = null; }
-  if (eroom.graceTimer) { clearTimeout(eroom.graceTimer); eroom.graceTimer = null; }
+  pauseTurnClock(eroom);
   clearEchecsFlagTimer(eroom);
-  // Une pendule qu'on arrête garde son reste exact : pause de tournoi,
-  // déconnexion ou redémarrage ne coûtent une seconde à personne.
+  // Une pendule qu'on arrête garde son reste exact. Le temps d'un joueur
+  // absent qui devait jouer, lui, continue de courir (followAbsentChessClock).
   if (eroom.clock) ChessClock.chargeElapsed(eroom.clock, Date.now());
-  eroom.turnStartTime = null; eroom.graceStartTime = null; eroom.turnPlayer = null;
 }
 
-function startEchecsTurnTimer(eroom, roomId, playerSlot) {
+function startEchecsTurnTimer(eroom, roomId) {
   clearEchecsTurnTimers(eroom);
-  if (eroom.status !== 'playing' || eroom.currentPlayer + 1 !== playerSlot) return;
-  if (eroom.clock) return void startEchecsClock(eroom, roomId, playerSlot);
-  const now = Date.now();
-  eroom.turnPlayer = playerSlot; eroom.turnStartTime = now; eroom.graceStartTime = null;
-  io.to(roomId).emit('echecs_turn_start', { player: playerSlot, startTime: now, duration: TURN_DURATION });
-  eroom.turnTimer = setTimeout(() => {
-    eroom.turnTimer = null;
-    if (eroom.status !== 'playing' || eroom.currentPlayer + 1 !== playerSlot || eroom.turnPlayer !== playerSlot) return;
-    const graceNow = Date.now();
-    eroom.graceStartTime = graceNow;
-    io.to(roomId).emit('echecs_turn_warning', { player: playerSlot, startTime: graceNow, duration: GRACE_DURATION });
-    eroom.graceTimer = setTimeout(() => {
-      eroom.graceTimer = null;
-      if (eroom.status !== 'playing' || eroom.currentPlayer + 1 !== playerSlot || eroom.turnPlayer !== playerSlot) return;
-      const winnerSlot = playerSlot === 1 ? 2 : 1;
-      notifyEchecsRoomOver(eroom, roomId, winnerSlot, 'timeout');
-    }, GRACE_DURATION);
-  }, TURN_DURATION);
+  if (eroom.status !== 'playing') return;
+  if (eroom.clock) return void startEchecsClock(eroom, roomId, Number(eroom.currentPlayer) + 1);
+  runTurnClock('echecs', eroom, roomId);
 }
 
 // L'état vient de la persistance ou du réseau : on le revalide toujours avant usage.
@@ -1597,11 +1791,7 @@ const _echecsSyncLoop = setInterval(() => {
 }, DAMES_SYNC_INTERVAL);
 if (_echecsSyncLoop.unref) _echecsSyncLoop.unref();
 
-function clearTTTTurnTimers(troom) {
-  if (troom.turnTimer)  { clearTimeout(troom.turnTimer);  troom.turnTimer  = null; }
-  if (troom.graceTimer) { clearTimeout(troom.graceTimer); troom.graceTimer = null; }
-  troom.turnStartTime = null; troom.graceStartTime = null; troom.turnPlayer = null;
-}
+function clearTTTTurnTimers(troom) { pauseTurnClock(troom); }
 
 function tttSnapshot(troom) {
   const state = troom.gameState || tttState();
@@ -1644,33 +1834,9 @@ const _tttSyncLoop = setInterval(() => {
 }, DAMES_SYNC_INTERVAL);
 if (_tttSyncLoop.unref) _tttSyncLoop.unref();
 
-function startTTTTurnTimer(troom, roomId, playerSlot) {
-  clearTTTTurnTimers(troom);
-  const state = troom.gameState;
-  if (troom.status !== 'playing' || !state || state.resolvingRound || state.currentPlayer + 1 !== playerSlot) return;
-  const now = Date.now();
-  troom.turnPlayer = playerSlot; troom.turnStartTime = now; troom.graceStartTime = null;
-  io.to(roomId).emit('ttt_turn_start', { player: playerSlot, startTime: now, duration: TURN_DURATION });
-  troom.turnTimer = setTimeout(() => {
-    troom.turnTimer = null;
-    if (troom.status !== 'playing' || state.resolvingRound || state.currentPlayer + 1 !== playerSlot) return;
-    const graceNow = Date.now();
-    troom.graceStartTime = graceNow;
-    io.to(roomId).emit('ttt_turn_warning', { player: playerSlot, startTime: graceNow, duration: GRACE_DURATION });
-    troom.graceTimer = setTimeout(() => {
-      troom.graceTimer = null;
-      if (troom.status !== 'playing' || state.resolvingRound || state.currentPlayer + 1 !== playerSlot) return;
-      const winnerSlot = playerSlot === 1 ? 2 : 1;
-      notifyTTTRoomOver(troom, roomId, winnerSlot, 'timeout');
-    }, GRACE_DURATION);
-  }, TURN_DURATION);
-}
+function startTTTTurnTimer(troom, roomId) { runTurnClock('tictactoe', troom, roomId); }
 
-function clearQuoriTurnTimers(qroom) {
-  if (qroom.turnTimer)  { clearTimeout(qroom.turnTimer);  qroom.turnTimer  = null; }
-  if (qroom.graceTimer) { clearTimeout(qroom.graceTimer); qroom.graceTimer = null; }
-  qroom.turnStartTime = null; qroom.graceStartTime = null; qroom.turnPlayer = null;
-}
+function clearQuoriTurnTimers(qroom) { pauseTurnClock(qroom); }
 
 function quoriSnapshot(qroom) {
   const state = qroom.gameState || quoriInitialState();
@@ -1708,33 +1874,10 @@ const _quoriSyncLoop = setInterval(() => {
 }, DAMES_SYNC_INTERVAL);
 if (_quoriSyncLoop.unref) _quoriSyncLoop.unref();
 
-function startQuoriTurnTimer(qroom, roomId, playerSlot) {
-  clearQuoriTurnTimers(qroom);
-  if (qroom.status !== 'playing' || qroom.currentSlot !== playerSlot) return;
-  const now = Date.now();
-  qroom.turnPlayer = playerSlot; qroom.turnStartTime = now; qroom.graceStartTime = null;
-  io.to(roomId).emit('quoridor_turn_start', { player: playerSlot, startTime: now, duration: TURN_DURATION });
-  qroom.turnTimer = setTimeout(() => {
-    qroom.turnTimer = null;
-    if (qroom.status !== 'playing' || qroom.currentSlot !== playerSlot || qroom.turnPlayer !== playerSlot) return;
-    const graceNow = Date.now();
-    qroom.graceStartTime = graceNow;
-    io.to(roomId).emit('quoridor_turn_warning', { player: playerSlot, startTime: graceNow, duration: GRACE_DURATION });
-    qroom.graceTimer = setTimeout(() => {
-      qroom.graceTimer = null;
-      if (qroom.status !== 'playing' || qroom.currentSlot !== playerSlot || qroom.turnPlayer !== playerSlot) return;
-      const winnerSlot = playerSlot === 1 ? 2 : 1;
-      notifyQuoriRoomOver(qroom, roomId, winnerSlot, 'timeout');
-    }, GRACE_DURATION);
-  }, TURN_DURATION);
-}
+function startQuoriTurnTimer(qroom, roomId) { runTurnClock('quoridor', qroom, roomId); }
 
 // ── Morpion à cinq (30s + 60s Grâce, même règle que Quoridor) ──
-function clearGomokuTurnTimers(groom) {
-  if (groom.turnTimer)  { clearTimeout(groom.turnTimer);  groom.turnTimer  = null; }
-  if (groom.graceTimer) { clearTimeout(groom.graceTimer); groom.graceTimer = null; }
-  groom.turnStartTime = null; groom.graceStartTime = null; groom.turnPlayer = null;
-}
+function clearGomokuTurnTimers(groom) { pauseTurnClock(groom); }
 
 function gomokuSnapshot(groom) {
   const state = groom.gameState || gomokuInitialState();
@@ -1771,78 +1914,16 @@ const _gomokuSyncLoop = setInterval(() => {
 }, DAMES_SYNC_INTERVAL);
 if (_gomokuSyncLoop.unref) _gomokuSyncLoop.unref();
 
-function startGomokuTurnTimer(groom, roomId, playerSlot) {
-  clearGomokuTurnTimers(groom);
-  if (groom.status !== 'playing' || groom.currentSlot !== playerSlot) return;
-  const now = Date.now();
-  groom.turnPlayer = playerSlot; groom.turnStartTime = now; groom.graceStartTime = null;
-  io.to(roomId).emit('gomoku_turn_start', { player: playerSlot, startTime: now, duration: TURN_DURATION });
-  groom.turnTimer = setTimeout(() => {
-    groom.turnTimer = null;
-    if (groom.status !== 'playing' || groom.currentSlot !== playerSlot || groom.turnPlayer !== playerSlot) return;
-    const graceNow = Date.now();
-    groom.graceStartTime = graceNow;
-    io.to(roomId).emit('gomoku_turn_warning', { player: playerSlot, startTime: graceNow, duration: GRACE_DURATION });
-    groom.graceTimer = setTimeout(() => {
-      groom.graceTimer = null;
-      if (groom.status !== 'playing' || groom.currentSlot !== playerSlot || groom.turnPlayer !== playerSlot) return;
-      notifyGomokuRoomOver(groom, roomId, playerSlot === 1 ? 2 : 1, 'timeout');
-    }, GRACE_DURATION);
-  }, TURN_DURATION);
-}
+function startGomokuTurnTimer(groom, roomId) { runTurnClock('gomoku', groom, roomId); }
 
-// ── Penalty (15s + 60s Grace) ─────────────────────────────
-const PENALTY_TURN_DURATION  = 15 * 1000;
-const PENALTY_GRACE_DURATION = 60 * 1000;
+// ── Penalty : la même règle que les autres jeux (30 s + 60 s de grâce) ──
+// Les deux joueurs choisissent en même temps ; à l'échéance, celui qui n'a
+// pas choisi perd, et si aucun des deux n'a choisi la partie est annulée.
+const PENALTY_TURN_DURATION  = TURN_DURATION;
+const PENALTY_GRACE_DURATION = GRACE_DURATION;
 
-function clearPenaltyTurnTimers(proom) {
-  if (proom.turnTimer)  { clearTimeout(proom.turnTimer);  proom.turnTimer  = null; }
-  if (proom.graceTimer) { clearTimeout(proom.graceTimer); proom.graceTimer = null; }
-  proom.turnStartTime = null; proom.graceStartTime = null;
-}
-
-function startPenaltyTurnTimer(proom, roomId) {
-  clearPenaltyTurnTimers(proom);
-  if (proom.status !== 'playing') return;
-  const round = proom.currentRound;
-  const now = Date.now();
-  proom.turnStartTime = now; proom.graceStartTime = null;
-  io.to(roomId).emit('penalty_turn_start', { startTime: now, duration: PENALTY_TURN_DURATION });
-
-  proom.turnTimer = setTimeout(() => {
-    proom.turnTimer = null;
-    if (proom.status !== 'playing' || proom.currentRound !== round) return;
-
-    const hp1 = proom.choices[1] !== undefined;
-    const hp2 = proom.choices[2] !== undefined;
-
-    if (hp1 && hp2) {
-      resolvePenaltyRound(proom, roomId);
-      return;
-    }
-
-    const graceNow = Date.now();
-    proom.graceStartTime = graceNow;
-    io.to(roomId).emit('penalty_turn_warning', { startTime: graceNow, duration: PENALTY_GRACE_DURATION });
-
-    proom.graceTimer = setTimeout(() => {
-      proom.graceTimer = null;
-      if (proom.status !== 'playing' || proom.currentRound !== round) return;
-
-      const hp1Grace = proom.choices[1] !== undefined;
-      const hp2Grace = proom.choices[2] !== undefined;
-
-      if (!hp1Grace && !hp2Grace) {
-        finishBothDisconnected(proom, 'penalty', roomId);
-      } else if (hp1Grace && hp2Grace) {
-        resolvePenaltyRound(proom, roomId);
-      } else {
-        const winnerSlot = hp1Grace ? 1 : 2;
-        notifyPenaltyRoomOver(proom, roomId, winnerSlot, 'timeout');
-      }
-    }, PENALTY_GRACE_DURATION);
-  }, PENALTY_TURN_DURATION);
-}
+function clearPenaltyTurnTimers(proom) { pauseTurnClock(proom); }
+function startPenaltyTurnTimer(proom, roomId) { runTurnClock('penalty', proom, roomId); }
 
 // Manches réglementaires d'une séance de tirs au but. Six par défaut, comme
 // les autres jeux à manches : trois tirs chacun, le tireur alternant à chaque
@@ -1898,62 +1979,32 @@ function resolvePenaltyRound(proom, roomId) {
   }
 }
 
-// ── Chifoumi (15s + 60s Grace) ────────────────────────────
-const CHIFOUMI_TURN_DURATION  = 15 * 1000;
-const CHIFOUMI_GRACE_DURATION = 60 * 1000;
+// ── Chifoumi : la même règle que les autres jeux (30 s + 60 s de grâce) ──
+const CHIFOUMI_TURN_DURATION  = TURN_DURATION;
+const CHIFOUMI_GRACE_DURATION = GRACE_DURATION;
 // Server-authoritative reveal delay.  Clients receive this exact value with
 // the reveal event, so reconnecting players and spectators stay synchronized.
 const CHIFOUMI_REVEAL_DURATION = 3 * 1000;
 
 function clearChifoumiTurnTimers(croom) {
-  if (croom.turnTimer)  { clearTimeout(croom.turnTimer);  croom.turnTimer  = null; }
-  if (croom.graceTimer) { clearTimeout(croom.graceTimer); croom.graceTimer = null; }
+  pauseTurnClock(croom);
   if (croom.revealTimer) { clearTimeout(croom.revealTimer); croom.revealTimer = null; }
   if (croom.nextRoundTimer) { clearTimeout(croom.nextRoundTimer); croom.nextRoundTimer = null; }
   croom.revealPending = false;
-  croom.revealStartTime = null; croom.turnStartTime = null; croom.graceStartTime = null;
+  croom.revealStartTime = null;
 }
 
 function startChifoumiTurnTimer(croom, roomId) {
   if (croom.status !== 'playing' || croom.revealPending || croom.awaitingNextRound) return;
   clearChifoumiTurnTimers(croom);
-  const round = croom.currentRound;
-  const now = Date.now();
-  croom.turnStartTime = now; croom.graceStartTime = null;
+  runTurnClock('chifoumi', croom, roomId);
+}
 
-  io.to(roomId).emit('chifoumi_turn_start', { startTime: now, duration: CHIFOUMI_TURN_DURATION });
-
-  croom.turnTimer = setTimeout(() => {
-    croom.turnTimer = null;
-    if (croom.status !== 'playing' || croom.currentRound !== round || croom.revealPending || croom.awaitingNextRound) return;
-
-    const hp1 = croom.choices[1] !== undefined;
-    const hp2 = croom.choices[2] !== undefined;
-
-    if (hp1 && hp2) {
-      return;
-    }
-
-    const graceNow = Date.now();
-    croom.graceStartTime = graceNow;
-
-    io.to(roomId).emit('chifoumi_turn_warning', { startTime: graceNow, duration: CHIFOUMI_GRACE_DURATION });
-
-    croom.graceTimer = setTimeout(() => {
-      croom.graceTimer = null;
-      if (croom.status !== 'playing' || croom.currentRound !== round || croom.revealPending || croom.awaitingNextRound) return;
-      
-      const hp1Grace = croom.choices[1] !== undefined;
-      const hp2Grace = croom.choices[2] !== undefined;
-
-      if (!hp1Grace && !hp2Grace) {
-        finishBothDisconnected(croom, 'chifoumi', roomId);
-      } else {
-        const winnerSlot = hp1Grace ? 1 : 2;
-        notifyChifoumiRoomOver(croom, roomId, winnerSlot, 'timeout');
-      }
-    }, CHIFOUMI_GRACE_DURATION);
-  }, CHIFOUMI_TURN_DURATION);
+/** Reprise d'une manche de Chifoumi, là où elle en était. */
+function resumeChifoumiRound(croom, roomId) {
+  if (croom.awaitingNextRound === true) scheduleNextChifoumiRound(croom, roomId);
+  else if (croom.choices?.[1] !== undefined && croom.choices?.[2] !== undefined) scheduleChifoumiReveal(croom, roomId);
+  else startChifoumiTurnTimer(croom, roomId);
 }
 
 function chifoumiWinnerSlot(choice1, choice2) {
@@ -2259,27 +2310,33 @@ function clearTimersForGame(gameName, room) {
   else if (gameName === 'gomoku') clearGomokuTurnTimers(room);
 }
 
+// Reprise après une pause : le même tour continue avec le temps qu'il lui
+// restait ; le joueur chronométré est celui que le plateau désigne.
 function resumeTimersForGame(gameName, room) {
   if (!room || room.status !== 'playing') return;
-  if (gameName === 'dames') startDamesTurnTimer(room, room.id, room.pausedTurnPlayer || room.turnPlayer || (room.currentPlayer + 1) || 1);
-  else if (gameName === 'tictactoe') startTTTTurnTimer(room, room.id, room.pausedTurnPlayer || room.turnPlayer || ((room.gameState?.currentPlayer || 0) + 1));
-  else if (gameName === 'quoridor') startQuoriTurnTimer(room, room.id, room.pausedTurnPlayer || room.turnPlayer || room.currentSlot || 1);
-  else if (gameName === 'gomoku') startGomokuTurnTimer(room, room.id, room.pausedTurnPlayer || room.turnPlayer || room.currentSlot || 1);
-  else if (gameName === 'echecs') startEchecsTurnTimer(room, room.id, room.pausedTurnPlayer || room.turnPlayer || (room.currentPlayer + 1) || 1);
+  if (gameName === 'dames') startDamesTurnTimer(room, room.id);
+  else if (gameName === 'tictactoe') startTTTTurnTimer(room, room.id);
+  else if (gameName === 'quoridor') startQuoriTurnTimer(room, room.id);
+  else if (gameName === 'gomoku') startGomokuTurnTimer(room, room.id);
+  else if (gameName === 'echecs') startEchecsTurnTimer(room, room.id);
   else if (gameName === 'penalty') startPenaltyTurnTimer(room, room.id);
-  else if (gameName === 'chifoumi') {
-    if (room.awaitingNextRound === true) scheduleNextChifoumiRound(room, room.id);
-    else if (room.choices?.[1] !== undefined && room.choices?.[2] !== undefined) scheduleChifoumiReveal(room, room.id);
-    else startChifoumiTurnTimer(room, room.id);
-  } else if (gameName === 'ludo') startLudoTurnTimer(room, room.id);
+  else if (gameName === 'chifoumi') resumeChifoumiRound(room, room.id);
+  else if (gameName === 'ludo') startLudoTurnTimer(room, room.id);
 }
 
 function setTournamentRoomPaused(gameName, room, paused, revision) {
   if (!room || room.status === 'finished') return;
   room.tournamentPauseRevision = revision;
+  // Une partie pas encore commencée n'a rien à geler ni à reprendre. La
+  // passer en « paused » faisait prendre l'arrivée du second joueur pour une
+  // reconnexion : la partie ne démarrait jamais. (Pendant la pause, la base
+  // refuse de toute façon l'entrée dans la partie.)
+  if (room.status === 'waiting') {
+    room.adminPaused = paused;
+    return;
+  }
   if (paused) {
     room.adminPaused = true;
-    room.pausedTurnPlayer = room.turnPlayer || room.currentSlot || ((room.currentPlayer ?? 0) + 1) || 1;
     clearTimersForGame(gameName, room);
     if (room.disconnectTimer) { clearTimeout(room.disconnectTimer); room.disconnectTimer = null; }
     room.reconnectDeadline = null;
@@ -2297,6 +2354,7 @@ function setTournamentRoomPaused(gameName, room, paused, revision) {
       message: bothConnected ? 'Le tournoi reprend.' : 'Le tournoi reprend dès le retour des deux joueurs.'
     });
     if (bothConnected) resumeTimersForGame(gameName, room);
+    else if (TURN_GAMES[gameName]) followAbsentTurn(gameName, room, room.id);
   }
   persistRoomSoon(gameName, room);
 }
@@ -3354,14 +3412,16 @@ io.on('connection', (socket) => {
       const bothBack = p1?.connected && p2?.connected;
       if (bothBack && droom.disconnectTimer && !droom.adminPaused) {
         clearTimeout(droom.disconnectTimer); droom.disconnectTimer = null; droom.reconnectDeadline = null; droom.status = 'playing';
-        startDamesTurnTimer(droom, room, droom.pausedTurnPlayer || 1);
+        startDamesTurnTimer(droom, room);
         io.to(room).emit('dames_game_resumed', { message: 'Les deux joueurs sont de retour. La partie reprend !' });
         io.to(room).emit('dames_state_sync', damesSnapshot(droom));
       } else if (droom.disconnectTimer) {
+        followAbsentTurn('dames', droom, room);
         setTimeout(() => socket.emit('game:reconnect_deadline', { game: 'dames', serverTime: Date.now(), reconnectDeadline: droom.reconnectDeadline }), 0);
       }
       else if (!bothBack && !droom.adminPaused) {
         droom.status = 'playing';
+        startDamesTurnTimer(droom, room);
         const otherSlot = player === 1 ? 2 : 1;
         if (droom.players[otherSlot] && !droom.players[otherSlot].connected) {
           droom.disconnectTimer = setTimeout(() => {
@@ -3406,6 +3466,7 @@ io.on('connection', (socket) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return;
     const droom = damesRooms.get(room);
     if (!droom || droom.status !== 'playing' || droom.players[player]?.socketId !== socket.id) return;
+    if (turnExpiredOnArrival('dames', droom, room)) return;
     // Sur rejet, on renvoie l'état autoritatif après l'erreur : un client dont
     // le plateau a divergé (coup local appliqué mais refusé ici) se recale au
     // lieu de rester figé sur une position que le serveur ne connaît pas.
@@ -3480,14 +3541,16 @@ io.on('connection', (socket) => {
       const bothBack = p1?.connected && p2?.connected;
       if (bothBack && eroom.disconnectTimer && !eroom.adminPaused) {
         clearTimeout(eroom.disconnectTimer); eroom.disconnectTimer = null; eroom.reconnectDeadline = null; eroom.status = 'playing';
-        startEchecsTurnTimer(eroom, room, eroom.pausedTurnPlayer || eroom.currentPlayer + 1 || 1);
+        startEchecsTurnTimer(eroom, room);
         io.to(room).emit('echecs_game_resumed', { message: 'Les deux joueurs sont de retour. La partie reprend !' });
         io.to(room).emit('echecs_state_sync', echecsSnapshot(eroom));
       } else if (eroom.disconnectTimer) {
+        followAbsentTurn('echecs', eroom, room);
         setTimeout(() => socket.emit('game:reconnect_deadline', { game: 'echecs', serverTime: Date.now(), reconnectDeadline: eroom.reconnectDeadline }), 0);
       }
       else if (!bothBack && !eroom.adminPaused) {
         eroom.status = 'playing';
+        startEchecsTurnTimer(eroom, room);
         const otherSlot = player === 1 ? 2 : 1;
         if (eroom.players[otherSlot] && !eroom.players[otherSlot].connected) {
           eroom.disconnectTimer = setTimeout(() => {
@@ -3535,6 +3598,7 @@ io.on('connection', (socket) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return;
     const eroom = echecsRooms.get(room);
     if (!eroom || eroom.status !== 'playing' || eroom.players[player]?.socketId !== socket.id) return;
+    if (!eroom.clock && turnExpiredOnArrival('echecs', eroom, room)) return;
     // Sur rejet, on renvoie l'état autoritatif : un client dont le plateau a
     // divergé se recale au lieu de rester figé.
     if (eroom.currentPlayer !== player - 1) { noteRejectedChessMove(eroom, player, 'out_of_turn'); rejectSocket(socket, 'Ce n’est pas votre tour.'); return void socket.emit('echecs_state_sync', echecsSnapshot(eroom)); }
@@ -3623,13 +3687,15 @@ io.on('connection', (socket) => {
       const bothBack = p1?.connected && p2?.connected;
       if (bothBack && troom.disconnectTimer && !troom.adminPaused) {
         clearTimeout(troom.disconnectTimer); troom.disconnectTimer = null; troom.reconnectDeadline = null; troom.status = 'playing';
-        startTTTTurnTimer(troom, room, troom.pausedTurnPlayer || 1);
+        startTTTTurnTimer(troom, room);
         io.to(room).emit('ttt_game_resumed', { message: 'Les deux joueurs sont de retour. La partie reprend !' });
       } else if (troom.disconnectTimer) {
+        followAbsentTurn('tictactoe', troom, room);
         setTimeout(() => socket.emit('game:reconnect_deadline', { game: 'tictactoe', serverTime: Date.now(), reconnectDeadline: troom.reconnectDeadline }), 0);
       }
       else if (!bothBack && !troom.adminPaused) {
         troom.status = 'playing';
+        startTTTTurnTimer(troom, room);
         const otherSlot = player === 1 ? 2 : 1;
         if (troom.players[otherSlot] && !troom.players[otherSlot].connected) {
           troom.disconnectTimer = setTimeout(() => {
@@ -3683,6 +3749,7 @@ io.on('connection', (socket) => {
     };
     if (!troom || !state) return rejectMove('Partie Tic-Tac-Toe introuvable.');
     if (troom.status !== 'playing' || state.resolvingRound || troom.players[player]?.socketId !== socket.id) return rejectMove('Ce coup ne peut pas être joué maintenant.');
+    if (turnExpiredOnArrival('tictactoe', troom, room)) return;
     const expectedSymbol = state.slotSymbols?.[player] === 'O' ? 'O' : 'X', index = row * 3 + col;
     if (state.currentPlayer !== player - 1 || symbol !== expectedSymbol || state.board[index] !== null) return rejectMove('Coup Tic-Tac-Toe invalide.');
     clearTTTTurnTimers(troom);
@@ -3738,13 +3805,15 @@ io.on('connection', (socket) => {
         // Short inter-round pause: the next round is already scheduled.
       } else if (bothBack && qroom.disconnectTimer && !qroom.adminPaused) {
         clearTimeout(qroom.disconnectTimer); qroom.disconnectTimer = null; qroom.reconnectDeadline = null; qroom.status = 'playing';
-        startQuoriTurnTimer(qroom, room, qroom.pausedTurnPlayer || qroom.currentSlot || 1);
+        startQuoriTurnTimer(qroom, room);
         io.to(room).emit('quoridor_game_resumed', { message: 'Les deux joueurs sont de retour. La partie reprend !' });
       } else if (qroom.disconnectTimer) {
+        followAbsentTurn('quoridor', qroom, room);
         setTimeout(() => socket.emit('game:reconnect_deadline', { game: 'quoridor', serverTime: Date.now(), reconnectDeadline: qroom.reconnectDeadline }), 0);
       }
       else if (!bothBack && !qroom.adminPaused) {
         qroom.status = 'playing';
+        startQuoriTurnTimer(qroom, room);
         const otherSlot = player === 1 ? 2 : 1;
         if (qroom.players[otherSlot] && !qroom.players[otherSlot].connected) {
           qroom.disconnectTimer = setTimeout(() => {
@@ -3792,6 +3861,7 @@ io.on('connection', (socket) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return;
     const qroom = quoriRooms.get(room), state = qroom?.gameState;
     if (!qroom || !state || qroom.status !== 'playing' || qroom.players[player]?.socketId !== socket.id) return;
+    if (turnExpiredOnArrival('quoridor', qroom, room)) return;
     const rejectMove = message => {
       rejectSocket(socket, message);
       socket.emit('quoridor_state_sync', quoriSnapshot(qroom));
@@ -3852,13 +3922,15 @@ io.on('connection', (socket) => {
         // force a status change or start a forfeit clock during this brief window.
       } else if (bothBack && groom.disconnectTimer && !groom.adminPaused) {
         clearTimeout(groom.disconnectTimer); groom.disconnectTimer = null; groom.reconnectDeadline = null; groom.status = 'playing';
-        startGomokuTurnTimer(groom, room, groom.pausedTurnPlayer || groom.currentSlot || 1);
+        startGomokuTurnTimer(groom, room);
         io.to(room).emit('gomoku_game_resumed', { message: 'Les deux joueurs sont de retour. La partie reprend !' });
       } else if (groom.disconnectTimer) {
+        followAbsentTurn('gomoku', groom, room);
         setTimeout(() => socket.emit('game:reconnect_deadline', { game: 'gomoku', serverTime: Date.now(), reconnectDeadline: groom.reconnectDeadline }), 0);
       }
       else if (!bothBack && !groom.adminPaused) {
         groom.status = 'playing';
+        startGomokuTurnTimer(groom, room);
         const otherSlot = player === 1 ? 2 : 1;
         if (groom.players[otherSlot] && !groom.players[otherSlot].connected) {
           groom.disconnectTimer = setTimeout(() => {
@@ -3910,6 +3982,7 @@ io.on('connection', (socket) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return;
     const groom = gomokuRooms.get(room), state = groom?.gameState;
     if (!groom || !state || groom.status !== 'playing' || groom.players[player]?.socketId !== socket.id) return;
+    if (turnExpiredOnArrival('gomoku', groom, room)) return;
     const rejectMove = message => {
       rejectSocket(socket, message);
       socket.emit('gomoku_state_sync', gomokuSnapshot(groom));
@@ -3988,9 +4061,12 @@ io.on('connection', (socket) => {
         startPenaltyTurnTimer(proom, room);
         io.to(room).emit('penalty_game_resumed', { message: 'Les deux joueurs sont de retour. La partie reprend !' });
       } else if (proom.disconnectTimer) {
+        followAbsentTurn('penalty', proom, room);
         setTimeout(() => socket.emit('game:reconnect_deadline', { game: 'penalty', serverTime: Date.now(), reconnectDeadline: proom.reconnectDeadline }), 0);
-      } else if (!bothBack && !proom.adminPaused) {
+      }
+      else if (!bothBack && !proom.adminPaused) {
         proom.status = 'playing';
+        startPenaltyTurnTimer(proom, room);
         const otherSlot = player === 1 ? 2 : 1;
         if (proom.players[otherSlot] && !proom.players[otherSlot].connected) {
           proom.disconnectTimer = setTimeout(() => {
@@ -4014,8 +4090,8 @@ io.on('connection', (socket) => {
       
       if (proom.status === 'playing') {
         const now = Date.now();
-        if (proom.graceStartTime) { socket.emit('penalty_turn_sync', { serverTime: now, startTime: proom.graceStartTime, duration: PENALTY_GRACE_DURATION }); } 
-        else if (proom.turnStartTime) { socket.emit('penalty_turn_sync', { serverTime: now, startTime: proom.turnStartTime, duration: PENALTY_TURN_DURATION }); }
+        if (proom.graceStartTime) { socket.emit('penalty_turn_sync', { serverTime: now, startTime: proom.graceStartTime, graceStartTime: proom.graceStartTime, duration: PENALTY_GRACE_DURATION }); } 
+        else if (proom.turnStartTime) { socket.emit('penalty_turn_sync', { serverTime: now, startTime: proom.turnStartTime, turnStartTime: proom.turnStartTime, duration: PENALTY_TURN_DURATION }); }
       }
       return;
     }
@@ -4041,6 +4117,7 @@ io.on('connection', (socket) => {
     const proom = penaltyRooms.get(room);
     if (!proom || proom.status !== 'playing' || proom.currentRound !== round || proom.players[player]?.socketId !== socket.id) return;
     if (!Number.isInteger(zone) || zone < 0 || zone > 8 || proom.choices[player] !== undefined) return;
+    if (turnExpiredOnArrival('penalty', proom, room)) return;
     proom.choices[player] = zone;
     persistRoomSoon('penalty', proom);
     socket.to(room).emit('penalty_choice_received', { player });
@@ -4082,15 +4159,15 @@ io.on('connection', (socket) => {
       const bothBack = p1?.connected && p2?.connected;
       if (bothBack && croom.disconnectTimer && !croom.adminPaused) {
         clearTimeout(croom.disconnectTimer); croom.disconnectTimer = null; croom.reconnectDeadline = null; croom.status = 'playing';
-        if (croom.awaitingNextRound === true) scheduleNextChifoumiRound(croom, room);
-        else if (croom.choices[1] !== undefined && croom.choices[2] !== undefined) scheduleChifoumiReveal(croom, room);
-        else startChifoumiTurnTimer(croom, room);
+        resumeChifoumiRound(croom, room);
         io.to(room).emit('chifoumi_game_resumed', { message: 'Les deux joueurs sont de retour !' });
       } else if (croom.disconnectTimer) {
+        followAbsentTurn('chifoumi', croom, room);
         setTimeout(() => socket.emit('game:reconnect_deadline', { game: 'chifoumi', serverTime: Date.now(), reconnectDeadline: croom.reconnectDeadline }), 0);
       }
       else if (!bothBack && !croom.adminPaused) {
         croom.status = 'playing';
+        resumeChifoumiRound(croom, room);
         const otherSlot = player === 1 ? 2 : 1;
         if (croom.players[otherSlot] && !croom.players[otherSlot].connected) {
           croom.disconnectTimer = setTimeout(() => {
@@ -4125,8 +4202,8 @@ io.on('connection', (socket) => {
       
       if (croom.status === 'playing') {
         const now = Date.now();
-        if (croom.graceStartTime) { socket.emit('chifoumi_turn_sync', { serverTime: now, startTime: croom.graceStartTime, duration: CHIFOUMI_GRACE_DURATION }); }
-        else if (croom.turnStartTime) { socket.emit('chifoumi_turn_sync', { serverTime: now, startTime: croom.turnStartTime, duration: CHIFOUMI_TURN_DURATION }); }
+        if (croom.graceStartTime) { socket.emit('chifoumi_turn_sync', { serverTime: now, startTime: croom.graceStartTime, graceStartTime: croom.graceStartTime, duration: CHIFOUMI_GRACE_DURATION }); }
+        else if (croom.turnStartTime) { socket.emit('chifoumi_turn_sync', { serverTime: now, startTime: croom.turnStartTime, turnStartTime: croom.turnStartTime, duration: CHIFOUMI_TURN_DURATION }); }
       }
       return;
     }
@@ -4152,6 +4229,7 @@ io.on('connection', (socket) => {
     const croom = chifoumiRooms.get(room);
     if (!croom || croom.status !== 'playing' || croom.revealPending || croom.players[player]?.socketId !== socket.id) return;
     if (!['pierre', 'feuille', 'ciseaux'].includes(choice) || croom.choices[player] !== undefined) return;
+    if (turnExpiredOnArrival('chifoumi', croom, room)) return;
     croom.choices[player] = choice;
     persistRoomSoon('chifoumi', croom);
     socket.to(room).emit('chifoumi_opponent_choice', { player });
@@ -4440,9 +4518,9 @@ io.on('connection', (socket) => {
       const dcName = droom.players[disconnectedSlot]?.name || `Joueur ${disconnectedSlot}`;
       socket.to(roomId).emit('dames_player_status', { slot: disconnectedSlot, connected: false, name: dcName });
       socket.to(roomId).emit('dames_opponent_disconnected', { slot: disconnectedSlot, message: `${dcName} s'est déconnecté.` });
-      droom.pausedTurnPlayer = droom.turnPlayer || (droom.currentPlayer + 1) || 1;
       clearDamesTurnTimers(droom);
-      pauseAndWatch({ room: droom, roomId, gameName: 'dames', getP1: () => droom.players[1], getP2: () => droom.players[2], winFn: (winnerIsP1) => notifyDamesRoomOver(droom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startDamesTurnTimer(droom, roomId, droom.pausedTurnPlayer || 1) });
+      pauseAndWatch({ room: droom, roomId, gameName: 'dames', getP1: () => droom.players[1], getP2: () => droom.players[2], winFn: (winnerIsP1) => notifyDamesRoomOver(droom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startDamesTurnTimer(droom, roomId) });
+      followAbsentTurn('dames', droom, roomId);
       break;
     }
 
@@ -4456,9 +4534,9 @@ io.on('connection', (socket) => {
       const dcName = troom.players[disconnectedSlot]?.name || `Joueur ${disconnectedSlot}`;
       socket.to(roomId).emit('ttt_player_status', { slot: disconnectedSlot, connected: false, name: dcName });
       socket.to(roomId).emit('ttt_opponent_disconnected', { slot: disconnectedSlot, message: `${dcName} s'est déconnecté.` });
-      troom.pausedTurnPlayer = troom.turnPlayer || ((troom.gameState?.currentPlayer || 0) + 1);
       clearTTTTurnTimers(troom);
-      pauseAndWatch({ room: troom, roomId, gameName: 'tictactoe', getP1: () => troom.players[1], getP2: () => troom.players[2], winFn: (winnerIsP1) => notifyTTTRoomOver(troom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startTTTTurnTimer(troom, roomId, troom.pausedTurnPlayer || 1) });
+      pauseAndWatch({ room: troom, roomId, gameName: 'tictactoe', getP1: () => troom.players[1], getP2: () => troom.players[2], winFn: (winnerIsP1) => notifyTTTRoomOver(troom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startTTTTurnTimer(troom, roomId) });
+      followAbsentTurn('tictactoe', troom, roomId);
       break;
     }
 
@@ -4472,9 +4550,9 @@ io.on('connection', (socket) => {
       const dcName = qroom.players[disconnectedSlot]?.name || `Joueur ${disconnectedSlot}`;
       socket.to(roomId).emit('quoridor_player_status', { slot: disconnectedSlot, connected: false, name: dcName });
       socket.to(roomId).emit('quoridor_opponent_disconnected', { slot: disconnectedSlot, message: `${dcName} s'est déconnecté.` });
-      qroom.pausedTurnPlayer = qroom.turnPlayer || qroom.currentSlot || 1;
       clearQuoriTurnTimers(qroom);
-      pauseAndWatch({ room: qroom, roomId, gameName: 'quoridor', getP1: () => qroom.players[1], getP2: () => qroom.players[2], winFn: (winnerIsP1) => notifyQuoriRoomOver(qroom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startQuoriTurnTimer(qroom, roomId, qroom.pausedTurnPlayer || 1) });
+      pauseAndWatch({ room: qroom, roomId, gameName: 'quoridor', getP1: () => qroom.players[1], getP2: () => qroom.players[2], winFn: (winnerIsP1) => notifyQuoriRoomOver(qroom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startQuoriTurnTimer(qroom, roomId) });
+      followAbsentTurn('quoridor', qroom, roomId);
       break;
     }
 
@@ -4488,9 +4566,9 @@ io.on('connection', (socket) => {
       const dcName = groom.players[disconnectedSlot]?.name || `Joueur ${disconnectedSlot}`;
       socket.to(roomId).emit('gomoku_player_status', { slot: disconnectedSlot, connected: false, name: dcName });
       socket.to(roomId).emit('gomoku_opponent_disconnected', { slot: disconnectedSlot, message: `${dcName} s'est déconnecté.` });
-      groom.pausedTurnPlayer = groom.turnPlayer || groom.currentSlot || 1;
       clearGomokuTurnTimers(groom);
-      pauseAndWatch({ room: groom, roomId, gameName: 'gomoku', getP1: () => groom.players[1], getP2: () => groom.players[2], winFn: (winnerIsP1) => notifyGomokuRoomOver(groom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startGomokuTurnTimer(groom, roomId, groom.pausedTurnPlayer || 1) });
+      pauseAndWatch({ room: groom, roomId, gameName: 'gomoku', getP1: () => groom.players[1], getP2: () => groom.players[2], winFn: (winnerIsP1) => notifyGomokuRoomOver(groom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startGomokuTurnTimer(groom, roomId) });
+      followAbsentTurn('gomoku', groom, roomId);
       break;
     }
 
@@ -4511,6 +4589,7 @@ io.on('connection', (socket) => {
         winFn: (winnerIsP1) => notifyPenaltyRoomOver(proom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'),
         onResume: () => startPenaltyTurnTimer(proom, roomId)
       });
+      followAbsentTurn('penalty', proom, roomId);
       break;
     }
 
@@ -4529,12 +4608,9 @@ io.on('connection', (socket) => {
         room: croom, roomId, gameName: 'chifoumi',
         getP1: () => croom.players[1], getP2: () => croom.players[2],
         winFn: (winnerIsP1) => notifyChifoumiRoomOver(croom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'),
-        onResume: () => {
-          if (croom.awaitingNextRound === true) scheduleNextChifoumiRound(croom, roomId);
-          else if (croom.choices[1] !== undefined && croom.choices[2] !== undefined) scheduleChifoumiReveal(croom, roomId);
-          else startChifoumiTurnTimer(croom, roomId);
-        }
+        onResume: () => resumeChifoumiRound(croom, roomId)
       });
+      followAbsentTurn('chifoumi', croom, roomId);
       break;
     }
 
@@ -4548,9 +4624,9 @@ io.on('connection', (socket) => {
       const dcName = eroom.players[disconnectedSlot]?.name || `Joueur ${disconnectedSlot}`;
       socket.to(roomId).emit('echecs_player_status', { slot: disconnectedSlot, connected: false, name: dcName });
       socket.to(roomId).emit('echecs_opponent_disconnected', { slot: disconnectedSlot, message: `${dcName} s'est déconnecté.` });
-      eroom.pausedTurnPlayer = eroom.turnPlayer || (eroom.currentPlayer + 1) || 1;
       clearEchecsTurnTimers(eroom);
-      pauseAndWatch({ room: eroom, roomId, gameName: 'echecs', getP1: () => eroom.players[1], getP2: () => eroom.players[2], winFn: (winnerIsP1) => notifyEchecsRoomOver(eroom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startEchecsTurnTimer(eroom, roomId, eroom.pausedTurnPlayer || 1) });
+      pauseAndWatch({ room: eroom, roomId, gameName: 'echecs', getP1: () => eroom.players[1], getP2: () => eroom.players[2], winFn: (winnerIsP1) => notifyEchecsRoomOver(eroom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startEchecsTurnTimer(eroom, roomId) });
+      followAbsentTurn('echecs', eroom, roomId);
       break;
     }
 

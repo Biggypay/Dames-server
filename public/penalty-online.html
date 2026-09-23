@@ -318,7 +318,7 @@ if (IS_SPECTATOR) try { document.body.classList.add('spectator'); } catch (_) {}
    CONSTANTES
 ══════════════════════════════════════ */
 var TOTAL_ROUNDS    = 6;
-var TIMER_DURATION  = 15000;   /* 15s par manche (sync avec serveur) */
+var TIMER_DURATION  = 30000;   /* 30 s par manche ; la durée envoyée par le serveur fait foi */
 var CIRC            = 2 * Math.PI * 26;
 var SPOT_GK_ANGLE   = [0, -0.75, 0.75];
 
@@ -467,7 +467,7 @@ function initSocket() {
     if (snapshot.state.graceStartTime || snapshot.state.turnStartTime) {
       var offset = Date.now() - (snapshot.serverTime || Date.now());
       if (snapshot.state.graceStartTime) startGraceTimer(snapshot.state.graceStartTime + offset, snapshot.state.graceDuration || 60000);
-      else startTimer(snapshot.state.turnStartTime + offset);
+      else startTimer(snapshot.state.turnStartTime + offset, snapshot.state.turnDuration);
     }
   });
 
@@ -578,10 +578,10 @@ function initSocket() {
   /* ── Sync timer du serveur ── */
   socket.on('penalty_turn_start', function(data) {
     if (gameOver) return;
-    pendingTimerData = { type: 'turn_start', startTime: data.startTime };
+    pendingTimerData = { type: 'turn_start', startTime: data.startTime, duration: data.duration };
     if (!gameReady || phase !== 'choosing') return;
     pendingTimerData = null;
-    startTimer(data.startTime);
+    startTimer(data.startTime, data.duration);
   });
 
   socket.on('penalty_turn_warning', function(data) {
@@ -601,7 +601,7 @@ function initSocket() {
     if (data.graceStartTime) {
         startGraceTimer(data.graceStartTime + offset, data.duration || 60000);
     } else if (data.turnStartTime) {
-        startTimer(data.turnStartTime + offset);
+        startTimer(data.turnStartTime + offset, data.duration);
     }
   });
 
@@ -756,12 +756,12 @@ function syncTimerFromServer(serverStartTime, duration) {
   }, 50);
 }
 
-function startTimer(serverStartTime) {
+function startTimer(serverStartTime, duration) {
   stopGraceTimer(); stopLocalTimer();
   if (gameOver || phase !== 'choosing') return;
   
   localTimerStart = serverStartTime || Date.now();
-  localTimerDuration = TIMER_DURATION;
+  localTimerDuration = duration || TIMER_DURATION;
   document.getElementById('profile-me').classList.add('active', 'choosing');
   document.getElementById('profile-op').classList.add('active', 'choosing');
   
@@ -1135,9 +1135,9 @@ function applyPendingTimer() {
   if (data.type === 'sync') {
     var offset = Date.now() - (data.serverTime || Date.now());
     if (data.graceStartTime) return startGraceTimer(data.graceStartTime + offset, data.duration || 60000);
-    if (data.turnStartTime) return startTimer(data.turnStartTime + offset);
+    if (data.turnStartTime) return startTimer(data.turnStartTime + offset, data.duration);
   }
-  if (data.startTime) startTimer(data.startTime);
+  if (data.startTime) startTimer(data.startTime, data.duration);
 }
 
 function hideZones() {
