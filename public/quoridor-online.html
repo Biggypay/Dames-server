@@ -261,8 +261,10 @@ function applyProfiles() {
   var opEl = document.getElementById('name-op'); if (opEl) opEl.textContent = opName;
   var meAvatar = MY_SLOT === 1 ? P1_AVATAR : P2_AVATAR;
   var opAvatar = MY_SLOT === 1 ? P2_AVATAR : P1_AVATAR;
-  setProfilePhoto('avatar-me', meAvatar, 'av-w');
-  setProfilePhoto('avatar-op', opAvatar, 'av-r');
+  /* Slot 1 = blanc, slot 2 = rouge : la pastille de repli suit la couleur
+     jouée, pas la place à l'écran. */
+  setProfilePhoto('avatar-me', meAvatar, MY_SLOT === 2 ? 'av-r' : 'av-w');
+  setProfilePhoto('avatar-op', opAvatar, MY_SLOT === 2 ? 'av-w' : 'av-r');
 }
 
 /* Marque le corps de page comme « spectateur ». La classe survit a
@@ -1029,6 +1031,10 @@ function initSocket() {
     reconnectionDelayMax: 5000,
     timeout: 20000
   });
+  /* Publiée pour les scripts annexes de la page : l'overlay de pause de
+     tournoi (tournament-pause-client.js) n'a pas accès à cette variable. */
+  window.mindspilleSocket = socket;
+  try { window.dispatchEvent(new Event('mindspille:socket')); } catch (_) {}
 
   socket.on('connect', function() {
     document.getElementById('reconn-bar').classList.remove('show');
@@ -1189,7 +1195,7 @@ function initSocket() {
       if (socket && socket.connected) socket.emit('quoridor_request_state', { room: ROOM_ID });
 
     } else {
-      startNewGame();
+      startNewGame(data.currentSlot);
     }
 
     if (data.reconnected && data.turnPlayer !== null && data.turnPlayer !== undefined) {
@@ -1320,8 +1326,10 @@ socket.on('quoridor_move', function(data) {
 /* ══════════════════════════════════════════
    DÉMARRAGE NOUVELLE PARTIE
 ══════════════════════════════════════════ */
-function startNewGame() {
+function startNewGame(starter) {
   initGame();   
+  /* Le serveur tire au sort qui ouvre la partie : ce n'est pas toujours Blanc. */
+  if (starter === 1 || starter === 2) currentSlot = starter;
   vmoves = []; vhw = []; vvw = [];
 
   applyProfiles();
@@ -1334,12 +1342,14 @@ function startNewGame() {
     document.getElementById('goal-op').textContent = '▲ OBJ';
   }
 
-  document.getElementById('dot-me').className = IS_P1 ? 'av-w' : 'av-r';
-  document.getElementById('dot-op').className = IS_P1 ? 'av-r' : 'av-w';
+  /* La pastille — ou la photo — de chaque joueur est posée par
+     applyProfiles(), à sa couleur. Elle n'a plus d'id : la retoucher ici
+     interrompait le démarrage de la partie (pas de « Partie commencée »). */
   document.getElementById('arc-me').setAttribute('stroke', IS_P1 ? '#e2e8f0' : '#f87171');
   document.getElementById('arc-op').setAttribute('stroke', IS_P1 ? '#f87171' : '#e2e8f0');
 
-  var whoStarts = MY_SLOT === 1 ? 'Vous commencez (Blanc)' : OP_NAME + ' commence (Blanc)';
+  var starterColor = currentSlot === 1 ? 'Blanc' : 'Rouge';
+  var whoStarts = currentSlot === MY_SLOT ? 'Vous commencez (' + starterColor + ')' : OP_NAME + ' commence (' + starterColor + ')';
   showToast('🎲', 'Partie commencée', whoStarts, 2400, function() {
     gameReady = true;
     updUI();

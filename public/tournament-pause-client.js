@@ -1,5 +1,15 @@
 (function () {
-  if (typeof socket === 'undefined' || !socket || typeof socket.on !== 'function') return;
+  /* La prise Socket.IO de la page. Cinq pages sur sept la déclarent dans une
+     fonction, hors de portée de ce script : chacune la publie donc dans
+     window.mindspilleSocket et le signale (« mindspille:socket »). Le Chifoumi
+     ne la crée qu'au chargement complet, après ce script : d'où l'écoute. */
+  var attached = [];
+  function attach(candidate) {
+    if (!candidate || typeof candidate.on !== 'function' || attached.indexOf(candidate) !== -1) return;
+    attached.push(candidate);
+    candidate.on('tournament:paused', showOverlay);
+    candidate.on('tournament:resumed', removeOverlay);
+  }
 
   function removeOverlay() {
     var overlay = document.getElementById('mindspille-tournament-pause');
@@ -15,7 +25,7 @@
     overlay.innerHTML = '<div class="mindspille-pause-card">'
       + '<div class="mindspille-pause-icon">Ⅱ</div>'
       + '<strong>Tournoi en pause</strong>'
-      + '<p>' + ((payload && payload.message) || 'Le plateau est conservé exactement dans son état actuel.') + '</p>'
+      + '<p></p>'
       + '<small>La partie reprendra automatiquement après la décision de l’administration.</small>'
       + '</div>';
     var style = document.createElement('style');
@@ -23,12 +33,14 @@
       + '.mindspille-pause-card{width:min(420px,100%);padding:28px 24px;text-align:center;color:#fff;border:1px solid rgba(251,191,36,.38);border-radius:24px;background:linear-gradient(145deg,rgba(30,41,59,.84),rgba(15,23,42,.68));box-shadow:0 24px 80px rgba(0,0,0,.48),inset 0 1px rgba(255,255,255,.12);font-family:system-ui,sans-serif}'
       + '.mindspille-pause-icon{width:54px;height:54px;margin:0 auto 14px;display:grid;place-items:center;border-radius:50%;color:#fcd34d;background:rgba(245,158,11,.16);border:1px solid rgba(251,191,36,.35);font-size:25px;font-weight:800}'
       + '.mindspille-pause-card strong{display:block;font-size:20px}.mindspille-pause-card p{margin:10px 0 6px;color:rgba(255,255,255,.78);line-height:1.45}.mindspille-pause-card small{color:rgba(255,255,255,.5);line-height:1.4}';
+    overlay.querySelector('p').textContent = (payload && payload.message) || 'Le plateau est conservé exactement dans son état actuel.';
     overlay.appendChild(style);
     document.body.appendChild(overlay);
   }
 
-  socket.on('tournament:paused', showOverlay);
-  socket.on('tournament:resumed', removeOverlay);
+  if (typeof socket !== 'undefined') attach(socket);
+  attach(window.mindspilleSocket);
+  window.addEventListener('mindspille:socket', function () { attach(window.mindspilleSocket); });
 })();
 
 /*

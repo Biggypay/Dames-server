@@ -781,6 +781,10 @@ function initSocket() {
     reconnectionDelayMax: 5000,
     timeout: 20000
   });
+  /* Publiée pour les scripts annexes de la page : l'overlay de pause de
+     tournoi (tournament-pause-client.js) n'a pas accès à cette variable. */
+  window.mindspilleSocket = socket;
+  try { window.dispatchEvent(new Event('mindspille:socket')); } catch (_) {}
 
   socket.on('connect', function () {
     document.getElementById('reconn-bar').classList.remove('show');

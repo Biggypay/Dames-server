@@ -362,6 +362,10 @@ function initSocket(){
   if(lt) lt.textContent = IS_SPECTATOR ? 'CONNEXION AU DIRECT 3D…' : 'ROOM: '+(ROOM_ID||'MANQUANT')+' | SLOT: '+MY_SLOT;
 
   socket = io({ transports:['websocket','polling'], reconnection:true, auth:{ token:IS_SPECTATOR ? SPECTATOR_TOKEN : GAME_AUTH_TOKEN } });
+  /* Publiée pour les scripts annexes de la page : l'overlay de pause de
+     tournoi (tournament-pause-client.js) n'a pas accès à cette variable. */
+  window.mindspilleSocket = socket;
+  try { window.dispatchEvent(new Event('mindspille:socket')); } catch (_) {}
 
   socket.on('connect', function(){
     document.getElementById('reconn-bar').classList.remove('show');

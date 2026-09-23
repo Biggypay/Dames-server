@@ -2935,6 +2935,15 @@ app.get('/mindspille-split.js', (req, res) => {
   res.sendFile(path.join(PUBLIC, 'mindspille-split.js'));
 });
 
+// Pause de tournoi (overlay « Tournoi en pause ») et garde-fou de synchronisation
+// du Quoridor en ligne. Les sept pages multijoueur l'incluent ; sans cette route
+// il répondait 404 et ni l'un ni l'autre ne s'exécutait.
+app.get('/tournament-pause-client.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(PUBLIC, 'tournament-pause-client.js'));
+});
+
 // Moteur d'échecs partagé : servi depuis la même origine (pages 3D + Worker IA).
 app.get(['/echecs-engine.js', '/chess-engine.js'], (req, res) => {
   res.setHeader('Content-Type', 'application/javascript; charset=utf-8');

@@ -392,6 +392,10 @@ function initSocket() {
     reconnectionDelayMax: 5000,
     timeout: 20000
   });
+  /* Publiée pour les scripts annexes de la page : l'overlay de pause de
+     tournoi (tournament-pause-client.js) n'a pas accès à cette variable. */
+  window.mindspilleSocket = socket;
+  try { window.dispatchEvent(new Event('mindspille:socket')); } catch (_) {}
 
   /* Tournament rows can exist before both players create the server room. */
   var SPECT_RETRY_MAX_DELAY = 6000;
@@ -1098,7 +1102,7 @@ function showZones() {
   sb.textContent = iamShooter ? '⚽ Choisissez votre zone de tir' : '🧤 Choisissez votre zone de parade';
   render();
   
-  if (!pendingTimerData) startLocalTimer(); // Start local only if no server sync is pending
+  if (!pendingTimerData) startTimer(); // Start local only if no server sync is pending
 }
 
 function restoreRoundSelection(choice, opponentHasChosen) {

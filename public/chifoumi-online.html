@@ -614,6 +614,9 @@ var MAX_ROUNDS  = 5;
 ══════════════════════════════════════════ */
 var playerScore = 0, opScore = 0;
 var currentRound = 1;
+/* Manche décisive, quand les manches prévues finissent à égalité : c'est le
+   serveur qui le dit (chifoumi_start, chifoumi_round_ready). */
+var isTiebreaker = false;
 var gameOver = false, gameReady = false, resultSent = false;
 var playerLocked = false, roundInProgress = false;
 var playerChoice = null, opponentChoice = null;
@@ -765,6 +768,10 @@ function initSocket() {
   if (lt) lt.textContent = IS_SPECTATOR ? 'CONNEXION AU DIRECT…' : 'ROOM: ' + (ROOM_ID || 'MANQUANT') + ' | SLOT: ' + MY_SLOT;
 
   socket = io({ transports: ['websocket','polling'], reconnection: true, auth: { token: IS_SPECTATOR ? SPECTATOR_TOKEN : GAME_AUTH_TOKEN } });
+  /* Publiée pour les scripts annexes de la page : l'overlay de pause de
+     tournoi (tournament-pause-client.js) n'a pas accès à cette variable. */
+  window.mindspilleSocket = socket;
+  try { window.dispatchEvent(new Event('mindspille:socket')); } catch (_) {}
 
   /* Tournament rows can exist before both players create the server room. */
   var SPECT_RETRY_MAX_DELAY = 6000;
@@ -855,6 +862,7 @@ function initSocket() {
   /* ── Partie démarrée ── */
   socket.on('chifoumi_start', function(data) {
     if (data && Number(data.totalRounds) > 0) MAX_ROUNDS = Number(data.totalRounds);
+    ensureRoundDots();
     if (data && data.gameState) isTiebreaker = data.gameState.isTiebreaker === true;
     hideLoading();
     waitingOverlay.classList.remove('show');
@@ -1009,6 +1017,7 @@ function initSocket() {
   socket.on('chifoumi_round_ready', function(data) {
     if (gameOver || !data) return;
     var nextRound = Number(data.round) || currentRound;
+    isTiebreaker = data.isTiebreaker === true;
     if (!IS_SPECTATOR && currentRound === nextRound && roundInProgress) return;
     currentRound = nextRound;
     if (IS_SPECTATOR) startSpectatorRound();
@@ -1319,6 +1328,16 @@ function showResult(result, myC, opC) {
 
 function addToHistory(result, myC, opC) { roundHistory.push({ round: currentRound, result: result, playerChoice: myC, opponentChoice: opC }); }
 function updateProgress(result) { var dots = roundsProgress.querySelectorAll('.round-dot'); if (dots[currentRound - 1]) dots[currentRound - 1].classList.add('played', result); }
+/* Autant de repères que de manches annoncées par le serveur : la page en
+   dessinait cinq en dur, et la sixième manche n'apparaissait nulle part. */
+function ensureRoundDots() {
+  var dots = roundsProgress.querySelectorAll('.round-dot');
+  for (var i = dots.length; i < MAX_ROUNDS; i++) {
+    var dot = document.createElement('div'); dot.className = 'round-dot'; roundsProgress.appendChild(dot);
+  }
+  for (var j = dots.length - 1; j >= MAX_ROUNDS; j--) dots[j].remove();
+}
+
 function rebuildProgressDots() {
   var dots = roundsProgress.querySelectorAll('.round-dot'); dots.forEach(function(d){ d.className = 'round-dot'; });
   roundHistory.forEach(function(h) { if (dots[h.round-1]) dots[h.round-1].classList.add('played', h.result); });
@@ -1423,7 +1442,7 @@ function startNewGame() {
   document.getElementById('playerScore').textContent = '0'; document.getElementById('aiScore').textContent = '0';
   var dots = roundsProgress.querySelectorAll('.round-dot'); dots.forEach(function(d){ d.className = 'round-dot'; });
   updUI();
-  showToast('🎲','Partie commencée', BET_AMOUNT > 0 ? 'Mise : ' + BET_AMOUNT + ' ' + CURRENCY : '5 manches !', 2000, function() {
+  showToast('🎲','Partie commencée', BET_AMOUNT > 0 ? 'Mise : ' + BET_AMOUNT + ' ' + CURRENCY : MAX_ROUNDS + ' manches !', 2000, function() {
     gameReady = true; startRound();
   });
 }
