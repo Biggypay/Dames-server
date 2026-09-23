@@ -175,6 +175,33 @@ async function quoridor(browser, game) {
     check('Quoridor : le joueur voit son propre coup confirmé, sans retour en arrière', moverSynced === true);
   }
 
+  /* Une manche entière, jusqu'à la ligne d'arrivée : chacun avance au plus
+     court. La manche suivante appelait `applyServerState`, recopiée du
+     Morpion à cinq mais absente de cette page — une exception à chaque
+     nouvelle manche de la série. */
+  const roundOver = () => Promise.all(match.pages.map(p => p.evaluate(() => seriesState.roundsPlayed >= 1)));
+  for (let turn = 0; turn < 60 && !(await roundOver()).every(Boolean); turn++) {
+    const states = await Promise.all(match.pages.map(p => p.evaluate(() => ({ ready: gameReady, slot: currentSlot, mine: MY_SLOT, waiting: isProcessing }))));
+    const active = match.pages.find((p, i) => states[i].ready && states[i].slot === states[i].mine && !states[i].waiting);
+    if (!active) { await sleep(150); continue; }
+    await active.evaluate(() => {
+      if (mode !== 'move' || !vmoves.length) return;
+      const goal = MY_SLOT === 1 ? 0 : 8;
+      const best = vmoves.slice().sort((a, b) => Math.abs(a.r - goal) - Math.abs(b.r - goal))[0];
+      let x = cx(best.c) + CS / 2, y = cy(best.r) + CS / 2;
+      if (MY_SLOT === 2) { x = canvas.width - x; y = canvas.height - y; }
+      handleTap({ x, y });
+    });
+    await sleep(250);
+  }
+  check('Quoridor : une manche se joue jusqu à la ligne d arrivée', (await roundOver()).every(Boolean));
+  const secondRound = await waitFor(async () => (await Promise.all(match.pages.map(p => p.evaluate(() =>
+    gameReady && seriesState.currentRound === 2 && s1Pos.r === 8 && s2Pos.r === 0)))).every(Boolean), 12000);
+  check('Quoridor : la manche 2 repart d un plateau neuf chez les deux joueurs', secondRound === true);
+  const finalModal = await Promise.all(match.pages.map(p => p.evaluate(() =>
+    document.getElementById('gameOverModal').classList.contains('show'))));
+  check('Quoridor : perdre une manche n ouvre pas l écran de fin de match', finalModal.every(shown => !shown), finalModal);
+
   return match;
 }
 

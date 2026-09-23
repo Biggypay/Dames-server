@@ -41,7 +41,7 @@ body.chrome-hidden #bot,body.chrome-hidden #hint{display:none!important}
 .profile-name{font-family:'Cinzel',serif;font-size:9px;letter-spacing:1.5px;color:rgba(255,255,255,0.45);text-transform:uppercase;transition:color 0.3s;text-align:center;max-width:72px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:4px}
 .profile.active .profile-name{color:rgba(255,255,255,0.9)}
 
-.top-center{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px}
+.top-center{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:2px}
 
 .score-row{display:flex;gap:8px;align-items:center}
 .snum{font-family:'Cinzel',serif;font-size:20px;font-weight:700}
@@ -49,8 +49,8 @@ body.chrome-hidden #bot,body.chrome-hidden #hint{display:none!important}
 .manche-lbl{font-size:9px;color:rgba(255,255,255,.35);letter-spacing:1px}
 
 /* ── PROGRESSION DES MANCHES (Style Chifoumi — barres linéaires) ── */
-.rounds-progress{display:flex;gap:6px;margin-top:5px}
-.round-dot{width:30px;height:6px;border-radius:3px;background:rgba(255,255,255,0.08);transition:all 0.3s ease}
+.rounds-progress{display:flex;gap:6px;margin-top:5px;max-width:100%}
+.round-dot{width:30px;flex:0 1 30px;min-width:8px;height:6px;border-radius:3px;background:rgba(255,255,255,0.08);transition:all 0.3s ease}
 .round-dot.played{background:rgba(255,255,255,0.2)}
 .round-dot.win{background:#22c55e}
 .round-dot.lose{background:#ef4444}
@@ -1529,5 +1529,6 @@ initSocket();
 </script>
 <script src="/tournament-pause-client.js"></script>
 <script src="/mindspille-split.js"></script>
+<script src="/mindspille-chat.js"></script>
 </body>
 </html>

@@ -39,15 +39,16 @@ body.chrome-hidden #bot{display:none!important}
 .profile-name{font-family:'Cinzel',serif;font-size:9px;letter-spacing:1.5px;color:rgba(255,255,255,0.8);text-transform:uppercase;text-align:center;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:4px}
 .goal-hint{font-size:8px;letter-spacing:1px;color:rgba(255,255,255,0.4);min-height:12px;text-align:center}
 
-.top-center{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px}
+.top-center{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:2px}
 .top-center h1{font-size:17px;font-weight:900;letter-spacing:4px;color:#fbbf24;text-shadow:0 0 20px rgba(251,191,36,0.5)}
 .top-center .sub{font-size:8px;color:rgba(255,255,255,0.3);letter-spacing:2px}
+@media (max-width:340px){.top-center h1{font-size:15px;letter-spacing:2px}}
 
 /* Badge de mise détaché */
 .bet-badge{font-size:9px;background:rgba(251,191,36,0.15);border:1px solid rgba(251,191,36,0.4);border-radius:99px;padding:2px 8px;color:#fbbf24;font-weight:600;letter-spacing:0.5px;margin-top:10px}
 
-.rounds-progress{display:flex;gap:5px;margin-top:5px;align-items:center;justify-content:center}
-.round-dot{width:24px;height:5px;border-radius:3px;background:rgba(255,255,255,.09);transition:all .25s ease}
+.rounds-progress{display:flex;gap:5px;margin-top:5px;align-items:center;justify-content:center;max-width:100%}
+.round-dot{width:24px;flex:0 1 24px;min-width:8px;height:5px;border-radius:3px;background:rgba(255,255,255,.09);transition:all .25s ease}
 .round-dot.win{background:#22c55e}.round-dot.lose{background:#ef4444}.round-dot.draw{background:#fbbf24}.round-dot.current{background:rgba(255,255,255,.42);box-shadow:0 0 7px rgba(255,255,255,.45)}
 /* ── CANVAS ── */
 #canvasWrap{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:6px;width:100%;position:relative}
@@ -1234,7 +1235,7 @@ function initSocket() {
   });
 
   socket.on('quoridor_round_end',function(data){if(!data)return;if(data.series)updateSeriesUI(data.series);gameReady=false;stopTimer();stopGraceTimer();var mine=data.roundWinner===MY_SLOT,drawn=!data.roundWinner,sc=seriesState.wins||{1:0,2:0};showToast(drawn?'🤝':mine?'🏆':'🎯',drawn?'Manche nulle':mine?'Manche gagnée':'Manche perdue','Score : '+(sc[MY_SLOT]||0)+' — '+(sc[MY_SLOT===1?2:1]||0),1700);});
-socket.on('quoridor_round_start',function(data){if(!data||gameOver)return;if(data.series)updateSeriesUI(data.series);var st=data.gameState;if(typeof st==='string'){try{st=JSON.parse(st);}catch(e){st=null;}}if(st)applyServerState(st,typeof data.version==='number'?data.version:null,true);gameReady=true;updUI();draw();});
+socket.on('quoridor_round_start',function(data){if(!data||gameOver)return;if(data.series)updateSeriesUI(data.series);var st=data.gameState;if(typeof st==='string'){try{st=JSON.parse(st);}catch(e){st=null;}}if(st)applyAuthoritativeState({gameState:st,version:typeof data.version==='number'?data.version:undefined});gameReady=true;updUI();draw();});
 
 socket.on('quoridor_move', function(data) {
     if (IS_SPECTATOR) { applySpectatorState(data.gameState); return; }
@@ -1383,5 +1384,6 @@ window.addEventListener('resize', function() {
 </script>
 <script src="/tournament-pause-client.js"></script>
 <script src="/mindspille-split.js"></script>
+<script src="/mindspille-chat.js"></script>
 </body>
 </html>

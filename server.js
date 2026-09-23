@@ -2935,6 +2935,14 @@ app.get('/mindspille-split.js', (req, res) => {
   res.sendFile(path.join(PUBLIC, 'mindspille-split.js'));
 });
 
+// Messagerie de partie : le bouton du plateau (2e de la barre du bas) et sa
+// pastille de messages non lus. La conversation vit dans l'application.
+app.get('/mindspille-chat.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(PUBLIC, 'mindspille-chat.js'));
+});
+
 // Pause de tournoi (overlay « Tournoi en pause ») et garde-fou de synchronisation
 // du Quoridor en ligne. Les sept pages multijoueur l'incluent ; sans cette route
 // il répondait 404 et ni l'un ni l'autre ne s'exécutait.

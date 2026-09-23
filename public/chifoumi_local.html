@@ -577,7 +577,7 @@ var isTiebreaker = false;   /* mort subite après une égalité */
 var playerScore = 0, opScore = 0;
 var currentRound = 1;
 var gameOver = false, gameReady = false, resultSent = false;
-var playerLocked = false, roundInProgress = false;
+var playerLocked = false, opLocked = false, roundInProgress = false;
 var playerChoice=null,opponentChoice=null,localChoosingPlayer=1;
 var roundHistory = [], roundResults = [];
 
@@ -1107,5 +1107,6 @@ else { document.addEventListener('DOMContentLoaded', startAIGame); }
 
 })();
 </script>
+<script src="/mindspille-split.js"></script>
 </body>
 </html>

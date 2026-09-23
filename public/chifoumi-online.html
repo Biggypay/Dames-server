@@ -123,6 +123,7 @@ body{
 
 .top-center{
   flex:1;
+  min-width:0;
   display:flex;
   flex-direction:column;
   align-items:center;
@@ -280,8 +281,8 @@ body.spectator .choices{pointer-events:none;opacity:.32}
 body.spectator .choice-btn{cursor:default}
 
 /* ── ROUNDS PROGRESS ── */
-.rounds-progress{display:flex;gap:6px;margin-top:5px}
-.round-dot{width:30px;height:6px;border-radius:3px;background:rgba(255,255,255,0.08);transition:all 0.3s ease}
+.rounds-progress{display:flex;gap:6px;margin-top:5px;max-width:100%}
+.round-dot{width:30px;flex:0 1 30px;min-width:8px;height:6px;border-radius:3px;background:rgba(255,255,255,0.08);transition:all 0.3s ease}
 .round-dot.played{background:rgba(255,255,255,0.2)}
 .round-dot.win{background:#22c55e}
 .round-dot.lose{background:#ef4444}
@@ -1523,5 +1524,6 @@ else { document.addEventListener('DOMContentLoaded', initSocket); }
 </script>
 <script src="/tournament-pause-client.js"></script>
 <script src="/mindspille-split.js"></script>
+<script src="/mindspille-chat.js"></script>
 </body>
 </html>
