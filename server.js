@@ -21,6 +21,7 @@ const PUBLIC = path.join(__dirname, 'public');
 const { ChessEngineFactory } = require('./public/echecs-engine.js');
 const ChessClock = require('./lib/chess-clock.js');
 const TurnClock = require('./lib/turn-clock.js');
+const MatchSummary = require('./lib/match-summary.js');
 const ChessEngine = ChessEngineFactory();
 const crypto     = require('crypto');
 const { ensureSeriesState, seriesPayload, recordRoundResult, advanceRoundStarter } = require('./lib/gomoku-series');
@@ -626,6 +627,24 @@ function scheduleSettlementRetry(room, game) {
   console.warn('[settlement] retry scheduled', room.databaseGameId, 'attempt', attempt + 1, 'in', delay, 'ms');
 }
 
+/**
+ * Coups, score et manches du match pour sa carte publique dans l'application.
+ * Après le règlement, jamais avant, et jamais bloquant : un résumé perdu ne
+ * coûte qu'une ligne « — » sur une carte, un règlement retardé coûterait un
+ * portefeuille.
+ */
+function sendMatchSummary(room, game, reason) {
+  if (!isUuid(room?.databaseGameId)) return;
+  const summary = MatchSummary.buildMatchSummary(game, room, reason);
+  if (!summary) return;
+  void callServerStateRpc('record_match_summary', {
+    p_game_id: room.databaseGameId,
+    p_summary: summary
+  }).catch(error => {
+    console.warn('[summary] résumé non transmis', room.databaseGameId, error.message);
+  });
+}
+
 async function settleRoomInSupabase(room, game, winnerSlot, reason) {
   if (room.settlementPromise) return room.settlementPromise;
   room.pendingSettlement = { winnerSlot, reason };
@@ -688,6 +707,7 @@ async function settleRoomInSupabase(room, game, winnerSlot, reason) {
     }
     room.settledAt = Date.now();
     room.pendingSettlement = null;
+    sendMatchSummary(room, game, reason);
     room.settlementRetryCount = 0;
     if (room.settlementRetryTimer) clearTimeout(room.settlementRetryTimer);
     room.settlementRetryTimer = null;
@@ -3481,6 +3501,7 @@ io.on('connection', (socket) => {
     droom.currentPlayer = result.next === 'white' ? 0 : 1;
     droom.stateVersion = (droom.stateVersion || 0) + 1;
     droom.lastMove = { from: first, to: last, player };
+    MatchSummary.countMove(droom, player);
     socket.to(room).emit('dames_move', { room, player, steps: sequence, boardState: droom.boardState, nextPlayer: droom.currentPlayer, isComplete: true, version: droom.stateVersion });
     // Accusé de réception : le joueur sait que son coup est enregistré. Sans
     // ack sous quelques secondes, son client redemande l'état complet.
@@ -3627,6 +3648,7 @@ io.on('connection', (socket) => {
     eroom.currentPlayer = eroom.engineState.t;
     eroom.stateVersion = (eroom.stateVersion || 0) + 1;
     eroom.lastMove = { from: { row: from.row, col: from.col }, to: { row: to.row, col: to.col }, player };
+    MatchSummary.countMove(eroom, player);
     const status = ChessEngine.gameStatus(eroom.engineState);
     socket.to(room).emit('echecs_move', {
       room, player,
@@ -3754,6 +3776,7 @@ io.on('connection', (socket) => {
     if (state.currentPlayer !== player - 1 || symbol !== expectedSymbol || state.board[index] !== null) return rejectMove('Coup Tic-Tac-Toe invalide.');
     clearTTTTurnTimers(troom);
     state.board[index] = expectedSymbol;
+    MatchSummary.countMove(troom, player);
     const line = tttWinningLine(state.board, expectedSymbol);
     const draw = !line && state.board.every(Boolean);
     state.currentPlayer = player === 1 ? 1 : 0;
@@ -3883,6 +3906,7 @@ io.on('connection', (socket) => {
     qroom.currentSlot = player === 1 ? 2 : 1;
     state.currentSlot = qroom.currentSlot;
     qroom.stateVersion = Math.max(0, Number(qroom.stateVersion) || 0) + 1;
+    MatchSummary.countMove(qroom, player);
     io.to(room).emit('quoridor_move', { room, player, moveType, data: { r: data.r, c: data.c }, gameState: JSON.stringify(state), version: qroom.stateVersion, nextPlayer: qroom.currentSlot - 1 });
     persistRoomSoon('quoridor', qroom);
     if (winnerSlot) return finishQuoridorRound(qroom, room, winnerSlot, 'normal');
@@ -4003,6 +4027,7 @@ io.on('connection', (socket) => {
     groom.currentSlot = winLine ? player : (player === 1 ? 2 : 1);
     state.currentSlot = groom.currentSlot;
     groom.stateVersion = Math.max(0, Number(groom.stateVersion) || 0) + 1;
+    MatchSummary.countMove(groom, player);
 
     io.to(room).emit('gomoku_move', {
       room, player, data: { r: data.r, c: data.c },
@@ -4119,6 +4144,7 @@ io.on('connection', (socket) => {
     if (!Number.isInteger(zone) || zone < 0 || zone > 8 || proom.choices[player] !== undefined) return;
     if (turnExpiredOnArrival('penalty', proom, room)) return;
     proom.choices[player] = zone;
+    MatchSummary.countMove(proom, player);
     persistRoomSoon('penalty', proom);
     socket.to(room).emit('penalty_choice_received', { player });
 
@@ -4231,6 +4257,7 @@ io.on('connection', (socket) => {
     if (!['pierre', 'feuille', 'ciseaux'].includes(choice) || croom.choices[player] !== undefined) return;
     if (turnExpiredOnArrival('chifoumi', croom, room)) return;
     croom.choices[player] = choice;
+    MatchSummary.countMove(croom, player);
     persistRoomSoon('chifoumi', croom);
     socket.to(room).emit('chifoumi_opponent_choice', { player });
     
