@@ -168,7 +168,29 @@ async function main() {
     check('reconnection restores the exact accepted move', restored.reconnected === true && restored.gameState.board[0] === SLOT_SYMBOLS[slotOf('A')], restored.gameState);
     check('reconnection restores the second player turn', restored.gameState.currentPlayer === slotOf('B') - 1, restored.gameState);
 
-    let round = await playRound(p1, p2, [['B',1,0],['A',0,1],['B',1,1],['A',0,2]], { winner: 'A', winsA: 1, winsB: 0 });
+    /* Reconnexion sur 4G : le nouveau socket du joueur à qui c'est le tour
+       joue AVANT que son ttt_join soit traité (ou alors que ce join a échoué
+       — vérification Supabase indisponible). Le coup doit passer : avant, il
+       était refusé (« Ce coup ne peut pas être joué maintenant. ») et le
+       joueur perdait au temps sans pouvoir jouer. */
+    const bSlot = slotOf('B');
+    const bIdentity = bSlot === 1 ? ['ttt-player-1', 'Alice'] : ['ttt-player-2', 'Bob'];
+    (bSlot === 1 ? p1 : p2).disconnect();
+    await new Promise(resolve => setTimeout(resolve, 250));
+    const bSocket = await connectPlayer(bIdentity[0], bIdentity[1]);
+    if (bSlot === 1) p1 = bSocket; else p2 = bSocket;
+
+    const intruder = await connectPlayer('ttt-intruder', 'Eve');
+    const intruderRefused = once(intruder, 'game:error');
+    intruder.emit('ttt_move', { room: ROOM, player: bSlot, row: 1, col: 0, symbol: SLOT_SYMBOLS[bSlot], clientMoveId: 'intruder' });
+    const refusal = await intruderRefused;
+    check('another account can never take over a seat', /maintenant/.test(refusal?.message || ''), refusal);
+    intruder.disconnect();
+
+    const firstAfterReconnect = await playMove(bSocket, bSlot, 1, 0).catch(error => error);
+    check('a reconnected player can move before re-joining', !(firstAfterReconnect instanceof Error) && firstAfterReconnect.player === bSlot, String(firstAfterReconnect));
+
+    let round = await playRound(p1, p2, [['A',0,1],['B',1,1],['A',0,2]], { winner: 'A', winsA: 1, winsB: 0 });
     check('round 2 starter alternates to the other player', round.nextStarterPlayer === slotOf('B') - 1, round);
     await waitFor(p1, 'ttt_state_sync', data => data.gameState?.resolvingRound === false && data.gameState?.board?.every(cell => cell === null));
 

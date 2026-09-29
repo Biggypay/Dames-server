@@ -1152,6 +1152,11 @@ function resetManche(){
   pendingTimerData=null;
   // Garde-fou : une nouvelle manche (y compris la manche décisive) doit toujours être jouable.
   gameReady=false;mancheOver=false;matchOver=false;gameOver=false;isProcessing=false;roundAnimationActive=false;
+  // La manche suivante n'est jouable que lorsque le SERVEUR l'a ouverte
+  // (resolvingRound retombé). Avant, la page rouvrait le plateau à la fin de
+  // son animation, parfois avant le serveur : le premier coup était refusé
+  // (« Coup non validé — Ce coup ne peut pas être joué maintenant »).
+  var serverReady=!!pendingServerState&&pendingServerState.resolvingRound!==true;
   if(pendingServerState){
     var next=pendingServerState;pendingServerState=null;
     applyAuthoritativeState(next,true);
@@ -1163,6 +1168,13 @@ function resetManche(){
     currentPlayer=mancheStarterPlayer;
   }
   authoritativeMatchWinner=0;
+  if(!serverReady){
+    // ttt_state_sync (envoyé par le serveur à l'ouverture de la manche) rendra
+    // la main ; on le redemande au cas où il serait arrivé pendant l'animation.
+    updUI();
+    if(socket&&socket.connected)socket.emit('ttt_request_state',{room:ROOM_ID});
+    return;
+  }
   gameReady=true;
   updUI();
   if(!timerActive&&!graceActive)applyPendingTimer();

@@ -185,6 +185,47 @@ function socketIsPlayer(room, socketId) {
     (room.players[2] && room.players[2].socketId === socketId)
   ));
 }
+// Un coup (ou un choix) n'est accepté que du socket lié à la place. Mais sur
+// 4G le navigateur se reconnecte souvent : son nouveau socket n'est lié
+// qu'une fois `*_join` terminé, et ce join attend une vérification Supabase
+// (jusqu'à 5 s) qui peut échouer. Pendant ce temps — ou pour toujours si la
+// vérification a échoué — chaque coup du joueur était refusé (« Coup non
+// validé ») et son horloge continuait : il perdait au temps sans pouvoir
+// jouer. Ici, un socket AUTHENTIFIÉ (jeton serveur) comme le titulaire de la
+// place reprend la place, la partie étant en cours. Un spectateur ne la
+// reprend jamais, même pour son propre compte : le panneau « en direct » de
+// l'app ne doit jamais pouvoir jouer.
+// Si la partie était en pause parce que CE joueur s'était déconnecté (jamais
+// une pause de tournoi), son retour la reprend exactement comme `*_join` :
+// même tour, avec le temps déjà consommé.
+const RESUME_EVENT_PREFIX = { dames: 'dames', tictactoe: 'ttt', quoridor: 'quoridor', penalty: 'penalty', chifoumi: 'chifoumi', echecs: 'echecs', ludo: 'ludo', gomoku: 'gomoku' };
+function claimPlayerSocket(socket, roomState, roomId, player) {
+  const seat = roomState?.players?.[player];
+  if (!seat) return false;
+  if (seat.socketId === socket.id) return true;
+  const resumable = roomState.status === 'paused' && roomState.adminPaused !== true;
+  if ((roomState.status !== 'playing' && !resumable) || socket.spectatorRoomId) return false;
+  const user = authenticatedSocketUser(socket);
+  if (!user?.supabaseId || user.supabaseId !== seat.supabaseId) return false;
+  seat.socketId = socket.id;
+  seat.connected = true;
+  if (validRoom(roomId)) socket.join(roomId);
+  if (resumable) {
+    const otherSeat = roomState.players[player === 1 ? 2 : 1];
+    if (otherSeat?.connected !== true) return false; // l'autre est absent : la pause continue
+    if (roomState.disconnectTimer) { clearTimeout(roomState.disconnectTimer); roomState.disconnectTimer = null; }
+    roomState.reconnectDeadline = null;
+    roomState.status = 'playing';
+    const gameName = Object.keys(ROOM_MAPS).find(name => ROOM_MAPS[name].get(roomId) === roomState);
+    if (gameName) {
+      resumeTimersForGame(gameName, roomState);
+      io.to(roomId).emit(RESUME_EVENT_PREFIX[gameName] + '_game_resumed', { message: 'Les deux joueurs sont de retour. La partie reprend !' });
+      persistRoomSoon(gameName, roomState);
+    }
+  }
+  return true;
+}
+
 // Le gagnant déclaré doit correspondre à un joueur RÉEL de la room (selon le serveur),
 // sinon 0 (nul) : impossible de créditer un compte qui ne joue pas dans cette room.
 function resolveWinnerSlot(room, data) {
@@ -825,6 +866,19 @@ async function verifyDatabaseGameForJoin(socket, gameId, gameName, player, bet, 
     }
     return { ok: true };
   } catch {
+    // Supabase injoignable (délai de 5 s dépassé sur 4G, panne brève) : un
+    // joueur qui REVIENT sur une place déjà vérifiée pour son compte, dans
+    // cette même partie et à cette même mise, la reprend. Avant, ce refus
+    // n'était pas « récupérable » : la page l'ignorait, restait branchée sans
+    // place, et chaque coup était refusé jusqu'à la défaite au temps.
+    const existing = ROOM_MAPS[gameName]?.get(roomId);
+    const seat = existing?.players?.[player];
+    if (existing && existing.status !== 'finished' &&
+        existing.databaseGameId === gameId &&
+        seat?.supabaseId === user.supabaseId &&
+        Math.abs(Number(existing.betAmount || 0) - Number(bet || 0)) < 0.0001) {
+      return { ok: true };
+    }
     return { ok: false, message: 'Validation serveur temporairement indisponible.' };
   }
 }
@@ -3485,7 +3539,7 @@ io.on('connection', (socket) => {
   socket.on('dames_move', ({ room, player, from, to, steps }) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return;
     const droom = damesRooms.get(room);
-    if (!droom || droom.status !== 'playing' || droom.players[player]?.socketId !== socket.id) return;
+    if (!droom || !claimPlayerSocket(socket, droom, room, player) || droom.status !== 'playing') return;
     if (turnExpiredOnArrival('dames', droom, room)) return;
     // Sur rejet, on renvoie l'état autoritatif après l'erreur : un client dont
     // le plateau a divergé (coup local appliqué mais refusé ici) se recale au
@@ -3618,7 +3672,7 @@ io.on('connection', (socket) => {
   socket.on('echecs_move', ({ room, player, from, to, promo }) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return;
     const eroom = echecsRooms.get(room);
-    if (!eroom || eroom.status !== 'playing' || eroom.players[player]?.socketId !== socket.id) return;
+    if (!eroom || !claimPlayerSocket(socket, eroom, room, player) || eroom.status !== 'playing') return;
     if (!eroom.clock && turnExpiredOnArrival('echecs', eroom, room)) return;
     // Sur rejet, on renvoie l'état autoritatif : un client dont le plateau a
     // divergé se recale au lieu de rester figé.
@@ -3770,7 +3824,7 @@ io.on('connection', (socket) => {
       if (troom && state) socket.emit('ttt_state_sync', tttSnapshot(troom));
     };
     if (!troom || !state) return rejectMove('Partie Tic-Tac-Toe introuvable.');
-    if (troom.status !== 'playing' || state.resolvingRound || troom.players[player]?.socketId !== socket.id) return rejectMove('Ce coup ne peut pas être joué maintenant.');
+    if (!claimPlayerSocket(socket, troom, room, player) || troom.status !== 'playing' || state.resolvingRound) return rejectMove('Ce coup ne peut pas être joué maintenant.');
     if (turnExpiredOnArrival('tictactoe', troom, room)) return;
     const expectedSymbol = state.slotSymbols?.[player] === 'O' ? 'O' : 'X', index = row * 3 + col;
     if (state.currentPlayer !== player - 1 || symbol !== expectedSymbol || state.board[index] !== null) return rejectMove('Coup Tic-Tac-Toe invalide.');
@@ -3883,7 +3937,7 @@ io.on('connection', (socket) => {
   socket.on('quoridor_move', ({ room, player, moveType, data }) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return;
     const qroom = quoriRooms.get(room), state = qroom?.gameState;
-    if (!qroom || !state || qroom.status !== 'playing' || qroom.players[player]?.socketId !== socket.id) return;
+    if (!qroom || !state || !claimPlayerSocket(socket, qroom, room, player) || qroom.status !== 'playing') return;
     if (turnExpiredOnArrival('quoridor', qroom, room)) return;
     const rejectMove = message => {
       rejectSocket(socket, message);
@@ -4005,7 +4059,7 @@ io.on('connection', (socket) => {
   socket.on('gomoku_move', ({ room, player, data }) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return;
     const groom = gomokuRooms.get(room), state = groom?.gameState;
-    if (!groom || !state || groom.status !== 'playing' || groom.players[player]?.socketId !== socket.id) return;
+    if (!groom || !state || !claimPlayerSocket(socket, groom, room, player) || groom.status !== 'playing') return;
     if (turnExpiredOnArrival('gomoku', groom, room)) return;
     const rejectMove = message => {
       rejectSocket(socket, message);
@@ -4140,7 +4194,7 @@ io.on('connection', (socket) => {
   socket.on('penalty_choice', ({ room, player, round, zone }) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return;
     const proom = penaltyRooms.get(room);
-    if (!proom || proom.status !== 'playing' || proom.currentRound !== round || proom.players[player]?.socketId !== socket.id) return;
+    if (!proom || !claimPlayerSocket(socket, proom, room, player) || proom.status !== 'playing' || proom.currentRound !== round) return;
     if (!Number.isInteger(zone) || zone < 0 || zone > 8 || proom.choices[player] !== undefined) return;
     if (turnExpiredOnArrival('penalty', proom, room)) return;
     proom.choices[player] = zone;
@@ -4253,7 +4307,7 @@ io.on('connection', (socket) => {
   socket.on('chifoumi_choice', ({ room, player, choice }) => {
     if (!validRoom(room) || !validPlayerSlot(player)) return;
     const croom = chifoumiRooms.get(room);
-    if (!croom || croom.status !== 'playing' || croom.revealPending || croom.players[player]?.socketId !== socket.id) return;
+    if (!croom || !claimPlayerSocket(socket, croom, room, player) || croom.status !== 'playing' || croom.revealPending) return;
     if (!['pierre', 'feuille', 'ciseaux'].includes(choice) || croom.choices[player] !== undefined) return;
     if (turnExpiredOnArrival('chifoumi', croom, room)) return;
     croom.choices[player] = choice;
