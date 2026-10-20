@@ -16,7 +16,7 @@ const http = require('http');
 const path = require('path');
 const crypto = require('crypto');
 const { io } = require('socket.io-client');
-const { countMove, buildMatchSummary } = require('../lib/match-summary.js');
+const { countMove, buildMatchSummary, logMove, buildMoveLog, encodeDamesBoard, encodeChessBoard, encodeTttBoard, MAX_LOG_ENTRIES } = require('../lib/match-summary.js');
 
 const ROOT = path.join(__dirname, '..');
 const GAME_PORT = 3222;
@@ -79,6 +79,32 @@ console.log('\n— Logique pure —');
       === JSON.stringify({ players: { [A]: {}, [B]: {} }, reason: 'normal' }));
 }
 
+console.log('\n— Journal des coups (logique pure) —');
+{
+  const room = { players: { 1: { supabaseId: A }, 2: { supabaseId: B } } };
+  check('sans coup, pas de journal', buildMoveLog(room) === null);
+  logMove(room, { p: 1, r: 0, c: 0 }, 'INIT');
+  logMove(room, { p: 2, r: 1, c: 1 }, 'IGNORED');
+  logMove(room, { p: 3, r: 2, c: 2 });
+  logMove(null, { p: 1 });
+  const log = buildMoveLog(room);
+  check('deux entrées valides, la place 3 refusée', log && log.e.length === 2, log);
+  check('la position initiale vient du premier coup seulement', log && log.init === 'INIT', log);
+  check('le journal relie la place à l\'id Supabase', log && log.ids[1] === A && log.ids[2] === B, log);
+  check('joueurs non identifiés : pas de journal',
+    buildMoveLog({ moveLog: { e: [{ p: 1 }] }, players: { 1: { supabaseId: A }, 2: { supabaseId: 'bob' } } }) === null);
+  const big = { players: room.players };
+  for (let i = 0; i < MAX_LOG_ENTRIES + 50; i++) logMove(big, { p: 1 + (i % 2), r: 0, c: 0 });
+  check('le journal est borné', buildMoveLog(big).e.length === MAX_LOG_ENTRIES);
+  check('encodeDamesBoard : 100 chiffres', encodeDamesBoard(Array.from({ length: 10 }, () => Array(10).fill(1))) === '1'.repeat(100));
+  check('encodeDamesBoard refuse un plateau incomplet', encodeDamesBoard([[1]]) === null && encodeDamesBoard(null) === null);
+  const chess = Array(64).fill(0); chess[0] = -4; chess[60] = 6;
+  const enc = encodeChessBoard(chess);
+  check('encodeChessBoard : 64 lettres, pièce + 71', enc.length === 64 && enc[0] === String.fromCharCode(-4 + 71) && enc[60] === String.fromCharCode(77) && enc[1] === 'G', enc);
+  check('encodeChessBoard refuse une pièce hors plage', encodeChessBoard(Array(64).fill(9)) === null);
+  check('encodeTttBoard', encodeTttBoard(['X', null, 'O', null, null, null, null, null, 'X']) === 'X.O.....X' && encodeTttBoard([]) === null);
+}
+
 // ── 2. Chaque gestionnaire de coup compte ────────────────────────────────────
 console.log('\n— Les gestionnaires de coup —');
 {
@@ -89,6 +115,7 @@ console.log('\n— Les gestionnaires de coup —');
     const next = source.indexOf('socket.on(', start + 10);
     const body = source.slice(start, next);
     check(`${name} compte le coup accepté`, start > 0 && (body.match(/MatchSummary\.countMove\(/g) || []).length === 1);
+    check(`${name} journalise le coup accepté`, (body.match(/MatchSummary\.logMove\(/g) || []).length === 1);
   }
   check('le résumé part après le règlement confirmé',
     /room\.pendingSettlement = null;\s*\n\s*sendMatchSummary\(room, game, reason\);/.test(source));
@@ -231,6 +258,13 @@ async function foolsMate() {
     const s = sent.p_summary;
     check('2 coups chacun, 4 au total, raison « checkmate »',
       s.players[match.users[1]].moves === 2 && s.players[match.users[2]].moves === 2 && s.moves_total === 4 && s.reason === 'checkmate', s);
+    const log = s.log;
+    check('le journal compte 4 coups, ids reliés aux places',
+      log && log.e.length === 4 && log.ids[1] === match.users[1] && log.ids[2] === match.users[2], log);
+    check('chaque coup porte sa position (64 lettres) et la position initiale est fournie',
+      log && log.e.every(e => typeof e.b === 'string' && e.b.length === 64) && typeof log.init === 'string' && log.init.length === 64, log);
+    check('le premier coup est f2-f3 (cases 53→45), le dernier un coup noir',
+      log && log.e[0].p === 1 && log.e[0].f === 53 && log.e[0].t === 45 && log.e[3].p === 2, log && log.e);
     check('le règlement passe AVANT le résumé',
       order.indexOf('settle:' + match.id) >= 0 && order.indexOf('settle:' + match.id) < order.indexOf('summary:' + match.id), order);
   }
@@ -254,6 +288,10 @@ async function damesTimeout() {
   if (sent) {
     const s = sent.p_summary;
     const idle = mover === 1 ? 2 : 1;
+    const dlog = s.log;
+    check('dames : un coup journalisé avec départ, arrivée et positions de 100 chiffres',
+      dlog && dlog.e.length === 1 && dlog.e[0].p === mover && dlog.e[0].b.length === 100 && dlog.init.length === 100
+        && Number.isInteger(dlog.e[0].fr) && Number.isInteger(dlog.e[0].tc) && dlog.e[0].b !== dlog.init, dlog);
     check('1 coup contre 0, raison « timeout »',
       s.players[match.users[mover]].moves === 1 && s.players[match.users[idle]].moves === 0 && s.moves_total === 1 && s.reason === 'timeout', s);
   }

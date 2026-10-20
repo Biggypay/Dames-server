@@ -678,6 +678,8 @@ function sendMatchSummary(room, game, reason) {
   if (!isUuid(room?.databaseGameId)) return;
   const summary = MatchSummary.buildMatchSummary(game, room, reason);
   if (!summary) return;
+  const moveLog = MatchSummary.buildMoveLog(room);
+  if (moveLog) summary.log = moveLog;
   void callServerStateRpc('record_match_summary', {
     p_game_id: room.databaseGameId,
     p_summary: summary
@@ -3550,12 +3552,14 @@ io.on('connection', (socket) => {
     if (!first || !last || !Number.isInteger(first.row) || !Number.isInteger(first.col) || !Number.isInteger(last.row) || !Number.isInteger(last.col)) return rejectSocket(socket, 'Coup de dames invalide.');
     const result = applyMove(droom.engineBoard, player === 1 ? 'white' : 'black', first.row, first.col, last.row, last.col);
     if (!result.ok) { rejectSocket(socket, result.reason); return void socket.emit('dames_state_sync', damesSnapshot(droom)); }
+    const damesBefore = MatchSummary.encodeDamesBoard(droom.engineBoard);
     droom.engineBoard = result.board;
     droom.boardState = JSON.stringify(checkersClientBoard(result.board));
     droom.currentPlayer = result.next === 'white' ? 0 : 1;
     droom.stateVersion = (droom.stateVersion || 0) + 1;
     droom.lastMove = { from: first, to: last, player };
     MatchSummary.countMove(droom, player);
+    MatchSummary.logMove(droom, { p: player, fr: first.row, fc: first.col, tr: last.row, tc: last.col, b: MatchSummary.encodeDamesBoard(result.board) }, damesBefore);
     socket.to(room).emit('dames_move', { room, player, steps: sequence, boardState: droom.boardState, nextPlayer: droom.currentPlayer, isComplete: true, version: droom.stateVersion });
     // Accusé de réception : le joueur sait que son coup est enregistré. Sans
     // ack sous quelques secondes, son client redemande l'état complet.
@@ -3698,11 +3702,13 @@ io.on('connection', (socket) => {
       ChessClock.chargeElapsed(eroom.clock, moveAt);
       ChessClock.addIncrement(eroom.clock, player);
     }
+    const chessBefore = MatchSummary.encodeChessBoard(state.b);
     eroom.engineState = ChessEngine.applyMove(state, mv);
     eroom.currentPlayer = eroom.engineState.t;
     eroom.stateVersion = (eroom.stateVersion || 0) + 1;
     eroom.lastMove = { from: { row: from.row, col: from.col }, to: { row: to.row, col: to.col }, player };
     MatchSummary.countMove(eroom, player);
+    MatchSummary.logMove(eroom, { p: player, f: from.row * 8 + from.col, t: to.row * 8 + to.col, q: mv.p || 0, b: MatchSummary.encodeChessBoard(eroom.engineState.b) }, chessBefore);
     const status = ChessEngine.gameStatus(eroom.engineState);
     socket.to(room).emit('echecs_move', {
       room, player,
@@ -3831,6 +3837,7 @@ io.on('connection', (socket) => {
     clearTTTTurnTimers(troom);
     state.board[index] = expectedSymbol;
     MatchSummary.countMove(troom, player);
+    MatchSummary.logMove(troom, { p: player, m: Number(state.manchesDone) || 0, r: row, c: col, b: MatchSummary.encodeTttBoard(state.board) });
     const line = tttWinningLine(state.board, expectedSymbol);
     const draw = !line && state.board.every(Boolean);
     state.currentPlayer = player === 1 ? 1 : 0;
@@ -3961,6 +3968,7 @@ io.on('connection', (socket) => {
     state.currentSlot = qroom.currentSlot;
     qroom.stateVersion = Math.max(0, Number(qroom.stateVersion) || 0) + 1;
     MatchSummary.countMove(qroom, player);
+    MatchSummary.logMove(qroom, { p: player, g: Number(qroom.series?.roundsPlayed) || 0, k: moveType === 'move' ? 'm' : moveType === 'wallH' ? 'h' : 'v', r: data.r, c: data.c });
     io.to(room).emit('quoridor_move', { room, player, moveType, data: { r: data.r, c: data.c }, gameState: JSON.stringify(state), version: qroom.stateVersion, nextPlayer: qroom.currentSlot - 1 });
     persistRoomSoon('quoridor', qroom);
     if (winnerSlot) return finishQuoridorRound(qroom, room, winnerSlot, 'normal');
@@ -4082,6 +4090,7 @@ io.on('connection', (socket) => {
     state.currentSlot = groom.currentSlot;
     groom.stateVersion = Math.max(0, Number(groom.stateVersion) || 0) + 1;
     MatchSummary.countMove(groom, player);
+    MatchSummary.logMove(groom, { p: player, g: Number(groom.series?.roundsPlayed) || 0, r: data.r, c: data.c });
 
     io.to(room).emit('gomoku_move', {
       room, player, data: { r: data.r, c: data.c },
@@ -4199,6 +4208,7 @@ io.on('connection', (socket) => {
     if (turnExpiredOnArrival('penalty', proom, room)) return;
     proom.choices[player] = zone;
     MatchSummary.countMove(proom, player);
+    MatchSummary.logMove(proom, { p: player, g: Number(round) || 0, v: String(zone) });
     persistRoomSoon('penalty', proom);
     socket.to(room).emit('penalty_choice_received', { player });
 
@@ -4312,6 +4322,7 @@ io.on('connection', (socket) => {
     if (turnExpiredOnArrival('chifoumi', croom, room)) return;
     croom.choices[player] = choice;
     MatchSummary.countMove(croom, player);
+    MatchSummary.logMove(croom, { p: player, g: Number(croom.currentRound) || 0, v: choice });
     persistRoomSoon('chifoumi', croom);
     socket.to(room).emit('chifoumi_opponent_choice', { player });
     
