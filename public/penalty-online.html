@@ -1343,7 +1343,7 @@ function startRound() {
     hideZones();
     var liveStatus = document.getElementById('status-bar');
     liveStatus.className = 'show';
-    liveStatus.textContent = '👁 Match en direct — choix secrets';
+    liveStatus.textContent = IS_REPLAY ? '🎬 Replay' : '👁 Match en direct — choix secrets';
     return;
   }
   showZones();

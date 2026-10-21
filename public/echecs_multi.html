@@ -257,7 +257,7 @@ if(IS_SPECTATOR){
     var _hint = document.getElementById('hint');
     if(_hint) _hint.textContent = '👌 Pince = zoom · Glisse = tourner';
     var _lbl = document.querySelector('.manche-lbl');
-    if(_lbl) _lbl.innerHTML = '👁 Spectateur · <span style="color:#f87171">EN DIRECT</span>';
+    if(_lbl) _lbl.innerHTML = IS_REPLAY ? '🎬 <span style="color:#fbbf24">REPLAY</span>' : '👁 Spectateur · <span style="color:#f87171">EN DIRECT</span>';
     var _ld = document.querySelector('#loading p');
     if(_ld) _ld.textContent = 'CONNEXION AU DIRECT 3D…';
   } catch(_) {}
@@ -1131,7 +1131,7 @@ function updateCheckDisplay(){
       ring.rotation.x = -Math.PI/2; ring.position.set(col*CELL-BO, 0.19, row*CELL-BO); checkGroup.add(ring);
     }
     hint.classList.add('show');
-    hint.textContent = side === MY_PLAYER ? '⚔️ Échec au roi ! Défendez-vous !' : '⚔️ Roi adverse en échec !';
+    hint.textContent = IS_REPLAY ? '⚔️ Échec au roi !' : (side === MY_PLAYER ? '⚔️ Échec au roi ! Défendez-vous !' : '⚔️ Roi adverse en échec !');
   } else {
     hint.classList.remove('show');
   }

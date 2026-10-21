@@ -1392,7 +1392,7 @@ function startSpectatorRound() {
   playerEmojiEl.textContent = '❓'; playerLabelEl.textContent = 'Choix secret';
   aiEmojiEl.textContent = '❓'; aiLabelEl.textContent = 'Choix secret';
   playerCard.className = 'choice-card waiting'; aiCard.className = 'choice-card waiting';
-  statusEl.className = 'status visible'; statusEl.textContent = '👁 Manche en direct — les choix restent secrets';
+  statusEl.className = 'status visible'; statusEl.textContent = IS_REPLAY ? '🎬 Replay — manche en cours' : '👁 Manche en direct — les choix restent secrets';
   document.getElementById('playerScore').textContent = playerScore;
   document.getElementById('aiScore').textContent = opScore;
 }

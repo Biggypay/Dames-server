@@ -256,7 +256,7 @@ updateBetBadge();
 if(IS_SPECTATOR){
   try {
     var mancheLbl = document.querySelector('.manche-lbl');
-    if(mancheLbl) mancheLbl.innerHTML = '👁 Spectateur · <span style="color:#f87171">EN DIRECT</span>';
+    if(mancheLbl) mancheLbl.innerHTML = IS_REPLAY ? '🎬 <span style="color:#fbbf24">REPLAY</span>' : '👁 Spectateur · <span style="color:#f87171">EN DIRECT</span>';
     var hintEl = document.getElementById('hint');
     if(hintEl) hintEl.textContent = '👌 Pince = zoom · Glisse = tourner';
     /* Le nom exact du profil, jamais la couleur du pion : « Blancs » ne dit
