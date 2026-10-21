@@ -170,12 +170,14 @@ var P = new URLSearchParams(window.location.search);
 var TOKEN_FRAGMENT = new URLSearchParams(window.location.hash.slice(1));
 var GAME_AUTH_TOKEN = TOKEN_FRAGMENT.get('token') || P.get('token') || '';
 if (TOKEN_FRAGMENT.has('token')) { try { history.replaceState(null, '', location.pathname + location.search); } catch (_) {} }
-var IS_SPECTATOR = (P.get('spectate') === '1' || P.get('spectator') === '1');
+/* Mode replay (?replay=1) : aucune connexion, positions envoyees par l'application. */
+var IS_REPLAY = (P.get('replay') === '1');
+var IS_SPECTATOR = (P.get('spectate') === '1' || P.get('spectator') === '1' || IS_REPLAY);
 var P1_AVATAR = P.get('p1Avatar') || '';
 var P2_AVATAR = P.get('p2Avatar') || '';
 /* Vue depouillee par defaut cote spectateur : l'application la demande par
    ?controls=0 puis, a chaque bascule, par le message spectator:controls. */
-var SHOW_CHROME = !(IS_SPECTATOR && (P.get('controls') === '0' || P.get('chrome') === '0'));
+var SHOW_CHROME = !(IS_SPECTATOR && (IS_REPLAY || P.get('controls') === '0' || P.get('chrome') === '0'));
 var ROOM_ID = P.get('room') || '';
 var MY_SLOT = IS_SPECTATOR ? 1 : parseInt(P.get('player') || '1', 10);
 var P1_ID = P.get('p1Id') || '';
@@ -1692,9 +1694,93 @@ function renderLoop(){
 }
 renderLoop();
 
+/* ══════════════════════════════════════════
+   REPLAY : positions envoyees par l'application
+   replay:init     { player1Name, player2Name }
+   replay:position { board (100 chiffres : 0 vide, 1/2 pions, 3/4 dames),
+                     from:{r,c}, to:{r,c}, slot, animate }
+   Rien ne part vers le serveur ; aucune donnee de match n'est modifiee.
+══════════════════════════════════════════ */
+function replayDecodeDames(str){
+  if(typeof str !== 'string' || !/^[0-4]{100}$/.test(str)) return null;
+  var b = [];
+  for(var r=0; r<BS; r++){ b[r] = []; for(var c=0; c<BS; c++){
+    var n = +str.charAt(r*BS+c);
+    b[r][c] = n === 0 ? null : { player:(n===1||n===3)?0:1, king:n>=3, dying:false };
+  } }
+  return b;
+}
+function replayMeshesMatch(b){
+  var kids = piecesGroup.children, seen = 0, r, c;
+  for(var i=0;i<kids.length;i++){
+    var u = kids[i].userData, cell = b[u.row] && b[u.row][u.col];
+    if(!cell || cell.player !== u.player || !!cell.king !== !!u.king) return false;
+    seen++;
+  }
+  var n = 0;
+  for(r=0;r<BS;r++) for(c=0;c<BS;c++) if(b[r][c]) n++;
+  return n === seen;
+}
+function replayCommit(b, slot){
+  board = b;
+  currentPlayer = slot === 1 ? 1 : (slot === 2 ? 0 : currentPlayer);
+  var wc = 0, rc = 0;
+  for(var r=0;r<BS;r++) for(var c=0;c<BS;c++) if(board[r][c]){ if(board[r][c].player===0) wc++; else rc++; }
+  capturedBy = [Math.max(0,20-rc), Math.max(0,20-wc)];
+  document.getElementById('score-w').textContent = wc;
+  document.getElementById('score-r').textContent = rc;
+  updateCapturedDisplay(); updUI();
+}
+var replayToken = 0;
+function applyReplayPosition(d){
+  var b = replayDecodeDames(d.board);
+  if(!b) return;
+  hideLoading();
+  gameReady = true; gameOver = false; resultSent = true; isProcessing = false;
+  clearHighlights(); clearLastMove();
+  var token = ++replayToken;
+  var f = d.from, t = d.to, slot = (d.slot === 1 || d.slot === 2) ? d.slot : 0;
+  var mover = (d.animate && f && t) ? getPieceMesh(f.r, f.c) : null;
+  if(mover && !mover.userData.animating && b[t.r] && b[t.r][t.c]){
+    /* Les pieces qui disparaissent (prises) eclatent, celle qui joue glisse. */
+    piecesGroup.children.slice().forEach(function(m){
+      if(m === mover) return;
+      var u = m.userData, cell = b[u.row] && b[u.row][u.col];
+      if(!cell || cell.player !== u.player) animCapture(m);
+    });
+    updatePiecePosition(mover, t.r, t.c);
+    if(b[t.r][t.c].king && !mover.userData.king) promotePiece(mover);
+    setTimeout(function(){
+      if(token !== replayToken) return;
+      if(!replayMeshesMatch(b)){ board = b; syncPieces(); }
+      replayCommit(b, slot);
+      showLastMoveOrigin(f.r, f.c);
+    }, 470);
+    return;
+  }
+  board = b; syncPieces();
+  replayCommit(b, slot);
+  if(f) showLastMoveOrigin(f.r, f.c);
+}
+window.addEventListener('message', function(e){
+  if(!IS_REPLAY || !e.data || e.source !== window.parent) return;
+  var d = e.data;
+  if(d.type === 'replay:init'){
+    if(typeof d.player1Name === 'string' && d.player1Name.trim()) P1_NAME = d.player1Name.trim().slice(0, 32);
+    if(typeof d.player2Name === 'string' && d.player2Name.trim()) P2_NAME = d.player2Name.trim().slice(0, 32);
+    MY_NAME = P1_NAME; OP_NAME = P2_NAME; updUI();
+  } else if(d.type === 'replay:position'){
+    applyReplayPosition(d);
+  }
+});
+
 /* BOOT */
 applyChrome();
 function bootGame(){
+  if(IS_REPLAY){
+    try { window.parent.postMessage({ type:'replay:ready', game:'dames' }, '*'); } catch(_){}
+    return;
+  }
   if(IS_SPECTATOR){
     var loadingText = document.querySelector('#loading p');
     if(loadingText) loadingText.textContent = 'PRÉPARATION DU DIRECT 3D...';

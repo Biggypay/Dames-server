@@ -198,12 +198,15 @@ var ROOM_ID = P.get('room') || '';
 /* Mode spectateur : active par ?spectate=1. Le spectateur ne rejoint jamais
    de place de joueur — il s'abonne au salon et ne fait que recevoir l'etat.
    Tout le chemin de code « joueur » reste intact. */
-var IS_SPECTATOR = (P.get('spectate') === '1' || P.get('spectator') === '1');
+/* Mode replay (?replay=1) : meme page, aucune connexion. L'application envoie
+   les positions deja jouees (replay:position) ; la camera reste libre. */
+var IS_REPLAY = (P.get('replay') === '1');
+var IS_SPECTATOR = (P.get('spectate') === '1' || P.get('spectator') === '1' || IS_REPLAY);
 var SPECTATOR_TOKEN = '';
 var spectatorInitReceived = false;
 /* Vue depouillee par defaut cote spectateur : l'application la demande par
    ?controls=0 puis, a chaque bascule, par le message spectator:controls. */
-var SHOW_CHROME = !(IS_SPECTATOR && (P.get('controls') === '0' || P.get('chrome') === '0'));
+var SHOW_CHROME = !(IS_SPECTATOR && (IS_REPLAY || P.get('controls') === '0' || P.get('chrome') === '0'));
 /* L'echiquier est presente du cote des Blancs, comme pour le joueur 1. */
 var MY_SLOT = IS_SPECTATOR ? 1 : parseInt(P.get('player') || '1', 10);
 var P1_ID = P.get('p1Id') || '';
@@ -1550,8 +1553,72 @@ function applyChrome(){
 }
 applyChrome();
 
+/* ══════════════════════════════════════════
+   REPLAY : positions envoyees par l'application
+   replay:init     { player1Name, player2Name }
+   replay:position { board (64 lettres), from, to (0..63), whiteToMove? }
+   Rien ne part vers le serveur ; aucune donnee de match n'est modifiee.
+══════════════════════════════════════════ */
+function replayDecodeBoard(str){
+  if(typeof str !== 'string' || str.length !== 64) return null;
+  var out = [];
+  for(var i=0;i<64;i++){ var n = str.charCodeAt(i) - 71; if(n < -6 || n > 6) return null; out.push(n); }
+  return out;
+}
+function replayBoardMatches(board){
+  var seen = {}, kids = piecesGroup.children, i;
+  for(i=0;i<kids.length;i++){ var u = kids[i].userData; seen[u.row*8+u.col] = (u.player===0?1:-1)*u.ptype; }
+  for(i=0;i<64;i++){ if((board[i]||0) !== (seen[i]||0)) return false; }
+  return true;
+}
+function replayCommit(board, moverSlot){
+  S.b = board;
+  S.t = moverSlot === 1 ? 1 : (moverSlot === 2 ? 0 : S.t);
+  recomputeCaptures(); updateCapturedDisplay(); updateScores(); updateCheckDisplay(); updUI();
+}
+function applyReplayPosition(d){
+  var board = replayDecodeBoard(d.board);
+  if(!board) return;
+  hideLoading();
+  gameReady = true; gameOver = false; resultSent = true; isProcessing = false;
+  clearHighlights(); clearLastMove();
+  var from = (typeof d.from === 'number') ? d.from : -1, to = (typeof d.to === 'number') ? d.to : -1;
+  var mover = d.slot === 1 || d.slot === 2 ? d.slot : 0;
+  var mesh = (d.animate && from >= 0 && to >= 0) ? getPieceMesh(Chess.rowOf(from), Chess.colOf(from)) : null;
+  if(mesh && !mesh.userData.animating){
+    var victim = getPieceMesh(Chess.rowOf(to), Chess.colOf(to));
+    if(victim && victim !== mesh) animCapture(victim, function(){});
+    updatePiecePosition(mesh, Chess.rowOf(to), Chess.colOf(to), function(){
+      /* Roque, prise en passant, promotion : si le plateau ne correspond pas, on le redessine. */
+      if(!replayBoardMatches(board)) syncPieces();
+      replayCommit(board, mover);
+      showLastMoveOrigin(Chess.rowOf(from), Chess.colOf(from));
+    });
+    return;
+  }
+  S.b = board;
+  syncPieces();
+  replayCommit(board, mover);
+  if(from >= 0) showLastMoveOrigin(Chess.rowOf(from), Chess.colOf(from));
+}
+window.addEventListener('message', function(e){
+  if(!IS_REPLAY || !e.data || e.source !== window.parent) return;
+  var d = e.data;
+  if(d.type === 'replay:init'){
+    if(typeof d.player1Name === 'string' && d.player1Name.trim()) P1_NAME = d.player1Name.trim().slice(0, 32);
+    if(typeof d.player2Name === 'string' && d.player2Name.trim()) P2_NAME = d.player2Name.trim().slice(0, 32);
+    MY_NAME = P1_NAME; OP_NAME = P2_NAME; updUI();
+  } else if(d.type === 'replay:position'){
+    applyReplayPosition(d);
+  }
+});
+
 /* BOOT */
 function bootGame(){
+  if(IS_REPLAY){
+    try { window.parent.postMessage({ type:'replay:ready', game:'echecs' }, '*'); } catch(_){}
+    return;
+  }
   if(IS_SPECTATOR){
     /* On previent l'application hote que la page attend son jeton. */
     try { window.parent.postMessage({ type:'spectator:ready', game:'echecs', gameId:GAME_ID }, '*'); } catch(_){}

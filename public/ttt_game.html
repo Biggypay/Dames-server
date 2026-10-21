@@ -197,12 +197,14 @@ if(TOKEN_FRAGMENT.has('token')){try{history.replaceState(null,'',location.pathna
 /* Mode spectateur (lecture seule), active par ?spectate=1. Le spectateur ne
    rejoint jamais de place de joueur : il s'abonne au salon et ne fait que
    recevoir l'etat. Tout le chemin de code « joueur » reste intact. */
-var IS_SPECTATOR=(P.get('spectate')==='1'||P.get('spectator')==='1');
+/* Mode replay (?replay=1) : aucune connexion, positions envoyees par l'application. */
+var IS_REPLAY=(P.get('replay')==='1');
+var IS_SPECTATOR=(P.get('spectate')==='1'||P.get('spectator')==='1'||IS_REPLAY);
 var P1_AVATAR=P.get('p1Avatar')||'';
 var P2_AVATAR=P.get('p2Avatar')||'';
 /* Vue depouillee par defaut cote spectateur : l'application le demande via
    ?controls=0 puis, a chaque bascule, par le message spectator:controls. */
-var SHOW_CHROME=!(IS_SPECTATOR&&(P.get('controls')==='0'||P.get('chrome')==='0'));
+var SHOW_CHROME=!(IS_SPECTATOR&&(IS_REPLAY||P.get('controls')==='0'||P.get('chrome')==='0'));
 var SPECTATOR_TOKEN='';
 var spectatorInitReceived=false;
 var ROOM_ID   =P.get('room')    ||'';
@@ -1521,9 +1523,59 @@ function renderLoop(){
 }
 renderLoop();
 
+/* ══════════════════════════════════════════
+   REPLAY : positions envoyees par l'application
+   replay:init     { player1Name, player2Name }
+   replay:position { board (9 car. X/O/.), last (0..8), round, score:{w,r} }
+   Rien ne part vers le serveur ; aucune donnee de match n'est modifiee.
+══════════════════════════════════════════ */
+var replayBoardKey=null;
+function applyReplayPosition(d){
+  var str=typeof d.board==='string'?d.board:'';
+  if(str.length<9)return;
+  hideLoading();
+  gameReady=true;gameOver=false;resultSent=true;isProcessing=false;mancheOver=false;matchOver=false;
+  var cells=[],i,filled=0,prevFilled=0;
+  for(i=0;i<9;i++){var ch=str.charAt(i);cells.push(ch==='X'||ch==='O'?ch:null);if(cells[i])filled++;if(board[i])prevFilled++;}
+  var r=Number(d.round);if(r>=1&&r<=99)manchesDone=r-1;
+  if(d.score&&isFinite(d.score.w)&&isFinite(d.score.r)){matchW=d.score.w|0;matchR=d.score.r|0;}
+  /* Nouvelle manche (ou retour en arriere) : on repart d'un plateau vide. */
+  var removing=false;
+  for(i=0;i<9;i++){if(board[i]&&board[i]!==cells[i])removing=true;}
+  if(removing){
+    for(i=0;i<9;i++){if(meshes[i]){piecesGroup.remove(meshes[i]);meshes[i]=null;}board[i]=null;}
+    while(piecesGroup.children.length)piecesGroup.remove(piecesGroup.children[0]);
+  }
+  clearHL();
+  for(i=0;i<9;i++){
+    if(cells[i]&&!board[i]){
+      var row=Math.floor(i/3),col=i%3;
+      var m=cells[i]==='X'?makeX(row,col):makeO(row,col);
+      meshes[i]=m;board[i]=cells[i];
+      if(removing)m.scale.set(1,1,1);else animPop(m);
+    }
+  }
+  if(typeof d.last==='number'&&d.last>=0&&d.last<9)showHL(Math.floor(d.last/3),d.last%3);
+  currentPlayer=d.slot===1?1:(d.slot===2?0:currentPlayer);
+  updUI();
+}
+window.addEventListener('message',function(e){
+  if(!IS_REPLAY||!e.data||e.source!==window.parent)return;
+  var d=e.data;
+  if(d.type==='replay:init'){
+    if(typeof d.player1Name==='string'&&d.player1Name.trim())P1_NAME=d.player1Name.trim().slice(0,32);
+    if(typeof d.player2Name==='string'&&d.player2Name.trim())P2_NAME=d.player2Name.trim().slice(0,32);
+    MY_NAME=P1_NAME;OP_NAME=P2_NAME;updUI();
+  }else if(d.type==='replay:position'){
+    applyReplayPosition(d);
+  }
+});
+
 /* INIT */
 applyChrome();
-if(IS_SPECTATOR){
+if(IS_REPLAY){
+  try{window.parent.postMessage({type:'replay:ready',game:'tictactoe'},'*');}catch(_){}
+}else if(IS_SPECTATOR){
   /* On previent l'application hote que la page est prete a recevoir le jeton. */
   try{window.parent.postMessage({type:'spectator:ready',game:'tictactoe',gameId:GAME_ID},'*');}catch(_){}
 }

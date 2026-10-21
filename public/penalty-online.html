@@ -262,7 +262,9 @@ var P           = new URLSearchParams(window.location.search);
 var TOKEN_FRAGMENT = new URLSearchParams(window.location.hash.slice(1));
 var GAME_AUTH_TOKEN = TOKEN_FRAGMENT.get('token') || P.get('token') || '';
 if (TOKEN_FRAGMENT.has('token')) { try { history.replaceState(null, '', location.pathname + location.search); } catch (_) {} }
-var IS_SPECTATOR = P.get('spectate') === '1' || P.get('spectator') === '1';
+/* Mode replay (?replay=1) : aucune connexion, positions envoyees par l'application. */
+var IS_REPLAY = P.get('replay') === '1';
+var IS_SPECTATOR = P.get('spectate') === '1' || P.get('spectator') === '1' || IS_REPLAY;
 var SPECTATOR_TOKEN = '';
 var spectatorInitReceived = false;
 var ROOM_ID     = P.get('room')     || '';
@@ -1247,9 +1249,9 @@ function resolveAnimation(shooterZone, keeperZone, isGoal, iamShooter, onDone) {
       });
       flashScreen('flash-save'); doShake(5, 14);
       showResult(
-        iamShooter ? 'BLOQUÉ ! 🧤' : 'ARRÊTÉ ! 🧤',
+        IS_REPLAY ? 'ARRÊTÉ ! 🧤' : (iamShooter ? 'BLOQUÉ ! 🧤' : 'ARRÊTÉ ! 🧤'),
         'saved',
-        iamShooter ? 'Le gardien vous a stoppé !' : 'Vous avez arrêté le tir !'
+        IS_REPLAY ? 'Le gardien arrête le tir !' : (iamShooter ? 'Le gardien vous a stoppé !' : 'Vous avez arrêté le tir !')
       );
     } else {
       if (shooterZone !== null && shooterZone !== undefined) shooterHL = shooterZone;
@@ -1257,9 +1259,9 @@ function resolveAnimation(shooterZone, keeperZone, isGoal, iamShooter, onDone) {
       render();
       flashScreen('flash-goal'); doShake(8, 20);
       showResult(
-        iamShooter ? 'BUT ! 🎉' : 'BUT ! 😤',
+        IS_REPLAY ? 'BUT ! 🎉' : (iamShooter ? 'BUT ! 🎉' : 'BUT ! 😤'),
         'goal',
-        iamShooter ? 'Vous avez trompé le gardien !' : 'L\'adversaire a marqué !'
+        IS_REPLAY ? 'Le tireur trompe le gardien !' : (iamShooter ? 'Vous avez trompé le gardien !' : 'L\'adversaire a marqué !')
       );
       if (onDone) onDone();
     }
@@ -1488,10 +1490,70 @@ try {
   if(_op) setProfilePhoto('avatar-op', MY_SLOT === 1 ? P2_AVATAR : P1_AVATAR, _op.innerHTML);
 } catch(_) {}
 initCanvas();
-if (IS_SPECTATOR) {
+if (IS_REPLAY) {
+  try { window.parent.postMessage({ type:'replay:ready', game:'penalty' }, '*'); } catch (_) {}
+} else if (IS_SPECTATOR) {
   try { window.parent.postMessage({ type:'spectator:ready', game:'penalty', gameId:GAME_ID }, '*'); } catch (_) {}
 }
-initSocket();
+if (!IS_REPLAY) initSocket();
+
+/* ══════════════════════════════════════════
+   REPLAY : positions envoyees par l'application
+   replay:init     { player1Name, player2Name }
+   replay:position { phase:'start'|'locked'|'result', round, total, scores:{p1,p2},
+                     p1Zone, p2Zone (0..8), history:['win'|'lose'...] (point de vue du joueur 1),
+                     animate }
+   Le tireur est le joueur 1 aux manches impaires (regle du serveur).
+   Rien ne part vers le serveur ; aucune donnee de match n'est modifiee.
+══════════════════════════════════════════ */
+function replayZone(v){ var n = Number(v); return Number.isInteger(n) && n >= 0 && n <= 2 ? n : null; }
+window.addEventListener('message', function(e){
+  if (!IS_REPLAY || !e.data || e.source !== window.parent) return;
+  var d = e.data;
+  if (d.type === 'replay:init') {
+    if (typeof d.player1Name === 'string' && d.player1Name.trim()) P1_NAME = d.player1Name.trim().slice(0, 24);
+    if (typeof d.player2Name === 'string' && d.player2Name.trim()) P2_NAME = d.player2Name.trim().slice(0, 24);
+    MY_NAME = P1_NAME; OP_NAME = P2_NAME; updUI();
+    return;
+  }
+  if (d.type !== 'replay:position') return;
+  hideLoading();
+  if (aniId) { cancelAnimationFrame(aniId); aniId = null; }
+  if (deflectAniId) { cancelAnimationFrame(deflectAniId); deflectAniId = null; }
+  deflectVis = false; ballVis = false; shooterHL = null; keeperHL = null;
+  gameReady = true; gameOver = false; resultSent = true;
+  if (Number(d.total) > 0 && Number(d.total) < 50) TOTAL_ROUNDS = Number(d.total);
+  currentRound = Math.max(1, Number(d.round) || 1);
+  roundHistory = (Array.isArray(d.history) ? d.history : []).map(function(h){ return h === 'win' ? 'win' : 'lose'; });
+  fullHistory = [];
+  var sc = d.scores || {};
+  scores.me = Number(sc.p1) || 0; scores.op = Number(sc.p2) || 0;
+  hideResult(); hideZones(); resetGK(); render();
+  phase = 'choosing';
+  updateScores(); updUI();
+  var status = document.getElementById('status-bar');
+  var z1 = replayZone(d.p1Zone), z2 = replayZone(d.p2Zone);
+  if (d.phase === 'result' && z1 !== null && z2 !== null) {
+    var shooter = currentRound % 2 === 1 ? 1 : 2;
+    var shooterZone = shooter === 1 ? z1 : z2, keeperZone = shooter === 1 ? z2 : z1;
+    var isGoal = shooterZone !== keeperZone;
+    var iamShooter = shooter === 1;
+    if (d.animate) {
+      phase = 'showing';
+      resolveAnimation(shooterZone, keeperZone, isGoal, iamShooter, function(){ updateScores(); });
+    } else {
+      /* Saut dans la partie : on montre l'issue sans refaire le tir. */
+      shooterHL = shooterZone; keeperHL = keeperZone;
+      gkTX = SPOTS[keeperZone].x; gkTY = SPOTS[keeperZone].y; gkX = gkTX; gkY = gkTY; gkAngle = SPOT_GK_ANGLE[keeperZone]; gkTAngle = gkAngle;
+      roundHistory.push(isGoal === iamShooter ? 'win' : 'lose');
+      render(); updateScores();
+      showResult(isGoal ? 'BUT ! 🎉' : 'BLOQUÉ ! 🧤', isGoal ? 'goal' : 'saved', '');
+    }
+  } else {
+    status.className = 'show';
+    status.textContent = d.phase === 'locked' ? '🔒 Un choix est verrouillé' : '👁 Nouvelle manche — choix secrets';
+  }
+});
 window.addEventListener('resize', function(){
   if (!gameOver) initCanvas();
   confettiCanvas.width = window.innerWidth;

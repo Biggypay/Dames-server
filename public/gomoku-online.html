@@ -162,10 +162,12 @@ try {
   if (GAME_AUTH_TOKEN) history.replaceState(null, '', location.pathname + location.search);
 } catch (e) {}
 
-var IS_SPECTATOR = P.get('spectate') === '1';
+/* Mode replay (?replay=1) : aucune connexion, positions envoyees par l'application. */
+var IS_REPLAY = P.get('replay') === '1';
+var IS_SPECTATOR = P.get('spectate') === '1' || IS_REPLAY;
 var P1_AVATAR = P.get('p1Avatar') || '';
 var P2_AVATAR = P.get('p2Avatar') || '';
-var SHOW_CHROME = !(IS_SPECTATOR && (P.get('controls') === '0' || P.get('chrome') === '0'));
+var SHOW_CHROME = !(IS_SPECTATOR && (IS_REPLAY || P.get('controls') === '0' || P.get('chrome') === '0'));
 var SPECTATOR_TOKEN = '';
 var spectatorInitReceived = false;
 var ROOM_ID    = P.get('room')     || '';
@@ -1077,10 +1079,42 @@ initGame();
 draw();
 updUI();
 
-if (IS_SPECTATOR) {
+if (IS_REPLAY) {
+  try { window.parent.postMessage({ type: 'replay:ready', game: 'gomoku' }, '*'); } catch (_) {}
+} else if (IS_SPECTATOR) {
   try { window.parent.postMessage({ type: 'spectator:ready', game: 'gomoku', gameId: GAME_ID }, '*'); } catch (_) {}
 }
-initSocket();
+if (!IS_REPLAY) initSocket();
+
+/* ══════════════════════════════════════════
+   REPLAY : positions envoyees par l'application
+   replay:init     { player1Name, player2Name }
+   replay:position { board (225 chiffres : 0 vide, 1 / 2 = joueur), last:{r,c},
+                     slot, round, wins:{1,2}, animate }
+   Rien ne part vers le serveur ; aucune donnee de match n'est modifiee.
+══════════════════════════════════════════ */
+window.addEventListener('message', function (e) {
+  if (!IS_REPLAY || !e.data || e.source !== window.parent) return;
+  var d = e.data;
+  if (d.type === 'replay:init') {
+    if (typeof d.player1Name === 'string' && d.player1Name.trim()) P1_NAME = d.player1Name.trim().slice(0, 24);
+    if (typeof d.player2Name === 'string' && d.player2Name.trim()) P2_NAME = d.player2Name.trim().slice(0, 24);
+    MY_NAME = P1_NAME; OP_NAME = P2_NAME;
+    applyProfiles(); updUI();
+  } else if (d.type === 'replay:position') {
+    var cells = typeof d.board === 'string' && /^[0-2]{225}$/.test(d.board) ? d.board.split('').map(Number) : null;
+    if (!cells) return;
+    var ov = document.getElementById('waiting-overlay'); if (ov) ov.classList.add('hidden');
+    gameReady = true; gameOver = false; resultSent = true;
+    lastStateVersion = -1;
+    var next = { board: cells, currentSlot: d.slot === 1 ? 2 : 1 };
+    if (d.last && inBounds(d.last.r, d.last.c)) next.last = d.last;
+    applyServerState(next, undefined, !!d.animate);
+    if (!next.last) lastMove = null;
+    if (d.wins) updateSeriesUI({ regularRounds: 6, roundsPlayed: (d.round || 1) - 1, currentRound: d.round || 1, wins: d.wins, draws: 0, history: [], suddenDeath: false });
+    draw();
+  }
+});
 
 window.addEventListener('resize', function () {
   calcLayout();

@@ -279,6 +279,7 @@ body{
 .choice-btn span{font-size:12px;font-weight:600;letter-spacing:0.5px}
 body.spectator .choices{pointer-events:none;opacity:.32}
 body.spectator .choice-btn{cursor:default}
+body.replay .choices,body.replay #forfeit-bar{display:none!important}
 
 /* ── ROUNDS PROGRESS ── */
 .rounds-progress{display:flex;gap:6px;margin-top:5px;max-width:100%}
@@ -552,7 +553,9 @@ var P         = new URLSearchParams(window.location.search);
 var TOKEN_FRAGMENT = new URLSearchParams(window.location.hash.slice(1));
 var GAME_AUTH_TOKEN = TOKEN_FRAGMENT.get('token') || P.get('token') || '';
 if (TOKEN_FRAGMENT.has('token')) { try { history.replaceState(null, '', location.pathname + location.search); } catch (_) {} }
-var IS_SPECTATOR = P.get('spectate') === '1' || P.get('spectator') === '1';
+/* Mode replay (?replay=1) : aucune connexion, positions envoyees par l'application. */
+var IS_REPLAY = P.get('replay') === '1';
+var IS_SPECTATOR = P.get('spectate') === '1' || P.get('spectator') === '1' || IS_REPLAY;
 var SPECTATOR_TOKEN = '';
 var spectatorInitReceived = false;
 var ROOM_ID   = P.get('room')     || '';
@@ -597,7 +600,7 @@ var MY_SUPABASE_ID = MY_SLOT === 1 ? P1_ID : P2_ID;
 var OP_SUPABASE_ID = MY_SLOT === 1 ? P2_ID : P1_ID;
 var MY_NAME        = MY_SLOT === 1 ? P1_NAME : P2_NAME;
 var OP_NAME        = MY_SLOT === 1 ? P2_NAME : P1_NAME;
-if (IS_SPECTATOR) try { document.body.classList.add('spectator'); } catch (_) {}
+if (IS_SPECTATOR) try { document.body.classList.add('spectator'); if (IS_REPLAY) document.body.classList.add('replay'); } catch (_) {}
 
 /* ══════════════════════════════════════════
    CONSTANTES
@@ -1520,7 +1523,43 @@ function updUI() {
   setProfilePhoto('avatar-ai', MY_SLOT === 1 ? P2_AVATAR : P1_AVATAR, '👤');
 }
 
-if (IS_SPECTATOR) postToParent({ type:'spectator:ready', game:'chifoumi', gameId:GAME_ID });
+/* ══════════════════════════════════════════
+   REPLAY : positions envoyees par l'application
+   replay:init     { player1Name, player2Name }
+   replay:position { phase:'start'|'locked'|'result', round, total, scores:[s1,s2],
+                     choice1, choice2, winnerSlot, history:[{round, result, c1, c2}] }
+   Rien ne part vers le serveur ; aucune donnee de match n'est modifiee.
+══════════════════════════════════════════ */
+function replayChoice(v){ return v === 'pierre' || v === 'feuille' || v === 'ciseaux' ? v : null; }
+window.addEventListener('message', function(e){
+  if (!IS_REPLAY || !e.data || e.source !== window.parent) return;
+  var d = e.data;
+  if (d.type === 'replay:init') {
+    if (typeof d.player1Name === 'string' && d.player1Name.trim()) P1_NAME = d.player1Name.trim().slice(0, 24);
+    if (typeof d.player2Name === 'string' && d.player2Name.trim()) P2_NAME = d.player2Name.trim().slice(0, 24);
+    MY_NAME = P1_NAME; OP_NAME = P2_NAME; updUI();
+  } else if (d.type === 'replay:position') {
+    hideLoading(); waitingOverlay.classList.remove('show');
+    gameReady = true; gameOver = false;
+    if (Number(d.total) > 0 && Number(d.total) < 50) { MAX_ROUNDS = Number(d.total); ensureRoundDots(); }
+    currentRound = Math.max(1, Number(d.round) || 1);
+    roundHistory = (Array.isArray(d.history) ? d.history : []).map(function(h){
+      return { round:Number(h.round), result:h.result === 'win' || h.result === 'lose' ? h.result : 'draw', playerChoice:replayChoice(h.c1), opponentChoice:replayChoice(h.c2) };
+    });
+    rebuildProgressDots();
+    var sc = Array.isArray(d.scores) ? d.scores : [0, 0];
+    if (d.phase === 'result' && (replayChoice(d.choice1) || replayChoice(d.choice2))) {
+      renderSpectatorRoundResult({ round:currentRound, choice1:replayChoice(d.choice1), choice2:replayChoice(d.choice2), winnerSlot:Number(d.winnerSlot) || 0, scores:[Number(sc[0]) || 0, Number(sc[1]) || 0] });
+    } else {
+      playerScore = Number(sc[0]) || 0; opScore = Number(sc[1]) || 0;
+      startSpectatorRound();
+      if (d.phase === 'locked') markSpectatorChoicesLocked();
+    }
+  }
+});
+
+if (IS_REPLAY) { try { window.parent.postMessage({ type:'replay:ready', game:'chifoumi' }, '*'); } catch (_) {} }
+else if (IS_SPECTATOR) postToParent({ type:'spectator:ready', game:'chifoumi', gameId:GAME_ID });
 if (document.readyState === 'complete' || document.readyState === 'interactive') { initSocket(); }
 else { document.addEventListener('DOMContentLoaded', initSocket); }
 

@@ -182,12 +182,14 @@ if (TOKEN_FRAGMENT.has('token')) { try { history.replaceState(null, '', location
 /* Mode spectateur (lecture seule), active par ?spectate=1. Le spectateur ne
    rejoint jamais de place de joueur : il s'abonne au salon et ne fait que
    recevoir l'etat. Tout le chemin de code « joueur » reste intact. */
-var IS_SPECTATOR = (P.get('spectate') === '1' || P.get('spectator') === '1');
+/* Mode replay (?replay=1) : aucune connexion, positions envoyees par l'application. */
+var IS_REPLAY = (P.get('replay') === '1');
+var IS_SPECTATOR = (P.get('spectate') === '1' || P.get('spectator') === '1' || IS_REPLAY);
 var P1_AVATAR = P.get('p1Avatar') || '';
 var P2_AVATAR = P.get('p2Avatar') || '';
 /* Vue depouillee par defaut cote spectateur : l'application le demande via
    ?controls=0 puis, a chaque bascule, par le message spectator:controls. */
-var SHOW_CHROME = !(IS_SPECTATOR && (P.get('controls') === '0' || P.get('chrome') === '0'));
+var SHOW_CHROME = !(IS_SPECTATOR && (IS_REPLAY || P.get('controls') === '0' || P.get('chrome') === '0'));
 var SPECTATOR_TOKEN = '';
 var spectatorInitReceived = false;
 var ROOM_ID    = P.get('room')     || '';
@@ -1370,11 +1372,51 @@ draw();
 /* ✅ FIX 2 — supprimé : document.getElementById('loading').style.display = 'flex'
    waiting-overlay est déjà visible par défaut dans le HTML, cette ligne était inutile et crashait */
 
-if (IS_SPECTATOR) {
+if (IS_REPLAY) {
+  try { window.parent.postMessage({ type:'replay:ready', game:'quoridor' }, '*'); } catch(_) {}
+} else if (IS_SPECTATOR) {
   /* On previent l'application hote que la page est prete a recevoir le jeton. */
   try { window.parent.postMessage({ type:'spectator:ready', game:'quoridor', gameId:GAME_ID }, '*'); } catch(_) {}
 }
-initSocket();
+if (!IS_REPLAY) initSocket();
+
+/* ══════════════════════════════════════════
+   REPLAY : positions envoyees par l'application
+   replay:init     { player1Name, player2Name }
+   replay:position { s1Pos, s2Pos, s1Walls, s2Walls, hW, vW, slot }
+   Rien ne part vers le serveur ; aucune donnee de match n'est modifiee.
+══════════════════════════════════════════ */
+function replayGrid(g){
+  if (!Array.isArray(g) || g.length !== 8) return null;
+  var out = [];
+  for (var i = 0; i < 8; i++) {
+    if (!Array.isArray(g[i]) || g[i].length !== 8) return null;
+    out[i] = g[i].map(function(v){ return v === true; });
+  }
+  return out;
+}
+function replayPawn(p){
+  return p && Number.isInteger(p.r) && Number.isInteger(p.c) && p.r >= 0 && p.r < 9 && p.c >= 0 && p.c < 9 ? { r:p.r, c:p.c } : null;
+}
+window.addEventListener('message', function(e){
+  if (!IS_REPLAY || !e.data || e.source !== window.parent) return;
+  var d = e.data;
+  if (d.type === 'replay:init') {
+    if (typeof d.player1Name === 'string' && d.player1Name.trim()) P1_NAME = d.player1Name.trim().slice(0, 24);
+    if (typeof d.player2Name === 'string' && d.player2Name.trim()) P2_NAME = d.player2Name.trim().slice(0, 24);
+    MY_NAME = P1_NAME; OP_NAME = P2_NAME;
+    applyProfiles();
+  } else if (d.type === 'replay:position') {
+    var a = replayPawn(d.s1Pos), b = replayPawn(d.s2Pos), h = replayGrid(d.hW), v = replayGrid(d.vW);
+    if (!a || !b || !h || !v) return;
+    var ov = document.getElementById('waiting-overlay');
+    if (ov) { ov.style.opacity = '0'; setTimeout(function(){ ov.style.display = 'none'; }, 400); }
+    gameReady = true; gameOver = false; resultSent = true;
+    restoreFromState({ s1Pos:a, s2Pos:b, s1Walls:Number(d.s1Walls), s2Walls:Number(d.s2Walls), hW:h, vW:v, currentSlot:(d.slot === 1 ? 2 : 1) });
+    vmoves = []; vhw = []; vvw = []; mode = 'wait';
+    draw();
+  }
+});
 window.addEventListener('resize', function() { 
     calcLayout(); 
     draw(); 
