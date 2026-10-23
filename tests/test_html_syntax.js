@@ -8,6 +8,7 @@ const files = [
   'public/penalty-online.html',
   'public/gomoku-online.html',
   'public/gomoku_ai.html',
+  'public/tikan-online.html',
   'public/local-pass-and-play.html'
 ];
 

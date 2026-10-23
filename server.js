@@ -22,6 +22,7 @@ const { ChessEngineFactory } = require('./public/echecs-engine.js');
 const ChessClock = require('./lib/chess-clock.js');
 const TurnClock = require('./lib/turn-clock.js');
 const MatchSummary = require('./lib/match-summary.js');
+const TikanEngine = require('./lib/tikan-engine.js');
 const ChessEngine = ChessEngineFactory();
 const crypto     = require('crypto');
 const { ensureSeriesState, seriesPayload, recordRoundResult, advanceRoundStarter } = require('./lib/gomoku-series');
@@ -150,6 +151,7 @@ const chifoumiRooms = new Map();
 const echecsRooms   = new Map();
 const ludoRooms      = new Map();
 const gomokuRooms   = new Map();
+const tikanRooms    = new Map();
 
 // ══════════════════════════════════════════════════════════
 //  SÉCURITÉ — limiteur de débit, validation, anti-fraude
@@ -198,7 +200,7 @@ function socketIsPlayer(room, socketId) {
 // Si la partie était en pause parce que CE joueur s'était déconnecté (jamais
 // une pause de tournoi), son retour la reprend exactement comme `*_join` :
 // même tour, avec le temps déjà consommé.
-const RESUME_EVENT_PREFIX = { dames: 'dames', tictactoe: 'ttt', quoridor: 'quoridor', penalty: 'penalty', chifoumi: 'chifoumi', echecs: 'echecs', ludo: 'ludo', gomoku: 'gomoku' };
+const RESUME_EVENT_PREFIX = { dames: 'dames', tictactoe: 'ttt', quoridor: 'quoridor', penalty: 'penalty', chifoumi: 'chifoumi', echecs: 'echecs', ludo: 'ludo', gomoku: 'gomoku', tikan: 'tikan' };
 function claimPlayerSocket(socket, roomState, roomId, player) {
   const seat = roomState?.players?.[player];
   if (!seat) return false;
@@ -286,8 +288,8 @@ function bindDatabaseGame(room, gameId) {
   return true;
 }
 
-const DB_GAME_TYPES = { dames: 'checkers', tictactoe: 'tictactoe', quoridor: 'quoridor', penalty: 'penalty_shootout', chifoumi: 'rock_paper_scissors', echecs: 'chess', ludo: 'ludo', gomoku: 'gomoku' };
-const ROOM_MAPS = { dames: damesRooms, tictactoe: tttRooms, quoridor: quoriRooms, penalty: penaltyRooms, chifoumi: chifoumiRooms, echecs: echecsRooms, ludo: ludoRooms, gomoku: gomokuRooms };
+const DB_GAME_TYPES = { dames: 'checkers', tictactoe: 'tictactoe', quoridor: 'quoridor', penalty: 'penalty_shootout', chifoumi: 'rock_paper_scissors', echecs: 'chess', ludo: 'ludo', gomoku: 'gomoku', tikan: 'tikan' };
+const ROOM_MAPS = { dames: damesRooms, tictactoe: tttRooms, quoridor: quoriRooms, penalty: penaltyRooms, chifoumi: chifoumiRooms, echecs: echecsRooms, ludo: ludoRooms, gomoku: gomokuRooms, tikan: tikanRooms };
 // Room snapshots are persisted after actual state changes. The periodic loop is
 // only a crash-safety fallback and the fingerprint below makes unchanged rooms
 // a no-op. Persisting every room every three seconds generated unnecessary WAL
@@ -387,6 +389,11 @@ function serializableRoomState(room) {
 }
 
 function persistedRoomPayload(gameName, room) {
+  // TIKAN est un jeu d'action en temps réel : sa simulation (positions, vitesses,
+  // ballon) ne se « sauvegarde » pas utilement. Surtout, `save_game_server_room_states`
+  // refuse en bloc tout lot contenant un type de jeu qu'elle ne connaît pas : un seul
+  // salon TIKAN dans le lot ferait échouer la sauvegarde de TOUS les autres jeux.
+  if (gameName === 'tikan') return null;
   if (!room || !validRoom(room.id) || !isUuid(room.databaseGameId)) return null;
   if (!['waiting', 'playing', 'paused', 'finished'].includes(room.status)) return null;
   return {
@@ -978,6 +985,16 @@ function spectatorRoomSnapshot(gameName, room) {
     };
   }
   if (gameName === 'ludo') return { ...common, state: ludoPublicState(room) };
+  if (gameName === 'tikan') {
+    return {
+      ...common,
+      state: {
+        snap: room.sim ? TikanEngine.snapshot(room.sim) : null,
+        field: TikanEngine.FIELD,
+        maxGoals: TikanEngine.RULES.MAX_GOALS
+      }
+    };
+  }
   if (gameName === 'gomoku') {
     return {
       ...common,
@@ -2384,6 +2401,7 @@ function clearTimersForGame(gameName, room) {
   else if (gameName === 'echecs') clearEchecsTurnTimers(room);
   else if (gameName === 'ludo') clearLudoTurnTimers(room);
   else if (gameName === 'gomoku') clearGomokuTurnTimers(room);
+  else if (gameName === 'tikan') stopTikanSimulation(room);
 }
 
 // Reprise après une pause : le même tour continue avec le temps qu'il lui
@@ -2398,6 +2416,7 @@ function resumeTimersForGame(gameName, room) {
   else if (gameName === 'penalty') startPenaltyTurnTimer(room, room.id);
   else if (gameName === 'chifoumi') resumeChifoumiRound(room, room.id);
   else if (gameName === 'ludo') startLudoTurnTimer(room, room.id);
+  else if (gameName === 'tikan') resumeTikanSimulation(room);
 }
 
 function setTournamentRoomPaused(gameName, room, paused, revision) {
@@ -2671,6 +2690,126 @@ function notifyGomokuRoomOver(groom, roomId, winnerSlot, reason = 'normal') {
   io.to(roomId).emit('game:result', { postMessage: base });
 }
 
+// ══════════════════════════════════════════════════════════
+//  TIKAN — football arcade 1 contre 1, moteur autoritatif (lib/tikan-engine.js)
+// ══════════════════════════════════════════════════════════
+// Pas de tour de jeu : tout se passe en temps réel. Les joueurs n'envoient que
+// leurs entrées (joystick, tir, dégagement, sprint) ; le serveur simule à pas
+// fixe (60 Hz), applique les règles (buts, coins, cartons) et diffuse un
+// instantané ~30 fois par seconde. Aucune position ne vient jamais d'un client.
+const TIKAN_LOOP_MS = 10;
+const TIKAN_SEND_EVERY = 2;          // un instantané tous les 2 pas = 30 Hz
+const TIKAN_MAX_STEPS_PER_LOOP = 5;  // un serveur qui a pris du retard n'accélère pas la partie
+const TIKAN_INPUT_STALE_MS = 450;    // une entrée qui n'est plus rafraîchie est lâchée
+
+function tikanNewRoom(roomId, bet, currency) {
+  return {
+    id: roomId, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG',
+    disconnectTimer: null, sim: null, simRunning: false, simLast: 0, simAcc: 0, simSteps: 0,
+    inputs: { 1: TikanEngine.NO_INPUT, 2: TikanEngine.NO_INPUT }, inputAt: { 1: 0, 2: 0 }
+  };
+}
+
+function tikanStartPayload(troom, slot, reconnected) {
+  const opp = troom.players[slot === 1 ? 2 : 1];
+  return {
+    room: troom.id, yourSlot: slot, opponentName: opp?.name || 'Adversaire',
+    bet: troom.betAmount, currency: troom.currency, reconnected: reconnected === true,
+    paused: troom.status === 'paused', field: TikanEngine.FIELD, maxGoals: TikanEngine.RULES.MAX_GOALS,
+    snap: troom.sim ? TikanEngine.snapshot(troom.sim) : null, serverTime: Date.now()
+  };
+}
+
+function resumeTikanSimulation(troom) {
+  if (!troom) return;
+  troom.simRunning = true;
+  troom.simLast = Date.now();
+  troom.simAcc = 0;
+  troom.inputs = { 1: TikanEngine.NO_INPUT, 2: TikanEngine.NO_INPUT };
+}
+
+function stopTikanSimulation(troom) {
+  if (!troom) return;
+  troom.simRunning = false;
+  troom.inputs = { 1: TikanEngine.NO_INPUT, 2: TikanEngine.NO_INPUT };
+}
+
+function startTikanMatch(troom, roomId) {
+  troom.status = 'playing';
+  troom.startedAt = Date.now();
+  troom.sim = TikanEngine.createState();
+  troom.simSteps = 0;
+  resumeTikanSimulation(troom);
+  for (const slot of [1, 2]) {
+    const p = troom.players[slot];
+    if (p?.socketId) io.to(p.socketId).emit('tikan_start', tikanStartPayload(troom, slot, false));
+  }
+}
+
+function handleTikanEvents(troom, roomId, events) {
+  for (const ev of events) {
+    io.to(roomId).emit('tikan_event', ev);
+    if (ev.t === 'over') {
+      stopTikanSimulation(troom);
+      notifyTikanRoomOver(troom, roomId, ev.winnerSlot, ev.reason);
+      return;
+    }
+  }
+}
+
+const _tikanLoop = setInterval(() => {
+  const now = Date.now();
+  const stepMs = TikanEngine.STEP * 1000;
+  for (const [roomId, troom] of tikanRooms) {
+    if (troom.status !== 'playing' || !troom.sim || !troom.simRunning) continue;
+    let acc = (troom.simAcc || 0) + (now - (troom.simLast || now));
+    troom.simLast = now;
+    if (acc > stepMs * TIKAN_MAX_STEPS_PER_LOOP) acc = stepMs * TIKAN_MAX_STEPS_PER_LOOP;
+    let steps = 0, send = false;
+    while (acc >= stepMs && steps < TIKAN_MAX_STEPS_PER_LOOP && !troom.sim.over) {
+      const live = slot => (now - troom.inputAt[slot] <= TIKAN_INPUT_STALE_MS ? troom.inputs[slot] : TikanEngine.NO_INPUT);
+      const events = TikanEngine.step(troom.sim, [live(1), live(2)], TikanEngine.STEP);
+      acc -= stepMs; steps++; troom.simSteps++;
+      if (events.length) handleTikanEvents(troom, roomId, events);
+      if (troom.status !== 'playing') break;
+      if (troom.simSteps % TIKAN_SEND_EVERY === 0) send = true;
+    }
+    troom.simAcc = acc;
+    if (send && troom.status === 'playing') {
+      io.to(roomId).volatile.emit('tikan_state', { ...TikanEngine.snapshot(troom.sim), st: now });
+    }
+  }
+}, TIKAN_LOOP_MS);
+if (_tikanLoop.unref) _tikanLoop.unref();
+
+function notifyTikanRoomOver(troom, roomId, winnerSlot, reason = 'normal') {
+  if (troom.status === 'finished') return;
+  troom.status = 'finished'; stopTikanSimulation(troom);
+  if (troom.disconnectTimer) { clearTimeout(troom.disconnectTimer); troom.disconnectTimer = null; }
+  const { bet, totalPot, commission, netGain } = calcFinancial(troom.betAmount);
+  const p1 = troom.players[1], p2 = troom.players[2];
+  const scores = troom.sim ? [...troom.sim.sc] : [0, 0];
+  const stats = troom.sim ? {
+    shots: [...troom.sim.stats.shots], onTarget: [...troom.sim.stats.onTarget], poss: [...troom.sim.stats.poss],
+    cards: [...troom.sim.cards]
+  } : null;
+  void settleRoomInSupabase(troom, 'tikan', winnerSlot, reason);
+
+  if (winnerSlot === 0) {
+    const base = { type: 'game_over', game: 'tikan', room: roomId, winner: 'draw', winnerSlot: 0, p1Id: p1?.supabaseId, p2Id: p2?.supabaseId, betAmount: bet, totalPot, commission: 0, netGain: bet, currency: troom.currency || 'HTG', reason: reason === 'both_disconnected' || reason === 'mutual_quit' ? reason : 'draw', scores, stats };
+    if (p1?.socketId) { io.to(p1.socketId).emit('game:over', { ...base, result: 'draw', myResult: 0 }); io.to(p1.socketId).emit('game:result', { postMessage: { ...base, result: 'draw' } }); }
+    if (p2?.socketId) { io.to(p2.socketId).emit('game:over', { ...base, result: 'draw', myResult: 0 }); io.to(p2.socketId).emit('game:result', { postMessage: { ...base, result: 'draw' } }); }
+    io.to(roomId).emit('game:result', { postMessage: base });
+    return;
+  }
+
+  const winP = winnerSlot === 1 ? p1 : p2, losP = winnerSlot === 1 ? p2 : p1;
+  const base = { type: 'game_over', game: 'tikan', room: roomId, winner: winnerSlot === 1 ? 'player1' : 'player2', winnerSlot, winnerSupabaseId: winP?.supabaseId, loserSupabaseId: losP?.supabaseId, p1Id: p1?.supabaseId, p2Id: p2?.supabaseId, betAmount: bet, totalPot, commission, netGain, currency: troom.currency || 'HTG', reason, scores, stats };
+  if (winP?.socketId) { io.to(winP.socketId).emit('game:over', { ...base, result: 'win',  myResult: +netGain }); io.to(winP.socketId).emit('game:result', { postMessage: { ...base, result: 'win',  myResult: +netGain } }); }
+  if (losP?.socketId) { io.to(losP.socketId).emit('game:over', { ...base, result: 'loss', myResult: -bet }); io.to(losP.socketId).emit('game:result', { postMessage: { ...base, result: 'loss', myResult: -bet } }); }
+  io.to(roomId).emit('game:result', { postMessage: base });
+}
+
 function notifyPenaltyRoomOver(proom, roomId, winnerSlot, reason = 'normal') {
   if (proom.status === 'finished') return;
   proom.status = 'finished'; clearPenaltyTurnTimers(proom);
@@ -2793,7 +2932,8 @@ function getRoomFinisher(gameName) {
     chifoumi: notifyChifoumiRoomOver,
     echecs: notifyEchecsRoomOver,
     ludo: notifyLudoRoomOver,
-    gomoku: notifyGomokuRoomOver
+    gomoku: notifyGomokuRoomOver,
+    tikan: notifyTikanRoomOver
   }[gameName] || null;
 }
 
@@ -2891,7 +3031,7 @@ app.get('/health', (req, res) => {
     games: games.size, damesRooms: damesRooms.size,
     tttRooms: tttRooms.size, quoriRooms: quoriRooms.size,
     penaltyRooms: penaltyRooms.size, chifoumiRooms: chifoumiRooms.size,
-    echecsRooms: echecsRooms.size, ludoRooms: ludoRooms.size,
+    echecsRooms: echecsRooms.size, ludoRooms: ludoRooms.size, tikanRooms: tikanRooms.size,
     ludoConfig: { finish: LUDO_FINISH, starts: { yellow: LUDO_START_OFFSET[1], blue: LUDO_START_OFFSET[2] } },
     spectatorProtocol: { version: 1, event: 'spectator_join', readOnly: true },
     queuedPlayers: [...queue.values()].reduce((total, players) => total + players.length, 0)
@@ -3021,6 +3161,9 @@ app.get(['/echecs-ai', '/echecs_ai.html', '/echecs-solo', '/echecs-entrainement'
 
 app.get(['/gomoku', '/gomoku.html', '/gomoku-online.html', '/gomoku_multi.html', '/morpion5', '/morpion-cinq'], serveSmart(['gomoku-online.html', 'gomoku_multi.html', 'gomoku.html']));
 app.get(['/gomoku-ai', '/gomoku_ai.html', '/gomoku-solo', '/gomoku-entrainement', '/gomoku-ia', '/morpion5-ai', '/morpion5-ia'], serveSmart(['gomoku_ai.html', 'gomoku-ai.html']));
+
+app.get(['/tikan', '/tikan.html', '/tikan-online.html', '/tikan_multi.html'], serveSmart(['tikan-online.html', 'tikan_multi.html', 'tikan.html']));
+app.get(['/tikan-ai', '/tikan_ai.html', '/tikan-solo', '/tikan-entrainement', '/tikan-ia'], serveSmart(['tikan_ai.html', 'tikan-ai.html']));
 
 // ── MODES AMI OFFLINE / MÊME APPAREIL ─────────────────────
 // Conserve les noms éventuels passés par l'app et force seulement le type de jeu.
@@ -4118,6 +4261,67 @@ io.on('connection', (socket) => {
   });
 
   // ══════════════════════════════════════════════════════
+  //  TIKAN MULTIJOUEUR (football arcade — moteur serveur)
+  // ══════════════════════════════════════════════════════
+  socket.on('tikan_join', async ({ room, player, supabaseId, name, bet, currency, gameId }) => {
+    if (!validRoom(room) || !validPlayerSlot(player)) return rejectSocket(socket, 'Room ou joueur invalide.');
+    const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'tikan', player, bet, room);
+    if (!databaseCheck.ok) return rejectSocket(socket, databaseCheck.message);
+    let troom = tikanRooms.get(room);
+    if (!troom) {
+      troom = tikanNewRoom(room, bet, currency);
+      tikanRooms.set(room, troom);
+    }
+    if (!bindDatabaseGame(troom, gameId)) return rejectSocket(socket, 'Cette room est déjà liée à une autre partie.');
+    if (!joinRoomAsAuthenticatedPlayer(socket, troom, room, player, supabaseId, name)) return;
+    if (bet && !troom.betAmount) troom.betAmount = bet;
+
+    // Retour d'un joueur (rechargement, coupure 4G) : même partie, même score.
+    if (troom.status === 'playing' || troom.status === 'paused') {
+      const p1 = troom.players[1], p2 = troom.players[2];
+      const bothBack = p1?.connected && p2?.connected;
+      if (bothBack && troom.disconnectTimer && !troom.adminPaused) {
+        clearTimeout(troom.disconnectTimer); troom.disconnectTimer = null; troom.reconnectDeadline = null;
+        troom.status = 'playing';
+        resumeTikanSimulation(troom);
+        io.to(room).emit('tikan_game_resumed', { message: 'Les deux joueurs sont de retour. La partie reprend !' });
+      } else if (troom.disconnectTimer) {
+        setTimeout(() => socket.emit('game:reconnect_deadline', { game: 'tikan', serverTime: Date.now(), reconnectDeadline: troom.reconnectDeadline }), 0);
+      }
+      socket.to(room).emit('tikan_player_status', { slot: player, connected: true, name });
+      socket.to(room).emit('player:reconnected', { message: `${name} est de retour !` });
+      socket.emit('tikan_start', tikanStartPayload(troom, player, true));
+      return;
+    }
+
+    if (troom.players[1] && troom.players[2] && troom.status === 'waiting') {
+      startTikanMatch(troom, room);
+    }
+  });
+
+  // Entrées d'un joueur : JAMAIS une position. Bornées par le moteur.
+  socket.on('tikan_input', ({ room, player, input } = {}) => {
+    if (!validRoom(room) || !validPlayerSlot(player)) return;
+    if (!socketAllow(socket.id, 'tikan_input', 120, 1000)) return;
+    const troom = tikanRooms.get(room);
+    if (!troom || !claimPlayerSocket(socket, troom, room, player) || troom.status !== 'playing') return;
+    troom.inputs[player] = TikanEngine.sanitizeInput(input);
+    troom.inputAt[player] = Date.now();
+  });
+
+  socket.on('tikan_request_state', ({ room } = {}) => {
+    if (!validRoom(room) || !socketAllow(socket.id, 'tikan_state', 12, 10000)) return;
+    const troom = tikanRooms.get(room);
+    if (!troom || !troom.sim) return;
+    if (!socketIsPlayer(troom, socket.id) && socket.spectatorRoomId !== room) return;
+    socket.emit('tikan_state', { ...TikanEngine.snapshot(troom.sim), st: Date.now() });
+  });
+
+  socket.on('tikan_result', () => {
+    // Intentionnellement ignoré : seul le moteur serveur termine la partie.
+  });
+
+  // ══════════════════════════════════════════════════════
   //  PENALTY SHOOTOUT MULTIJOUEUR
   // ══════════════════════════════════════════════════════
   socket.on('penalty_join', async ({ room, player, supabaseId, name, bet, currency, gameId }) => {
@@ -4531,7 +4735,8 @@ io.on('connection', (socket) => {
       chifoumi: [chifoumiRooms, notifyChifoumiRoomOver],
       echecs: [echecsRooms, notifyEchecsRoomOver],
       ludo: [ludoRooms, notifyLudoRoomOver],
-      gomoku: [gomokuRooms, notifyGomokuRoomOver]
+      gomoku: [gomokuRooms, notifyGomokuRoomOver],
+      tikan: [tikanRooms, notifyTikanRoomOver]
     };
     const entry = entries[game];
     if (!entry) return;
@@ -4661,6 +4866,26 @@ io.on('connection', (socket) => {
       clearGomokuTurnTimers(groom);
       pauseAndWatch({ room: groom, roomId, gameName: 'gomoku', getP1: () => groom.players[1], getP2: () => groom.players[2], winFn: (winnerIsP1) => notifyGomokuRoomOver(groom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startGomokuTurnTimer(groom, roomId) });
       followAbsentTurn('gomoku', groom, roomId);
+      break;
+    }
+
+    // TIKAN Multijoueur : la simulation s'arrête ; 60 s pour revenir, sinon forfait.
+    for (const [roomId, troom] of tikanRooms.entries()) {
+      if (troom.status !== 'playing' && troom.status !== 'paused') continue;
+      let disconnectedSlot = null;
+      for (const [slot, p] of Object.entries(troom.players)) { if (p.socketId === socket.id) { disconnectedSlot = parseInt(slot); break; } }
+      if (disconnectedSlot === null) continue;
+      troom.players[disconnectedSlot].connected = false;
+      const dcName = troom.players[disconnectedSlot]?.name || `Joueur ${disconnectedSlot}`;
+      socket.to(roomId).emit('tikan_player_status', { slot: disconnectedSlot, connected: false, name: dcName });
+      socket.to(roomId).emit('tikan_opponent_disconnected', { slot: disconnectedSlot, message: `${dcName} s'est déconnecté.` });
+      stopTikanSimulation(troom);
+      pauseAndWatch({
+        room: troom, roomId, gameName: 'tikan',
+        getP1: () => troom.players[1], getP2: () => troom.players[2],
+        winFn: (winnerIsP1) => notifyTikanRoomOver(troom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'),
+        onResume: () => resumeTikanSimulation(troom)
+      });
       break;
     }
 
