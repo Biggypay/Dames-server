@@ -286,7 +286,6 @@ var board = [], selectedPiece = null, validMoves = [];
 var capturedBy = [0, 0];
 var moveSequence = [], isSequenceActive = false;
 var currentTurnCaptures = [];
-var idleMoves = 0;
 
 var TIMER_DURATION = 30000, CIRC = 2*Math.PI*26;
 var timerStart = null, timerRAF = null, timerActive = false;
@@ -574,8 +573,7 @@ function initSocket(){
       showToast('⚠️','Partie annulée','Déconnexion.\nPénalité appliquée.', 4000, function(){ sendResult('cancel', 'both_disconnected'); });
       return;
     }
-    var iWon = d.winnerSupabaseId === MY_SUPABASE_ID || (d.winnerSlot && d.winnerSlot === MY_SLOT) || (d.winner === 'player1' && MY_SLOT === 1) || (d.winner === 'player2' && MY_SLOT === 2);
-    handleGameEnd(iWon ? MY_PLAYER : 1-MY_PLAYER, 'forfeit');
+    handleServerOutcome(d);
   });
 
   socket.on('game:result', function(d){
@@ -586,10 +584,18 @@ function initSocket(){
         handleSpectatorGameEnd(spectatorWinner, d.postMessage.reason || 'normal');
         return;
       }
-      var iWon = d.postMessage.result === 'win';
-      handleGameEnd(iWon ? MY_PLAYER : 1-MY_PLAYER, 'forfeit');
+      handleServerOutcome(d.postMessage);
     }
   });
+}
+
+/* Le résultat du serveur tel quel : nulle, victoire ou défaite, et sa vraie
+   raison (prise de la dernière pièce, temps, forfait, abandon). */
+function handleServerOutcome(d){
+  if(!d) return;
+  if(d.result === 'draw' || d.winner === 'draw' || d.winnerSlot === 0){ handleGameEnd(-1, 'draw'); return; }
+  var iWon = d.result === 'win' || d.winnerSupabaseId === MY_SUPABASE_ID || (d.winnerSlot && d.winnerSlot === MY_SLOT) || (d.winner === 'player1' && MY_SLOT === 1) || (d.winner === 'player2' && MY_SLOT === 2);
+  handleGameEnd(iWon ? MY_PLAYER : 1-MY_PLAYER, d.reason || 'normal');
 }
 
 function applyPendingTimer(){
@@ -1221,7 +1227,6 @@ function executePlayerStep(from, to){
   var originRow = isSequenceActive ? moveSequence[0].from.row : from.row;
   var originCol = isSequenceActive ? moveSequence[0].from.col : from.col;
 
-  if(!isSequenceActive) window.turnWasPawnMove = !board[from.row][from.col].king;
 
   selectedPiece = null; validMoves = []; clearHighlights();
 
@@ -1269,7 +1274,6 @@ function afterPlayerStep(to, mesh, originRow, originCol){
 
   // --- FIN DU TOUR & EMIT ---
   if(currentTurnCaptures.length > 0){
-      idleMoves = 0;
       var caps = currentTurnCaptures.slice();
       currentTurnCaptures = [];
       var cc = 0;
@@ -1286,7 +1290,6 @@ function afterPlayerStep(to, mesh, originRow, originCol){
       }
       explodeNext();
   } else {
-      if(window.turnWasPawnMove) idleMoves = 0; else idleMoves++;
       finishTurnEnd();
   }
 
@@ -1313,10 +1316,10 @@ function afterPlayerStep(to, mesh, originRow, originCol){
       }
 
       moveSequence = [];
-      if(idleMoves >= 50) { handleGameEnd(-1, 'draw'); return; }
-
-      var winner = checkGameOver();
-      if(winner >= 0){ handleGameEnd(winner, 'normal'); return; }
+      // Victoire, défaite ou nulle : seul le serveur tranche (game:over). Un
+      // plateau qui concluait seul s'arrêtait pendant que la partie continuait
+      // sur le serveur, et finissait au temps contre l'un des deux.
+      checkGameOver();
 
       currentPlayer = nextPlayer;
       isProcessing = false; showLastMoveOrigin(originRow, originCol);
@@ -1334,8 +1337,7 @@ function executeRemoteSequence(steps, isComplete, nextPlayer) {
   
   function nextStep() {
     if(stepIdx >= steps.length) {
-      var winner = checkGameOver();
-      if(winner >= 0){ handleGameEnd(winner, 'normal'); return; }
+      checkGameOver(); // compteurs seulement : la fin vient du serveur
       if(isComplete) currentPlayer = typeof nextPlayer === 'number' ? nextPlayer : MY_PLAYER;
       isProcessing = false; updUI();
       if(!timerActive && !graceActive) applyPendingTimer();
@@ -1393,8 +1395,10 @@ function handleGameEnd(winner, reason){
   var winnerEmoji = humanWon ? (MY_PLAYER===0?'⚪':'🔴') : (MY_PLAYER===0?'🔴':'⚪');
   var title = humanWon ? 'Vous avez gagné cette partie !' : 'Vous avez perdu cette partie.';
   var sub;
-  if(reason === 'forfeit') sub = humanWon ? 'L\'adversaire a abandonné.' : 'Vous avez abandonné la partie.';
-  else if(reason === 'draw') { title = 'Match Nul'; sub = '50 coups joués sans prise.'; winnerEmoji = '🤝'; }
+  if(reason === 'forfeit') sub = humanWon ? 'L\'adversaire ne s\'est pas reconnecté à temps.' : 'Vous ne vous êtes pas reconnecté à temps.';
+  else if(reason === 'resign') sub = humanWon ? 'L\'adversaire a abandonné.' : 'Vous avez abandonné la partie.';
+  else if(reason === 'timeout') sub = humanWon ? 'Le temps de l\'adversaire est écoulé.' : 'Votre temps de jeu est écoulé.';
+  else if(reason === 'draw') { title = 'Match Nul'; sub = 'La partie se termine sans vainqueur.'; winnerEmoji = '🤝'; }
   else sub = humanWon ? ('Félicitations ! Victoire avec les pions '+colorStr+'.\n'+wc+' pions restants contre '+rc+'.') : (OP_NAME+' remporte la partie.\n'+wc+' pions restants contre '+rc+'.');
   
   if(humanWon) createConfetti();
