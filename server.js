@@ -598,15 +598,12 @@ async function restorePersistedRooms() {
         room.reconnectDeadline = null;
       } else if (room.status === 'paused') {
         // A Render restart disconnects both sockets. Keep the exact board, but
-        // apply the same 60-second reconnect rule as a normal disconnection.
-        room.reconnectDeadline = Date.now() + 60000;
-        room.disconnectTimer = setTimeout(() => {
-          room.disconnectTimer = null;
-          if (room.status !== 'finished' && !room.players[1]?.connected && !room.players[2]?.connected) {
-            finishBothDisconnected(room, record.game_type, room.id);
-          }
-        }, 60000);
-        if (room.disconnectTimer.unref) room.disconnectTimer.unref();
+        // apply the same 60-second reconnect rule as a normal disconnection —
+        // all of it: the one who came back wins if the other never does.
+        // Handling only « both absent » left a room paused forever as soon as
+        // one player returned alone, and one that came back late could never
+        // resume it.
+        armReconnectDeadline(record.game_type, room, room.id);
       }
     }
     if (restored) console.info('[persistence] restored rooms', restored);
@@ -1524,6 +1521,8 @@ const testDurationMs = (name, fallback) =>
   (process.env.NODE_ENV === 'test' && Number(process.env[name]) > 0 ? Number(process.env[name]) : fallback);
 const TURN_DURATION  = testDurationMs('TURN_DURATION_MS', 30 * 1000);
 const GRACE_DURATION = testDurationMs('GRACE_DURATION_MS', 60 * 1000);
+// Délai laissé à un joueur déconnecté pour revenir avant le forfait.
+const RECONNECT_DURATION = testDurationMs('RECONNECT_DURATION_MS', 60 * 1000);
 
 const opponentOf = slot => (slot === 1 ? 2 : 1);
 const onlySlots = slots => slots.filter(slot => slot === 1 || slot === 2);
@@ -1749,6 +1748,12 @@ function startDamesTurnTimer(droom, roomId) { runTurnClock('dames', droom, roomI
 // renvoie donc l'état exact à intervalle régulier et sur demande, pour qu'un
 // coup perdu se corrige tout seul au lieu de geler la partie.
 const DAMES_SYNC_INTERVAL = 5000;
+// Nulle : 25 coups de chaque côté (50 en tout) où seules des dames bougent,
+// sans aucune prise. C'est le serveur qui la prononce. Le plateau la
+// prononçait seul, chacun avec son propre compte, pendant que le serveur
+// continuait la partie : elle finissait plus tard au temps, contre l'un des
+// deux, alors que les deux écrans avaient affiché « Match nul ».
+const DAMES_DRAW_QUIET_MOVES = 50;
 
 function damesSnapshot(droom) {
   const snap = {
@@ -2449,7 +2454,13 @@ function setTournamentRoomPaused(gameName, room, paused, revision) {
       message: bothConnected ? 'Le tournoi reprend.' : 'Le tournoi reprend dès le retour des deux joueurs.'
     });
     if (bothConnected) resumeTimersForGame(gameName, room);
-    else if (TURN_GAMES[gameName]) followAbsentTurn(gameName, room, room.id);
+    else {
+      if (TURN_GAMES[gameName]) followAbsentTurn(gameName, room, room.id);
+      // Celui qui est parti pendant la pause a le délai de reconnexion
+      // ordinaire, pas un délai infini : sans échéance, la partie restait en
+      // pause pour toujours et le tableau du tournoi ne pouvait plus avancer.
+      armReconnectDeadline(gameName, room, room.id);
+    }
   }
   persistRoomSoon(gameName, room);
 }
@@ -2478,7 +2489,7 @@ function finishBothDisconnected(room, gameName, roomId) {
 // ══════════════════════════════════════════════════════════
 //  PAUSE / REPRISE / ANNULATION (Sanction 5% si les deux abandonnent)
 // ══════════════════════════════════════════════════════════
-function pauseAndWatch({ room, roomId, gameName, getP1, getP2, winFn, onResume }) {
+function pauseAndWatch({ room, roomId, gameName, winFn, onResume }) {
   if (room.adminPaused === true) {
     room.status = 'paused';
     room.reconnectDeadline = null;
@@ -2488,29 +2499,37 @@ function pauseAndWatch({ room, roomId, gameName, getP1, getP2, winFn, onResume }
   }
   if (room.disconnectTimer) return;
   room.status = 'paused';
-  const serverTime = Date.now();
-  room.reconnectDeadline = serverTime + 60000;
   persistRoomSoon(gameName, room);
+  armReconnectDeadline(gameName, room, roomId, { winFn, onResume });
+}
+
+/**
+ * Le délai de reconnexion, une seule règle partout (déconnexion, redémarrage
+ * du serveur, fin d'une pause de tournoi). À l'échéance : les deux sont là, la
+ * partie reprend ; un seul, il gagne par forfait ; aucun, annulation.
+ */
+function armReconnectDeadline(gameName, room, roomId, { winFn, onResume } = {}) {
+  if (!room || room.status === 'finished' || room.adminPaused === true || room.disconnectTimer) return;
+  const serverTime = Date.now();
+  room.reconnectDeadline = serverTime + RECONNECT_DURATION;
   io.to(roomId).emit('game:reconnect_deadline', { game: gameName, serverTime, reconnectDeadline: room.reconnectDeadline });
   room.disconnectTimer = setTimeout(() => {
-    if (room.status === 'finished') return;
     room.disconnectTimer = null;
-    const p1 = getP1(), p2 = getP2();
-    const p1back = p1?.connected === true, p2back = p2?.connected === true;
+    if (room.status === 'finished' || room.adminPaused === true) return;
+    room.reconnectDeadline = null;
+    const p1back = room.players?.[1]?.connected === true, p2back = room.players?.[2]?.connected === true;
     if (p1back && p2back) {
       room.status = 'playing';
-      room.reconnectDeadline = null;
-      if (onResume) onResume();
+      if (onResume) onResume(); else resumeTimersForGame(gameName, room);
+      persistRoomSoon(gameName, room);
       return;
     }
-    if (!p1back && !p2back) {
-      finishBothDisconnected(room, gameName, roomId);
-    } else {
-      room.status = 'playing';
-      room.reconnectDeadline = null;
-      winFn(p1back);
-    }
-  }, 60000);
+    if (!p1back && !p2back) return finishBothDisconnected(room, gameName, roomId);
+    room.status = 'playing';
+    if (winFn) winFn(p1back);
+    else getRoomFinisher(gameName)?.(room, roomId, p1back ? 1 : 2, 'forfeit');
+  }, RECONNECT_DURATION);
+  if (room.disconnectTimer.unref) room.disconnectTimer.unref();
 }
 
 // ── FIN DE PARTIES (Notifications avec gestion des Match Nuls sécurisée) ──
@@ -3693,8 +3712,12 @@ io.on('connection', (socket) => {
     const sequence = Array.isArray(steps) && steps.length ? steps : [{ from, to }];
     const first = sequence[0]?.from, last = sequence[sequence.length - 1]?.to;
     if (!first || !last || !Number.isInteger(first.row) || !Number.isInteger(first.col) || !Number.isInteger(last.row) || !Number.isInteger(last.col)) return rejectSocket(socket, 'Coup de dames invalide.');
+    const movedKing = isKing(droom.engineBoard[first.row]?.[first.col]);
     const result = applyMove(droom.engineBoard, player === 1 ? 'white' : 'black', first.row, first.col, last.row, last.col);
     if (!result.ok) { rejectSocket(socket, result.reason); return void socket.emit('dames_state_sync', damesSnapshot(droom)); }
+    // Un coup de dame sans prise rapproche de la nulle ; une prise ou un pion
+    // qui avance remet le compte à zéro.
+    droom.quietMoves = movedKing && !result.captured.length ? (Number(droom.quietMoves) || 0) + 1 : 0;
     const damesBefore = MatchSummary.encodeDamesBoard(droom.engineBoard);
     droom.engineBoard = result.board;
     droom.boardState = JSON.stringify(checkersClientBoard(result.board));
@@ -3709,6 +3732,7 @@ io.on('connection', (socket) => {
     socket.emit('dames_move_ack', { room, version: droom.stateVersion, currentPlayer: droom.currentPlayer });
     persistRoomSoon('dames', droom);
     if (result.winner) return notifyDamesRoomOver(droom, room, result.winner === 'white' ? 1 : 2, 'checkmate');
+    if (droom.quietMoves >= DAMES_DRAW_QUIET_MOVES) return notifyDamesRoomOver(droom, room, 0, 'draw');
     startDamesTurnTimer(droom, room, droom.currentPlayer + 1);
   });
 
@@ -4816,7 +4840,7 @@ io.on('connection', (socket) => {
       socket.to(roomId).emit('dames_player_status', { slot: disconnectedSlot, connected: false, name: dcName });
       socket.to(roomId).emit('dames_opponent_disconnected', { slot: disconnectedSlot, message: `${dcName} s'est déconnecté.` });
       clearDamesTurnTimers(droom);
-      pauseAndWatch({ room: droom, roomId, gameName: 'dames', getP1: () => droom.players[1], getP2: () => droom.players[2], winFn: (winnerIsP1) => notifyDamesRoomOver(droom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startDamesTurnTimer(droom, roomId) });
+      pauseAndWatch({ room: droom, roomId, gameName: 'dames', winFn: (winnerIsP1) => notifyDamesRoomOver(droom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startDamesTurnTimer(droom, roomId) });
       followAbsentTurn('dames', droom, roomId);
       break;
     }
@@ -4832,7 +4856,7 @@ io.on('connection', (socket) => {
       socket.to(roomId).emit('ttt_player_status', { slot: disconnectedSlot, connected: false, name: dcName });
       socket.to(roomId).emit('ttt_opponent_disconnected', { slot: disconnectedSlot, message: `${dcName} s'est déconnecté.` });
       clearTTTTurnTimers(troom);
-      pauseAndWatch({ room: troom, roomId, gameName: 'tictactoe', getP1: () => troom.players[1], getP2: () => troom.players[2], winFn: (winnerIsP1) => notifyTTTRoomOver(troom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startTTTTurnTimer(troom, roomId) });
+      pauseAndWatch({ room: troom, roomId, gameName: 'tictactoe', winFn: (winnerIsP1) => notifyTTTRoomOver(troom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startTTTTurnTimer(troom, roomId) });
       followAbsentTurn('tictactoe', troom, roomId);
       break;
     }
@@ -4848,7 +4872,7 @@ io.on('connection', (socket) => {
       socket.to(roomId).emit('quoridor_player_status', { slot: disconnectedSlot, connected: false, name: dcName });
       socket.to(roomId).emit('quoridor_opponent_disconnected', { slot: disconnectedSlot, message: `${dcName} s'est déconnecté.` });
       clearQuoriTurnTimers(qroom);
-      pauseAndWatch({ room: qroom, roomId, gameName: 'quoridor', getP1: () => qroom.players[1], getP2: () => qroom.players[2], winFn: (winnerIsP1) => notifyQuoriRoomOver(qroom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startQuoriTurnTimer(qroom, roomId) });
+      pauseAndWatch({ room: qroom, roomId, gameName: 'quoridor', winFn: (winnerIsP1) => notifyQuoriRoomOver(qroom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startQuoriTurnTimer(qroom, roomId) });
       followAbsentTurn('quoridor', qroom, roomId);
       break;
     }
@@ -4864,7 +4888,7 @@ io.on('connection', (socket) => {
       socket.to(roomId).emit('gomoku_player_status', { slot: disconnectedSlot, connected: false, name: dcName });
       socket.to(roomId).emit('gomoku_opponent_disconnected', { slot: disconnectedSlot, message: `${dcName} s'est déconnecté.` });
       clearGomokuTurnTimers(groom);
-      pauseAndWatch({ room: groom, roomId, gameName: 'gomoku', getP1: () => groom.players[1], getP2: () => groom.players[2], winFn: (winnerIsP1) => notifyGomokuRoomOver(groom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startGomokuTurnTimer(groom, roomId) });
+      pauseAndWatch({ room: groom, roomId, gameName: 'gomoku', winFn: (winnerIsP1) => notifyGomokuRoomOver(groom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startGomokuTurnTimer(groom, roomId) });
       followAbsentTurn('gomoku', groom, roomId);
       break;
     }
@@ -4882,7 +4906,6 @@ io.on('connection', (socket) => {
       stopTikanSimulation(troom);
       pauseAndWatch({
         room: troom, roomId, gameName: 'tikan',
-        getP1: () => troom.players[1], getP2: () => troom.players[2],
         winFn: (winnerIsP1) => notifyTikanRoomOver(troom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'),
         onResume: () => resumeTikanSimulation(troom)
       });
@@ -4902,7 +4925,6 @@ io.on('connection', (socket) => {
       clearPenaltyTurnTimers(proom);
       pauseAndWatch({
         room: proom, roomId, gameName: 'penalty',
-        getP1: () => proom.players[1], getP2: () => proom.players[2],
         winFn: (winnerIsP1) => notifyPenaltyRoomOver(proom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'),
         onResume: () => startPenaltyTurnTimer(proom, roomId)
       });
@@ -4923,7 +4945,6 @@ io.on('connection', (socket) => {
       clearChifoumiTurnTimers(croom);
       pauseAndWatch({
         room: croom, roomId, gameName: 'chifoumi',
-        getP1: () => croom.players[1], getP2: () => croom.players[2],
         winFn: (winnerIsP1) => notifyChifoumiRoomOver(croom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'),
         onResume: () => resumeChifoumiRound(croom, roomId)
       });
@@ -4942,7 +4963,7 @@ io.on('connection', (socket) => {
       socket.to(roomId).emit('echecs_player_status', { slot: disconnectedSlot, connected: false, name: dcName });
       socket.to(roomId).emit('echecs_opponent_disconnected', { slot: disconnectedSlot, message: `${dcName} s'est déconnecté.` });
       clearEchecsTurnTimers(eroom);
-      pauseAndWatch({ room: eroom, roomId, gameName: 'echecs', getP1: () => eroom.players[1], getP2: () => eroom.players[2], winFn: (winnerIsP1) => notifyEchecsRoomOver(eroom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startEchecsTurnTimer(eroom, roomId) });
+      pauseAndWatch({ room: eroom, roomId, gameName: 'echecs', winFn: (winnerIsP1) => notifyEchecsRoomOver(eroom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'), onResume: () => startEchecsTurnTimer(eroom, roomId) });
       followAbsentTurn('echecs', eroom, roomId);
       break;
     }
@@ -4964,8 +4985,6 @@ io.on('connection', (socket) => {
         room: lroom,
         roomId,
         gameName: 'ludo',
-        getP1: () => lroom.players[1],
-        getP2: () => lroom.players[2],
         winFn: winnerIsP1 => notifyLudoRoomOver(lroom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'),
         onResume: () => startLudoTurnTimer(lroom, roomId)
       });

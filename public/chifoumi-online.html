@@ -1291,9 +1291,12 @@ function revealBoth() {
 
   roundInProgress = false;
 
-  if (currentRound >= MAX_ROUNDS) {
-    setTimeout(function() { showGameOver(); }, 2500);
-  } else {
+  // Après la dernière manche, c'est le serveur qui conclut : game:over, ou une
+  // manche décisive (chifoumi_round_ready) si le score est à égalité. La page
+  // affichait seule « Égalité » et s'arrêtait pendant que le serveur lançait
+  // la mort subite : personne ne la jouait, et les deux joueurs perdaient au
+  // temps, pénalisés.
+  if (currentRound < MAX_ROUNDS && !isTiebreaker) {
     currentRound++;
     setTimeout(function() { startRound(); }, 3000);
   }
