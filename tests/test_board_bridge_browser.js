@@ -12,7 +12,10 @@
  *
  * 2. Entraînement contre l'IA et partie entre amis (quatorze pages). En écran
  *    partagé, l'en-tête quitte le plateau comme en ligne, et son contenu —
- *    joueurs, main, score — part vers le panneau de l'application.
+ *    joueurs, main, score — part vers le panneau de l'application. Chaque page
+ *    annonce son plateau prêt (`mindspille:board-ready`) une fois son écran
+ *    de préparation effacé, et ne le montre plus quand l'application la
+ *    couvre de son cerveau (`cover: true`).
  *
  * Chaque page est chargée dans une iframe d'une AUTRE origine, comme sur
  * mindspille.com, et aucune ne doit lever d'exception.
@@ -259,14 +262,35 @@ const boardState = frame => frame.evaluate(() => {
   };
 });
 
+/* L'écran de préparation de la page (#loading, ou #waiting-overlay de Quoridor) est-il encore là ? */
+function loaderVisible() {
+  const el = document.getElementById('loading') || document.getElementById('waiting-overlay');
+  if (!el) return false;
+  const style = getComputedStyle(el);
+  return style.display !== 'none' && style.visibility !== 'hidden' && el.style.opacity !== '0' && !el.classList.contains('hidden');
+}
+
 async function offline(browser, game, shots) {
   const board = await openFramed(browser, `${GAME_URL}${game.route}`, { width: 700, height: 390 });
   const ready = await waitFor(async () => (await board.messages()).some(m => m && m.type === 'mindspille:layout-ready'), 10000);
   check(`${game.key} : la page écoute l application`, !!ready);
+  const announced = (await board.messages()).find(m => m && m.type === 'mindspille:layout-ready');
+  check(`${game.key} : elle dit qu elle annoncera son plateau prêt`, !!announced && typeof announced.boardReady === 'boolean', announced);
+  const readyCount = async () => (await board.messages()).filter(m => m && m.type === 'mindspille:board-ready').length;
+  const firstReady = await waitFor(readyCount, 10000);
+  const loaderAtReady = await board.frame.evaluate(loaderVisible);
+  check(`${game.key} : plateau prêt annoncé, écran de préparation effacé`, firstReady === 1 && !loaderAtReady, { firstReady, loaderAtReady });
   await sleep(1500);
   const before = await boardState(board.frame);
 
-  await board.send({ type: 'mindspille:layout', split: true, hud: true });
+  await board.send({ type: 'mindspille:layout', split: true, hud: true, cover: true });
+  const answered = await waitFor(async () => (await readyCount()) >= 2, 3000);
+  check(`${game.key} : redemandé, le plateau prêt est renvoyé`, !!answered);
+  const covered = await board.frame.evaluate(() => {
+    const el = document.getElementById('loading') || document.getElementById('waiting-overlay');
+    return { classed: document.documentElement.classList.contains('ms-covered'), hidden: !el || getComputedStyle(el).visibility === 'hidden' };
+  });
+  check(`${game.key} : couvert par l application, son écran de préparation ne se montre plus`, covered.classed && covered.hidden, covered);
   const hud = await waitFor(async () => {
     const list = (await board.messages()).filter(m => m && m.type === 'mindspille:board-hud');
     const last = list[list.length - 1];

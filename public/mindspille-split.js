@@ -19,6 +19,14 @@
  * page lui dit. Quand elle le demande (`hud: true`), le contenu de l'en-tête
  * masqué part donc vers son panneau (`mindspille:board-hud`) : les deux
  * joueurs, celui qui a la main, le score, l'intitulé, ce que chacun a pris.
+ *
+ * Une seule animation de chargement. L'application garde son cerveau
+ * au-dessus du cadre jusqu'à ce que le plateau soit prêt
+ * (`mindspille:board-ready`) : l'écran de préparation de la page (#loading,
+ * #waiting-overlay de Quoridor) s'est effacé — ou la page n'en a pas — et sa
+ * première image est peinte. Quand l'application dit qu'elle couvre le cadre
+ * (`cover: true`), cet écran de préparation ne se montre plus du tout : le
+ * joueur ne voit jamais le sablier de la page après le cerveau.
  */
 (function () {
   'use strict';
@@ -35,8 +43,12 @@
   /* Bandeaux masqués ici dont le texte part vers le panneau. */
   var NOTICES = ['forfeit-bar', 'force-jump-hint'];
 
+  /* Les écrans de préparation des pages. */
+  var LOADERS = ['loading', 'waiting-overlay'];
+
   var style = document.createElement('style');
-  style.textContent = HIDDEN.map(function (selector) { return 'html.ms-split ' + selector; }).join(',') + '{display:none!important}';
+  style.textContent = HIDDEN.map(function (selector) { return 'html.ms-split ' + selector; }).join(',') + '{display:none!important}' +
+    LOADERS.map(function (id) { return 'html.ms-covered #' + id; }).join(',') + '{visibility:hidden!important;transition:none!important}';
   (document.head || document.documentElement).appendChild(style);
 
   var split = false;
@@ -149,13 +161,62 @@
     scheduleHud();
   }
 
+  var boardReady = false;
+  function pageLoader() {
+    for (var i = 0; i < LOADERS.length; i++) {
+      var el = document.getElementById(LOADERS[i]);
+      if (el) return el;
+    }
+    return null;
+  }
+  /* Effacé comme chaque page le fait : opacité à 0, `display: none`, classe
+     `hidden`, ou retiré de la page. */
+  function loaderGone(el) {
+    if (!el || !el.isConnected) return true;
+    if (el.style.display === 'none' || el.style.opacity === '0' || el.classList.contains('hidden')) return true;
+    return window.getComputedStyle(el).display === 'none';
+  }
+  function postReady() {
+    post({ type: 'mindspille:board-ready', gameId: gameId });
+  }
+  function watchReady() {
+    var loader = pageLoader();
+    var observer = null;
+    var waiting = false;
+    function settle() {
+      if (waiting || !loaderGone(loader)) return;
+      waiting = true;
+      if (observer) observer.disconnect();
+      /* Deux images : le plateau a peint la sienne. Un cadre en arrière-plan
+         ne peint pas — la minuterie l'annonce quand même. */
+      var sent = false;
+      var send = function () {
+        if (sent) return;
+        sent = true;
+        boardReady = true;
+        postReady();
+      };
+      requestAnimationFrame(function () { requestAnimationFrame(send); });
+      setTimeout(send, 500);
+    }
+    if (loader && typeof MutationObserver === 'function') {
+      observer = new MutationObserver(settle);
+      observer.observe(loader, { attributes: true, attributeFilter: ['style', 'class'] });
+      if (loader.parentNode) observer.observe(loader.parentNode, { childList: true });
+    }
+    settle();
+  }
+
   window.addEventListener('message', function (event) {
     if (event.source !== window.parent) return;
     if (parentOrigin && event.origin !== parentOrigin) return;
     var data = event.data;
     if (!data || data.type !== 'mindspille:layout') return;
     if (data.gameId && gameId && data.gameId !== gameId) return;
+    if (data.cover === true) document.documentElement.classList.add('ms-covered');
     apply(data.split === true, data.hud === true);
+    /* Prêt avant que l'application n'écoute : elle le redemande ici. */
+    if (boardReady) postReady();
   });
 
   function start() {
@@ -167,9 +228,11 @@
       var top = document.getElementById('top');
       if (top) new MutationObserver(scheduleHud).observe(top, { attributes: true, attributeFilter: ['class'], childList: true, characterData: true, subtree: true });
     }
+    watchReady();
     /* L'application attend ce signal pour annoncer la mise en page : un
-       message envoyé avant que la page n'écoute serait perdu. */
-    post({ type: 'mindspille:layout-ready', gameId: gameId });
+       message envoyé avant que la page n'écoute serait perdu. `boardReady`
+       lui dit aussi que cette page annonce son plateau prêt. */
+    post({ type: 'mindspille:layout-ready', gameId: gameId, boardReady: boardReady });
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
