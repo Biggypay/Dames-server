@@ -3239,6 +3239,15 @@ app.get('/mindspille-chat.js', (req, res) => {
   res.sendFile(path.join(PUBLIC, 'mindspille-chat.js'));
 });
 
+// Les plateaux 3D fluides sur la durée (mémoire graphique rendue, ombres
+// recalculées seulement quand une pièce bouge, définition adaptée à
+// l'appareil). Chargé juste après Three.js par les neuf pages 3D.
+app.get('/mindspille-3d.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(PUBLIC, 'mindspille-3d.js'));
+});
+
 // Pause de tournoi (overlay « Tournoi en pause ») et garde-fou de synchronisation
 // du Quoridor en ligne. Les sept pages multijoueur l'incluent ; sans cette route
 // il répondait 404 et ni l'un ni l'autre ne s'exécutait.
