@@ -115,7 +115,7 @@ async function main() {
   ]);
   const database = await startFakeDatabase(games);
 
-  const server = spawn('node', ['server.js'], {
+  const server = spawn('node', ['--require', path.join(__dirname, 'helpers', 'slow-wall-clock.js'), 'server.js'], {
     cwd: ROOT,
     env: {
       ...process.env,
