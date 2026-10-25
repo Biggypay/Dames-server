@@ -821,9 +821,9 @@ function startGraceTimer(serverStartTime, duration) {
     var secs = Math.ceil(remaining / 1000);
     forfeitBar.classList.add('show');
     
-    if (!playerLocked && !opponentChoice) { forfeitBar.textContent = '⚠️ Jouez maintenant — ' + secs + 's avant annulation !'; }
-    else if (!playerLocked) { forfeitBar.textContent = '⚠️ Jouez maintenant — ' + secs + 's avant défaite !'; }
-    else { forfeitBar.textContent = '⏳ Adversaire doit jouer — ' + secs + 's'; }
+    if (!playerLocked && !opponentChoice) { forfeitBar.dataset.tone = 'urgent'; forfeitBar.textContent = 'Jouez maintenant · annulation dans ' + secs + ' s'; }
+    else if (!playerLocked) { forfeitBar.dataset.tone = 'urgent'; forfeitBar.textContent = 'Jouez maintenant · défaite dans ' + secs + ' s'; }
+    else { forfeitBar.dataset.tone = 'wait'; forfeitBar.textContent = 'L’adversaire doit jouer · ' + secs + ' s'; }
 
     if (remaining > 0) graceRAF = requestAnimationFrame(tick);
     else { graceActive = false; forfeitBar.classList.remove('show'); }
@@ -850,7 +850,7 @@ function startForfeitCountdown(seconds) {
   stopForfeitCountdown(); forfeitCountdown = seconds;
   forfeitBar.classList.add('show');
   function tick() {
-    forfeitBar.textContent = '⏳ Adversaire absent — victoire dans ' + forfeitCountdown + 's';
+    forfeitBar.dataset.tone = 'wait'; forfeitBar.textContent = 'Adversaire absent · victoire dans ' + forfeitCountdown + ' s';
     if (forfeitCountdown <= 0) { stopForfeitCountdown(); return; }
     forfeitCountdown--; forfeitTimer = setTimeout(tick, 1000);
   }
@@ -1107,6 +1107,7 @@ else { document.addEventListener('DOMContentLoaded', startAIGame); }
 
 })();
 </script>
+<script src="/mindspille-banners.js"></script>
 <script src="/mindspille-split.js"></script>
 </body>
 </html>

@@ -3231,6 +3231,15 @@ app.get('/mindspille-split.js', (req, res) => {
   res.sendFile(path.join(PUBLIC, 'mindspille-split.js'));
 });
 
+// Les bandeaux d'information du plateau (prise obligatoire, échec au roi, temps
+// de jeu) : une ligne, la police de l'application, en haut sous l'en-tête, en
+// bas posés sur la barre du bas. Voir public/mindspille-banners.js.
+app.get('/mindspille-banners.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(PUBLIC, 'mindspille-banners.js'));
+});
+
 // Messagerie de partie : le bouton du plateau (2e de la barre du bas) et sa
 // pastille de messages non lus. La conversation vit dans l'application.
 app.get('/mindspille-chat.js', (req, res) => {

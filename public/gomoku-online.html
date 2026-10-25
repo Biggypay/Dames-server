@@ -580,7 +580,7 @@ function startForfeitCountdown(seconds) {
   var bar = document.getElementById('forfeit-bar');
   bar.classList.add('show');
   var tick = function () {
-    bar.textContent = 'Adversaire déconnecté — forfait dans ' + forfeitCountdown + 's';
+    bar.dataset.tone = 'wait'; bar.textContent = 'Adversaire absent · victoire dans ' + forfeitCountdown + ' s';
     if (forfeitCountdown <= 0) { stopForfeitCountdown(); return; }
     forfeitCountdown--;
   };
@@ -1124,6 +1124,7 @@ window.addEventListener('resize', function () {
 });
 </script>
 <script src="/tournament-pause-client.js"></script>
+<script src="/mindspille-banners.js"></script>
 <script src="/mindspille-split.js"></script>
 <script src="/mindspille-chat.js"></script>
 </body>

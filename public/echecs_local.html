@@ -136,7 +136,7 @@ body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%
   <canvas id="confetti-canvas"></canvas>
   <div id="reconn-bar">📡 RECONNEXION EN COURS…</div>
   <div id="forfeit-bar"></div>
-  <div id="force-jump-hint">⚔️ Échec au roi !</div>
+  <div id="force-jump-hint" data-kind="check">Échec au roi</div>
   <div id="hint">👌 Pince = zoom · Glisse = tourner · Tap = jouer</div>
   <div id="toast"><div id="toast-emoji"></div><div id="toast-title"></div><div id="toast-sub"></div></div>
   <button id="replay-btn">↻ Rejouer</button>
@@ -613,7 +613,8 @@ function updateCheckDisplay(){
       ring.rotation.x = -Math.PI/2; ring.position.set(col*CELL-BO, 0.19, row*CELL-BO); checkGroup.add(ring);
     }
     hint.classList.add('show');
-    hint.textContent = (side===0?MY_NAME:OP_NAME)+' est en échec !';
+    hint.dataset.tone = 'urgent';
+    hint.textContent = (side===0?MY_NAME:OP_NAME)+' est en échec';
   } else {
     hint.classList.remove('show');
   }
@@ -1084,6 +1085,7 @@ else { document.addEventListener('DOMContentLoaded', startAIGame); }
 
 })();
 </script>
+<script src="/mindspille-banners.js"></script>
 <script src="/mindspille-split.js"></script>
 </body>
 </html>
