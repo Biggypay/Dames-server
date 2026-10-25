@@ -222,7 +222,7 @@ body{
 .choice-card.hidden-choice .choice-emoji{filter:blur(8px);opacity:0.3}
 .choice-card.hidden-choice .choice-label{color:rgba(255,255,255,0.3)}
 
-.choice-emoji{font-size:52px;filter:drop-shadow(0 4px 8px rgba(0,0,0,0.3));transition:all 0.3s ease}
+.choice-emoji{font-size:52px;height:84px;display:flex;align-items:center;justify-content:center;filter:drop-shadow(0 4px 8px rgba(0,0,0,0.3));transition:all 0.3s ease}
 .choice-label{font-family:'Cinzel',serif;font-size:14px;font-weight:600;letter-spacing:1px}
 .choice-card.player-active .choice-label{color:#4ade80}
 .choice-card.ai-active .choice-label{color:#f87171}
@@ -242,6 +242,9 @@ body{
 }
 .status.visible{opacity:1}
 .status.result{font-size:18px;font-weight:700;font-family:'Cinzel',serif}
+/* « Victoire ! Pierre bat Ciseaux » tient sur une ligne : le texte se resserre
+   sur un petit écran plutôt que de pousser les boutons vers le bas. */
+.status.result{font-size:clamp(12px,calc(4.8vw - 1.4px),18px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .status.win{color:#4ade80}
 .status.lose{color:#f87171}
 .status.draw{color:#fbbf24}
@@ -275,7 +278,11 @@ body{
 .choice-btn.selected{border-color:#3b82f6;background:rgba(59,130,246,0.15);box-shadow:0 0 20px rgba(59,130,246,0.3)}
 .choice-btn.locked{opacity:0.4;pointer-events:none;cursor:not-allowed;border-color:rgba(34,197,94,0.3)}
 .choice-btn.disabled{opacity:0.25;pointer-events:none;cursor:not-allowed}
-.choice-btn .emoji{font-size:36px}
+/* Les dessins de la pierre, de la feuille et des ciseaux, à la place des émojis. */
+.rps-art{display:block;width:auto;object-fit:contain;-webkit-user-drag:none;-webkit-user-select:none;user-select:none;pointer-events:none}
+.choice-emoji .rps-art{height:84px;max-width:104px}
+.choice-btn .rps-art{height:54px;max-width:64px}
+.rps-mini{display:inline-block;height:24px;width:auto;vertical-align:middle;object-fit:contain}
 .choice-btn span{font-size:12px;font-weight:600;letter-spacing:0.5px}
 body.spectator .choices{pointer-events:none;opacity:.32}
 body.spectator .choice-btn{cursor:default}
@@ -513,15 +520,15 @@ body.replay .choices,body.replay #forfeit-bar{display:none!important}
 
   <div class="choices" id="choices">
     <button class="choice-btn" data-choice="pierre" ontouchstart="">
-      <span class="emoji">✊</span>
+      <img class="rps-art" src="/chifoumi/pierre.webp?v=1" alt="" draggable="false">
       <span>Pierre</span>
     </button>
     <button class="choice-btn" data-choice="feuille" ontouchstart="">
-      <span class="emoji">✋</span>
+      <img class="rps-art" src="/chifoumi/feuille.webp?v=1" alt="" draggable="false">
       <span>Feuille</span>
     </button>
     <button class="choice-btn" data-choice="ciseaux" ontouchstart="">
-      <span class="emoji">✌️</span>
+      <img class="rps-art" src="/chifoumi/ciseaux.webp?v=1" alt="" draggable="false">
       <span>Ciseaux</span>
     </button>
   </div>
@@ -606,7 +613,27 @@ if (IS_SPECTATOR) try { document.body.classList.add('spectator'); if (IS_REPLAY)
    CONSTANTES
 ══════════════════════════════════════════ */
 var choices    = ['pierre','feuille','ciseaux'];
-var emojis     = {pierre:'✊', feuille:'✋', ciseaux:'✌️'};
+/* Les dessins de la pierre, de la feuille et des ciseaux (public/chifoumi/), à
+   la place des émojis ; les autres signes (❓, 🔒, ⏱️) restent du texte. */
+var CHOICE_ART   = {pierre:'/chifoumi/pierre.webp?v=1', feuille:'/chifoumi/feuille.webp?v=1', ciseaux:'/chifoumi/ciseaux.webp?v=1'};
+var CHOICE_NAMES = {pierre:'Pierre', feuille:'Feuille', ciseaux:'Ciseaux'};
+function isChoice(choice) { return typeof choice === 'string' && Object.prototype.hasOwnProperty.call(CHOICE_ART, choice); }
+/* Le dessin du choix dans une carte ; sinon le signe donné (rien par défaut). */
+function showChoice(el, choice, fallback) {
+  if (!isChoice(choice)) { el.textContent = fallback || ''; return; }
+  var img = el.firstChild;
+  if (!img || img.nodeName !== 'IMG' || el.childNodes.length !== 1) {
+    el.textContent = '';
+    img = document.createElement('img');
+    img.className = 'rps-art'; img.alt = ''; img.draggable = false;
+    el.appendChild(img);
+  }
+  if (img.getAttribute('src') !== CHOICE_ART[choice]) img.setAttribute('src', CHOICE_ART[choice]);
+}
+/* La miniature d'un choix dans l'historique de fin de partie. */
+function choiceMini(choice) {
+  return isChoice(choice) ? '<img class="rps-mini" src="' + CHOICE_ART[choice] + '" alt="">' : '⏱️';
+}
 var CIRC_SMALL = 163.4;
 var CIRC       = 2 * Math.PI * 48;
 var CHOICE_TIME = 30000; /* la durée envoyée par le serveur fait foi */
@@ -900,7 +927,7 @@ function initSocket() {
           if (gs.currentChoice && choices.indexOf(gs.currentChoice) !== -1) {
             playerChoice = gs.currentChoice;
             playerLocked = true;
-            playerEmojiEl.textContent = emojis[playerChoice];
+            showChoice(playerEmojiEl, playerChoice);
             playerLabelEl.textContent = playerChoice.charAt(0).toUpperCase() + playerChoice.slice(1);
             choiceBtns.forEach(function(btn) { btn.classList.add('disabled', 'locked'); });
           }
@@ -1202,7 +1229,7 @@ function playerMakesChoice(choice) {
     if (btn.dataset.choice === choice) { btn.classList.remove('disabled'); btn.classList.add('selected','locked'); }
   });
 
-  playerEmojiEl.textContent = emojis[choice];
+  showChoice(playerEmojiEl, choice);
   playerLabelEl.textContent = choice.charAt(0).toUpperCase() + choice.slice(1);
   playerCard.classList.remove('waiting','hidden-choice');
   playerCard.classList.add('player-active');
@@ -1267,13 +1294,13 @@ function revealBoth() {
 
   // Affichage final des vrais choix (On décode le string 'pierre', 'feuille'...)
   if (playerChoice) {
-    playerEmojiEl.textContent = emojis[playerChoice];
+    showChoice(playerEmojiEl, playerChoice);
     playerLabelEl.textContent = playerChoice.charAt(0).toUpperCase() + playerChoice.slice(1);
     playerCard.classList.remove('waiting','hidden-choice');
     playerCard.classList.add('player-active');
   }
   if (opponentChoice) {
-    aiEmojiEl.textContent = emojis[opponentChoice];
+    showChoice(aiEmojiEl, opponentChoice);
     aiLabelEl.textContent = opponentChoice.charAt(0).toUpperCase() + opponentChoice.slice(1);
     aiCard.classList.remove('waiting','hidden-choice');
     aiCard.classList.add('ai-active');
@@ -1323,8 +1350,8 @@ function updateScore(result) {
 function showResult(result, myC, opC) {
   statusEl.className = 'status result visible ' + result;
   var msg = '';
-  if (result === 'win')       msg = myC && opC ? '🎉 Victoire ! ' + emojis[myC] + ' bat ' + emojis[opC] : '🎉 Victoire !';
-  else if (result === 'lose') msg = myC && opC ? '💀 Défaite... ' + emojis[opC] + ' bat ' + emojis[myC] : '💀 Défaite...';
+  if (result === 'win')       msg = isChoice(myC) && isChoice(opC) ? '🎉 Victoire ! ' + CHOICE_NAMES[myC] + ' bat ' + CHOICE_NAMES[opC] : '🎉 Victoire !';
+  else if (result === 'lose') msg = isChoice(myC) && isChoice(opC) ? '💀 Défaite... ' + CHOICE_NAMES[opC] + ' bat ' + CHOICE_NAMES[myC] : '💀 Défaite...';
   else                        msg = '🤝 Égalité !';
   statusEl.textContent = msg;
 
@@ -1418,8 +1445,8 @@ function renderSpectatorRoundResult(data) {
   opScore = Number(data.scores && data.scores[perspectiveSlot === 1 ? 1 : 0]) || 0;
   document.getElementById('playerScore').textContent = playerScore;
   document.getElementById('aiScore').textContent = opScore;
-  playerEmojiEl.textContent = emojis[playerChoice] || '❓';
-  aiEmojiEl.textContent = emojis[opponentChoice] || '❓';
+  showChoice(playerEmojiEl, playerChoice, '❓');
+  showChoice(aiEmojiEl, opponentChoice, '❓');
   playerLabelEl.textContent = playerChoice ? playerChoice.charAt(0).toUpperCase() + playerChoice.slice(1) : '—';
   aiLabelEl.textContent = opponentChoice ? opponentChoice.charAt(0).toUpperCase() + opponentChoice.slice(1) : '—';
   playerCard.className = 'choice-card player-active'; aiCard.className = 'choice-card ai-active';
@@ -1475,7 +1502,7 @@ function showGameOver() {
   for (var i = roundHistory.length-1; i >= 0; i--) {
     var h = roundHistory[i]; var item = document.createElement('div'); item.className = 'modal-history-item ' + h.result;
     var re = h.result === 'win' ? '✅' : h.result === 'lose' ? '❌' : '➖';
-    var pE = emojis[h.playerChoice] || '⏱️'; var aE = emojis[h.opponentChoice] || '⏱️';
+    var pE = choiceMini(h.playerChoice); var aE = choiceMini(h.opponentChoice);
     item.innerHTML = '<span>Manche ' + h.round + '</span><span>' + pE + ' VS ' + aE + '</span><span>' + re + '</span>';
     modalHistoryList.appendChild(item);
   }
