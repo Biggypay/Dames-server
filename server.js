@@ -1827,11 +1827,21 @@ function startEchecsClock(eroom, roomId, playerSlot) {
   io.to(roomId).emit('echecs_clock', ChessClock.clockSnapshot(eroom.clock, now));
   io.to(roomId).emit('echecs_turn_start', { player: playerSlot, startTime: now, duration: left, clock: true });
   if (left <= 0) return void echecsFlagFall(eroom, roomId, playerSlot);
+  armEchecsFlagTimer(eroom, roomId, playerSlot, left);
+}
+
+/* Un minuteur peut sonner une ou deux millisecondes avant l'heure que lit
+   Date.now() (les deux horloges ne s'arrondissent pas pareil, NTP peut ralentir
+   la seconde) : echecsFlagFall voyait alors un reste positif et s'arrêtait, et
+   plus rien ne faisait tomber le drapeau. On revient donc à l'heure exacte. */
+function armEchecsFlagTimer(eroom, roomId, playerSlot, delay) {
   eroom.flagTimer = setTimeout(() => {
     eroom.flagTimer = null;
-    if (eroom.status !== 'playing' || eroom.turnPlayer !== playerSlot) return;
+    if (eroom.status !== 'playing' || eroom.turnPlayer !== playerSlot || !eroom.clock) return;
+    const rest = ChessClock.remainingFor(eroom.clock, playerSlot, Date.now());
+    if (rest > 0) return void armEchecsFlagTimer(eroom, roomId, playerSlot, rest);
     echecsFlagFall(eroom, roomId, playerSlot);
-  }, left);
+  }, delay);
 }
 
 function clearEchecsTurnTimers(eroom) {

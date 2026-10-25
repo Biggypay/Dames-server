@@ -6,7 +6,9 @@
  * doit jouer · 56 s »). Pour chaque page qui en porte, sur un grand et un tout
  * petit téléphone, le texte le plus long doit :
  *
- * - tenir sur UNE ligne, sans être coupé, dans l'écran, centré ;
+ * - tenir sur UNE ligne, sans être coupé, dans l'écran, centré — même avec la
+ *   police de secours, plus large, tant que Inter n'est pas chargée (la CI n'a
+ *   pas Inter : le texte se resserre, jamais sous 9 px) ;
  * - être écrit dans la police de l'application (Inter), jamais en Cinzel ;
  * - en haut : juste sous l'en-tête ;
  * - en bas : posé sur la barre du bas (au pixel près), ou, sans barre (Penalty,
@@ -100,6 +102,7 @@ function measure(longest) {
         top: r.top, bottom: r.bottom, left: r.left, right: r.right, height: r.height,
         center: r.left + r.width / 2,
         clipped: el.scrollWidth > el.clientWidth + 1,
+        size: parseFloat(cs.fontSize),
         font: cs.fontFamily,
         transform: cs.transform,
         animation: cs.animationName,
@@ -177,6 +180,8 @@ async function main() {
         for (const b of m.banners) {
           const what = `${at} ${b.id}`;
           check(`${what} : une seule ligne, rien de coupé`, b.height <= 36 && !b.clipped, b);
+          /* Resserré s'il le faut (petit écran, police de secours avant Inter), jamais illisible. */
+          check(`${what} : lisible (9 px au moins)`, b.size >= 9, b.size);
           check(`${what} : dans l'écran, centré`,
             b.left >= 0 && b.right <= m.width && Math.abs(b.center - m.width / 2) <= 1.5, b);
           check(`${what} : police de l'application`, /^["']?Inter/.test(b.font) && !/Cinzel/.test(b.font), b.font);
