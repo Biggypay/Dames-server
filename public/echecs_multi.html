@@ -112,6 +112,7 @@ body.chrome-hidden #forfeit-bar,body.spectator #forfeit-bar{display:none!importa
 #clock-label.show{display:block}
 </style>
   <script defer src="/mindspille-i18n.js"></script>
+  <script src="/mindspille-hud.js"></script>
 </head>
 <body>
 <div id="top">
@@ -1070,10 +1071,17 @@ function recomputeCaptures(){
   capturedBy = [16-n.r, 16-n.w];
 }
 
+/* Les pièces restantes au centre de l'en-tête : à gauche celles du profil de
+   gauche (vous ; les Blancs pour un spectateur), à droite celles de
+   l'adversaire, quelle que soit votre couleur (owner, 2026-10-25). */
 function updateScores(){
   var n = countPieces();
-  document.getElementById('score-w').textContent = n.w;
-  document.getElementById('score-r').textContent = n.r;
+  var mineWhite = MY_PLAYER === 0;
+  var left = document.getElementById('score-w'), right = document.getElementById('score-r');
+  left.textContent = mineWhite ? n.w : n.r;
+  right.textContent = mineWhite ? n.r : n.w;
+  left.className = 'snum ' + (mineWhite ? 'sw' : 'sr');
+  right.className = 'snum ' + (mineWhite ? 'sr' : 'sw');
 }
 
 function updateCapturedDisplay(){
@@ -1336,6 +1344,8 @@ function handleGameEnd(winner, reason){
 /* La photo du joueur prend la place du symbole. Si elle ne charge pas, le
    symbole revient : jamais de trou a la place d'un visage. */
 function setProfilePhoto(hostId, url, fallbackHtml){
+  /* Le portrait du joueur : sa photo, sinon son initiale (mindspille-hud.js). */
+  if(window.MindspilleHud){ MindspilleHud.paint(hostId, url); return; }
   var host = document.getElementById(hostId);
   if(!host) return;
   if(!url){ host.removeAttribute('data-photo'); host.innerHTML = fallbackHtml; return; }

@@ -155,6 +155,15 @@ async function main() {
     check('le premier joueur est tiré par le serveur et synchronisé',
       (openingSlot === 1 || openingSlot === 2) && s2.currentSlot === openingSlot,
       { s1, s2 });
+    // Les symboles sont tirés au sort au début du match (l'ouvreur a les
+    // croix) et ne changent plus d'une manche à l'autre (owner, 2026-10-25).
+    const symbols = s1.slotSymbols;
+    check('les symboles sont tirés au début du match : l’ouvreur a les croix, l’autre les ronds',
+      symbols && symbols[openingSlot] === 'X' && symbols[openingSlot === 1 ? 2 : 1] === 'O'
+        && JSON.stringify(s2.slotSymbols) === JSON.stringify(symbols), { s1: s1.slotSymbols, s2: s2.slotSymbols });
+    const symbolsOf = start => {
+      try { return (typeof start.gameState === 'string' ? JSON.parse(start.gameState) : start.gameState).slotSymbols; } catch (_) { return null; }
+    };
     const opener = openingSlot === 1 ? p1 : p2;
     const responder = openingSlot === 1 ? p2 : p1;
     const responderSlot = openingSlot === 1 ? 2 : 1;
@@ -239,6 +248,9 @@ async function main() {
     check('manche 2 : le plateau est réinitialisé et les deux joueurs sont resynchronisés',
       rs2a.currentSlot === rs2b.currentSlot && (rs2a.currentSlot === 1 || rs2a.currentSlot === 2), { rs2a, rs2b });
     check('manche 2 : le joueur qui commence alterne', rs2a.currentSlot === loserSlot, rs2a.currentSlot);
+    check('manche 2 : chacun garde son symbole, même quand l’autre ouvre',
+      JSON.stringify(symbolsOf(rs2a)) === JSON.stringify(symbols) && JSON.stringify(symbolsOf(rs2b)) === JSON.stringify(symbols),
+      { before: symbols, after: symbolsOf(rs2a) });
 
     for (let round = 2; round <= 4; round++) {
       const starterIsWinner = (round % 2 === 1);
@@ -251,7 +263,8 @@ async function main() {
       if (round < 4) {
         const rsA = once(p1, 'gomoku_round_start');
         const rsB = once(p2, 'gomoku_round_start');
-        await Promise.all([rsA, rsB]);
+        const [startA] = await Promise.all([rsA, rsB]);
+        check(`manche ${round + 1} : les symboles du début du match sont gardés`, JSON.stringify(symbolsOf(startA)) === JSON.stringify(symbols), symbolsOf(startA));
       }
     }
 

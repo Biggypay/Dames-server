@@ -135,7 +135,7 @@ async function main() {
     await choose(p2, 'pierre');
 
     const decisive = await waitFor(async () => {
-      const ok = await Promise.all(pages.map(async p => (await playable(p)) && /decisive/i.test((await view(p)).label)));
+      const ok = await Promise.all(pages.map(async p => (await playable(p)) && /d[ée]cisive/i.test((await view(p)).label)));
       return ok.every(Boolean);
     }, 20000);
     const states = await Promise.all(pages.map(view));

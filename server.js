@@ -2675,10 +2675,14 @@ function finishGomokuRound(groom, roomId, winnerSlot, reason = 'normal') {
   setTimeout(() => {
     if (!groom || groom.status !== 'round_break') return;
     const starter = advanceRoundStarter(groom);
+    // Les symboles sont tirés au sort au début du match et ne changent plus :
+    // chacun garde ses croix ou ses ronds à chaque manche, même quand c'est
+    // l'autre qui ouvre (owner, 2026-10-25).
+    const keptSymbols = groom.gameState?.slotSymbols?.[1] === 'O' ? { 1: 'O', 2: 'X' } : { 1: 'X', 2: 'O' };
     groom.gameState = gomokuInitialState();
     groom.currentSlot = starter;
     groom.gameState.currentSlot = starter;
-    groom.gameState.slotSymbols = starter === 1 ? { 1: 'X', 2: 'O' } : { 1: 'O', 2: 'X' };
+    groom.gameState.slotSymbols = keptSymbols;
     groom.stateVersion = Math.max(0, Number(groom.stateVersion) || 0) + 1;
     groom.status = 'playing';
     const nextPayload = {
@@ -3248,6 +3252,15 @@ app.get('/mindspille-banners.js', (req, res) => {
   res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache');
   res.sendFile(path.join(PUBLIC, 'mindspille-banners.js'));
+});
+
+// L'en-tête des plateaux en ligne : le portrait de chaque joueur (sa photo,
+// sinon son initiale — jamais un pion), son camp sous son nom, et les manches
+// décisives sur leur propre rangée. Voir public/mindspille-hud.js.
+app.get('/mindspille-hud.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(PUBLIC, 'mindspille-hud.js'));
 });
 
 // Messagerie de partie : le bouton du plateau (2e de la barre du bas) et sa
