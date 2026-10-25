@@ -91,7 +91,46 @@
 
   var root = document.documentElement;
 
+  /* Une ligne, jamais coupée : quand le texte ne tient pas — un très petit
+     écran, ou la police de secours, plus large, tant que Inter n'est pas
+     arrivée — il se resserre jusqu'à tenir (9 px au plus petit). */
+  var MIN_FONT_PX = 9;
+  function fit(el) {
+    el.style.removeProperty('font-size');
+    if (!el.classList.contains('show') || el.scrollWidth <= el.clientWidth + 1) return;
+    var size = parseFloat(window.getComputedStyle(el).fontSize) || 13;
+    while (size > MIN_FONT_PX && el.scrollWidth > el.clientWidth + 1) {
+      size = Math.max(MIN_FONT_PX, size - 0.5);
+      el.style.setProperty('font-size', size + 'px', 'important');
+    }
+  }
+  function fitAll() {
+    ['force-jump-hint', 'forfeit-bar'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) fit(el);
+    });
+  }
+  function watchFit() {
+    ['force-jump-hint', 'forfeit-bar'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      fit(el);
+      /* Le texte change (compte à rebours, traduction) ou le bandeau s'affiche :
+         ajusté avant d'être peint. */
+      if (typeof MutationObserver === 'function') {
+        new MutationObserver(function () { fit(el); })
+          .observe(el, { attributes: true, attributeFilter: ['class'], childList: true, characterData: true, subtree: true });
+      }
+    });
+    window.addEventListener('resize', fitAll);
+    if (document.fonts) {
+      if (document.fonts.addEventListener) document.fonts.addEventListener('loadingdone', fitAll);
+      if (document.fonts.ready) document.fonts.ready.then(fitAll, function () {});
+    }
+  }
+
   function start() {
+    watchFit();
     var bar = document.getElementById('forfeit-bar');
     if (!bar) return;
     var foot = document.getElementById('bot');
