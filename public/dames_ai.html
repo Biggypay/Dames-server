@@ -127,7 +127,7 @@ body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%
   <canvas id="confetti-canvas"></canvas>
   <div id="reconn-bar">📡 RECONNEXION EN COURS…</div>
   <div id="forfeit-bar"></div>
-  <div id="force-jump-hint">⚡ Prise obligatoire !</div>
+  <div id="force-jump-hint" data-tone="urgent">Prise obligatoire</div>
   <div id="hint">👌 Pince = zoom · Glisse = tourner · Tap = jouer</div>
   <div id="toast"><div id="toast-emoji"></div><div id="toast-title"></div><div id="toast-sub"></div></div>
   <button id="replay-btn">↻ Rejouer</button>
@@ -237,7 +237,7 @@ function startForfeitCountdown(seconds){
   stopForfeitCountdown(); forfeitCountdown = seconds;
   var bar = document.getElementById('forfeit-bar'); bar.classList.add('show');
   function tick(){
-    bar.textContent = '⏳ Adversaire absent — victoire dans ' + forfeitCountdown + 's';
+    bar.dataset.tone = 'wait'; bar.textContent = 'Adversaire absent · victoire dans ' + forfeitCountdown + ' s';
     if(forfeitCountdown <= 0){ stopForfeitCountdown(); return; }
     forfeitCountdown--; forfeitTimer = setTimeout(tick, 1000);
   }
@@ -301,7 +301,8 @@ function startGraceTimer(isMyTurn, serverStartTime, duration){
     var secs = Math.ceil(remaining / 1000);
     
     bar.classList.add('show');
-    bar.textContent = isMyTurn ? '⚠️ Jouez maintenant — ' + secs + 's avant défaite !' : '⏳ Adversaire doit jouer — ' + secs + 's';
+    bar.dataset.tone = isMyTurn ? 'urgent' : 'wait';
+    bar.textContent = isMyTurn ? 'Jouez maintenant · défaite dans ' + secs + ' s' : 'L’adversaire doit jouer · ' + secs + ' s';
     
     if(remaining > 0) graceRAF = requestAnimationFrame(tick);
     else { graceActive = false; bar.classList.remove('show'); }
@@ -693,7 +694,8 @@ function updateForcedHint(){
   var result = getAllValidMoves(currentPlayer), hint = document.getElementById('force-jump-hint');
   if(result.forced){ 
       hint.classList.add('show'); 
-      hint.textContent = currentPlayer === MY_PLAYER ? '⚡ Prise obligatoire !' : '⚡ L\'adversaire doit prendre !'; 
+      hint.dataset.tone = currentPlayer === MY_PLAYER ? 'urgent' : 'wait';
+      hint.textContent = currentPlayer === MY_PLAYER ? 'Prise obligatoire' : 'L’adversaire doit prendre'; 
       
       if(currentPlayer === MY_PLAYER && !isSequenceActive) {
           clearHighlights();
@@ -1616,6 +1618,7 @@ else { document.addEventListener('DOMContentLoaded', startAIGame); }
 
 })();
 </script>
+<script src="/mindspille-banners.js"></script>
 <script src="/mindspille-split.js"></script>
 </body>
 </html>

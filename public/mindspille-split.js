@@ -67,7 +67,9 @@
       var el = document.getElementById(id);
       if (!el || !el.classList.contains('show')) return;
       var text = (el.textContent || '').replace(/\s+/g, ' ').trim();
-      if (text) list.push({ id: id, text: text.slice(0, 160) });
+      /* Le ton du bandeau (mindspille-banners.js) : rouge quand c'est au joueur d'agir. */
+      var tone = el.getAttribute('data-tone') === 'urgent' ? 'urgent' : 'wait';
+      if (text) list.push({ id: id, text: text.slice(0, 160), tone: tone });
     });
     return list;
   }

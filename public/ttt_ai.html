@@ -732,7 +732,7 @@ function startForfeitCountdown(seconds){
   stopForfeitCountdown();forfeitCountdown=seconds;
   var bar=document.getElementById('forfeit-bar');bar.classList.add('show');
   function tick(){
-    bar.textContent='⏳ Adversaire absent — victoire dans '+forfeitCountdown+'s';
+    bar.dataset.tone = 'wait'; bar.textContent = 'Adversaire absent · victoire dans ' + forfeitCountdown + ' s';
     if(forfeitCountdown<=0){stopForfeitCountdown();return;}
     forfeitCountdown--;forfeitTimer=setTimeout(tick,1000);
   }
@@ -797,8 +797,8 @@ function startGraceTimer(isMyTurn,serverStartTime,duration){
     var elapsed=Date.now()-graceStart,remaining=Math.max(0,graceDuration-elapsed);
     arc.style.strokeDashoffset=CIRC*(graceDuration-remaining)/graceDuration;
     var secs=Math.ceil(remaining/1000);
-    if(isMyTurn){bar.classList.add('show');bar.textContent='⚠️ Jouez maintenant — '+secs+'s avant défaite !';}
-    else{bar.classList.add('show');bar.textContent='⏳ Adversaire doit jouer — '+secs+'s';}
+    if(isMyTurn){bar.classList.add('show');bar.dataset.tone = 'urgent'; bar.textContent = 'Jouez maintenant · défaite dans ' + secs + ' s';}
+    else{bar.classList.add('show');bar.dataset.tone = 'wait'; bar.textContent = 'L’adversaire doit jouer · ' + secs + ' s';}
     if(remaining>0){graceRAF=requestAnimationFrame(tick);}
     else{graceActive=false;bar.classList.remove('show');}
   }
@@ -1269,6 +1269,7 @@ initAI();
 
 })();
 </script>
+<script src="/mindspille-banners.js"></script>
 <script src="/mindspille-split.js"></script>
 </body>
 </html>
