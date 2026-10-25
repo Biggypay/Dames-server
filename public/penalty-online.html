@@ -168,6 +168,7 @@ body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%
 #confetti-canvas{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:100}
 </style>
   <script defer src="/mindspille-i18n.js"></script>
+  <script src="/mindspille-hud.js"></script>
 </head>
 <body>
 
@@ -711,12 +712,17 @@ function sendResult(outcome, reason) {
 /* ══════════════════════════════════════
    UI ET PROGRESSION (Style Chifoumi)
 ══════════════════════════════════════ */
+/* « Manche 3 / 10 », puis « Manche décisive » quand les tirs prévus sont épuisés. */
+function roundLabel(){
+  return currentRound > TOTAL_ROUNDS && !gameOver ? 'Manche décisive' : 'Manche ' + Math.min(currentRound, TOTAL_ROUNDS) + ' / ' + TOTAL_ROUNDS;
+}
+/* Les manches prévues sur une rangée ; la mort subite sur une rangée à part, dessous. */
 function updateDots(){
   var bar = document.getElementById('roundsProgress');
   if (!bar) return;
   bar.innerHTML = '';
   
-  for(var i=0; i<Math.max(TOTAL_ROUNDS, currentRound); i++){
+  for(var i=0; i<TOTAL_ROUNDS; i++){
     var dot = document.createElement('div');
     dot.className = 'round-dot';
     
@@ -729,6 +735,11 @@ function updateDots(){
       dot.style.boxShadow = '0 0 8px rgba(255,255,255,0.5)';
     }
     bar.appendChild(dot);
+  }
+  if (window.MindspilleHud) {
+    var extra = [];
+    for (var j = TOTAL_ROUNDS; j < roundHistory.length; j++) extra.push(roundHistory[j] === 'win' ? 'win' : 'lose');
+    MindspilleHud.decisive(bar, extra, !gameOver && currentRound > TOTAL_ROUNDS && roundHistory.length < currentRound);
   }
 }
 
@@ -1287,7 +1298,7 @@ function updateScores() {
   var sme = document.getElementById('score-me');
   var sop = document.getElementById('score-op');
   sme.textContent = scores.me; sop.textContent = scores.op;
-  document.getElementById('round-lbl').textContent = 'Manche ' + currentRound + ' / ' + TOTAL_ROUNDS;
+  document.getElementById('round-lbl').textContent = roundLabel();
   updateDots();
 }
 
@@ -1297,6 +1308,8 @@ function updateScores() {
 /* La photo du joueur prend la place du symbole. Si elle ne charge pas, le
    symbole revient : jamais de trou a la place d'un visage. */
 function setProfilePhoto(hostId, url, fallbackHtml){
+  /* Le portrait du joueur : sa photo, sinon son initiale (mindspille-hud.js). */
+  if(window.MindspilleHud){ MindspilleHud.paint(hostId, url); return; }
   var host = document.getElementById(hostId);
   if(!host) return;
   if(!url){ host.removeAttribute('data-photo'); host.innerHTML = fallbackHtml; return; }
@@ -1311,7 +1324,7 @@ function setProfilePhoto(hostId, url, fallbackHtml){
 /* Le ballon ou la cage se pose par-dessus la photo au lieu de la remplacer. */
 function setRoleBadge(hostId, emoji){
   var host = document.getElementById(hostId);
-  if(!host || !host.getAttribute('data-photo')) return;
+  if(!host || (!host.getAttribute('data-photo') && !window.MindspilleHud)) return;
   var badge = host.querySelector('.role-badge');
   if(!badge){ badge = document.createElement('div'); badge.className = 'role-badge'; host.appendChild(badge); }
   badge.textContent = emoji;
@@ -1326,7 +1339,7 @@ function updUI() {
   document.getElementById('role-op').textContent   = iamShooter ? 'Gardien' : 'Tireur';
   document.getElementById('name-me').textContent   = MY_NAME;
   document.getElementById('name-op').textContent   = OP_NAME;
-  document.getElementById('round-lbl').textContent = 'Manche ' + currentRound + ' / ' + TOTAL_ROUNDS;
+  document.getElementById('round-lbl').textContent = roundLabel();
   
   document.getElementById('profile-me').className = 'profile';
   document.getElementById('profile-op').className = 'profile';

@@ -429,6 +429,7 @@ body.replay .choices,body.replay #forfeit-bar{display:none!important}
 @keyframes shake{0%,100%{transform:rotate(0deg)}25%{transform:rotate(-8deg)}75%{transform:rotate(8deg)}}
 </style>
   <script defer src="/mindspille-i18n.js"></script>
+  <script src="/mindspille-hud.js"></script>
 </head>
 <body>
 
@@ -914,7 +915,8 @@ function initSocket() {
         });
         document.getElementById('playerScore').textContent = playerScore;
         document.getElementById('aiScore').textContent     = opScore;
-        roundLabelEl.textContent = (isTiebreaker ? 'Manche decisive' : 'Manche ' + currentRound + ' / ' + MAX_ROUNDS);
+        roundLabelEl.textContent = (isTiebreaker ? 'Manche décisive' : 'Manche ' + currentRound + ' / ' + MAX_ROUNDS);
+  renderDecisiveDots();
         rebuildProgressDots();
         showToast('📶','Partie restaurée','Reprise là où vous étiez !', 2400, function() {
           gameReady = true;
@@ -1363,7 +1365,16 @@ function showResult(result, myC, opC) {
 }
 
 function addToHistory(result, myC, opC) { roundHistory.push({ round: currentRound, result: result, playerChoice: myC, opponentChoice: opC }); }
-function updateProgress(result) { var dots = roundsProgress.querySelectorAll('.round-dot'); if (dots[currentRound - 1]) dots[currentRound - 1].classList.add('played', result); }
+function updateProgress(result) { var dots = roundsProgress.querySelectorAll('.round-dot'); if (currentRound <= MAX_ROUNDS && dots[currentRound - 1]) dots[currentRound - 1].classList.add('played', result); renderDecisiveDots(); }
+/* Les manches décisives (égalité après les manches prévues) : une rangée à
+   part, sous les manches prévues, jamais mêlées à elles. */
+function renderDecisiveDots() {
+  if (!window.MindspilleHud) return;
+  var extra = [], current = false;
+  roundHistory.forEach(function (h) { if (h.round > MAX_ROUNDS) extra.push(h.result); });
+  if (isTiebreaker && !gameOver) current = !roundHistory.some(function (h) { return h.round === currentRound; });
+  MindspilleHud.decisive(roundsProgress, extra, current);
+}
 /* Autant de repères que de manches annoncées par le serveur : la page en
    dessinait cinq en dur, et la sixième manche n'apparaissait nulle part. */
 function ensureRoundDots() {
@@ -1372,11 +1383,13 @@ function ensureRoundDots() {
     var dot = document.createElement('div'); dot.className = 'round-dot'; roundsProgress.appendChild(dot);
   }
   for (var j = dots.length - 1; j >= MAX_ROUNDS; j--) dots[j].remove();
+  renderDecisiveDots();
 }
 
 function rebuildProgressDots() {
   var dots = roundsProgress.querySelectorAll('.round-dot'); dots.forEach(function(d){ d.className = 'round-dot'; });
-  roundHistory.forEach(function(h) { if (dots[h.round-1]) dots[h.round-1].classList.add('played', h.result); });
+  roundHistory.forEach(function(h) { if (h.round <= MAX_ROUNDS && dots[h.round-1]) dots[h.round-1].classList.add('played', h.result); });
+  renderDecisiveDots();
 }
 
 /* ══════════════════════════════════════════
@@ -1384,7 +1397,8 @@ function rebuildProgressDots() {
 ══════════════════════════════════════════ */
 function startRound() {
   if (IS_SPECTATOR) { startSpectatorRound(); return; }
-  roundLabelEl.textContent = (isTiebreaker ? 'Manche decisive' : 'Manche ' + currentRound + ' / ' + MAX_ROUNDS);
+  roundLabelEl.textContent = (isTiebreaker ? 'Manche décisive' : 'Manche ' + currentRound + ' / ' + MAX_ROUNDS);
+  renderDecisiveDots();
 
   playerLocked   = false;
   playerChoice   = null;
@@ -1416,7 +1430,8 @@ function startRound() {
 function startSpectatorRound() {
   if (!IS_SPECTATOR || gameOver) return;
   stopRevealCountdown();
-  roundLabelEl.textContent = (isTiebreaker ? 'Manche decisive' : 'Manche ' + currentRound + ' / ' + MAX_ROUNDS);
+  roundLabelEl.textContent = (isTiebreaker ? 'Manche décisive' : 'Manche ' + currentRound + ' / ' + MAX_ROUNDS);
+  renderDecisiveDots();
   playerChoice = null; opponentChoice = null; playerLocked = true; roundInProgress = true;
   choiceBtns.forEach(function(btn){ btn.classList.add('disabled', 'locked'); btn.classList.remove('selected'); });
   playerEmojiEl.textContent = '❓'; playerLabelEl.textContent = 'Choix secret';
@@ -1535,6 +1550,8 @@ closeBtn.addEventListener('touchend', function(e) { e.preventDefault(); try { wi
 /* La photo du joueur prend la place du symbole. Si elle ne charge pas, le
    symbole revient : jamais de trou a la place d'un visage. */
 function setProfilePhoto(hostId, url, fallbackHtml){
+  /* Le portrait du joueur : sa photo, sinon son initiale (mindspille-hud.js). */
+  if(window.MindspilleHud){ MindspilleHud.paint(hostId, url); return; }
   var host = document.getElementById(hostId);
   if(!host) return;
   if(!url){ host.removeAttribute('data-photo'); host.innerHTML = fallbackHtml; return; }

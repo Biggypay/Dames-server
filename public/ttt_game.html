@@ -119,6 +119,7 @@ body.chrome-hidden #forfeit-bar,body.spectator #forfeit-bar{display:none!importa
 .score-glow-r{animation:scoreGlowR 0.9s ease-out forwards}
 </style>
   <script defer src="/mindspille-i18n.js"></script>
+  <script src="/mindspille-hud.js"></script>
 </head>
 <body>
 
@@ -1207,6 +1208,8 @@ function startMatch(){
    disparait pas du jeu — il reste sur le plateau — mais il n'a plus a tenir
    lieu de portrait. Si la photo ne charge pas, on remet la pastille. */
 function setProfilePhoto(hostId,url,fallbackHtml){
+  /* Le portrait du joueur : sa photo, sinon son initiale (mindspille-hud.js). */
+  if(window.MindspilleHud){MindspilleHud.paint(hostId,url);return;}
   var host=document.getElementById(hostId);
   if(!host)return;
   if(!url){host.innerHTML=fallbackHtml;return;}
@@ -1235,6 +1238,8 @@ function restoreTurnProfilePhotos(){
   setProfilePhoto('avatar-ai',MY_SLOT===1?P2_AVATAR:P1_AVATAR,OP_SYMBOL==='X'?AV_X:AV_O);
 }
 function showTurnSymbol(isMyTurn){
+  /* Le tour se lit au profil allumé (l'autre est pâle) : le portrait reste. */
+  if(window.MindspilleHud)return;
   var host=document.getElementById(isMyTurn?'avatar-human':'avatar-ai');
   if(host){host.dataset.turnSymbol='1';host.innerHTML=isMyTurn?(MY_SYMBOL==='X'?AV_X:AV_O):(OP_SYMBOL==='X'?AV_X:AV_O);}
 }
@@ -1258,23 +1263,27 @@ function updUI(){
   var opName=IS_SPECTATOR?P2_NAME:OP_NAME;
   document.getElementById('name-human').textContent=String(meName||'').slice(0,14);
   document.getElementById('name-ai').textContent=String(opName||'').slice(0,14);
+  /* Sous chaque nom, son symbole : tiré au sort au début du match, le même à chaque manche. */
+  if(window.MindspilleHud){MindspilleHud.side('profile-human',MY_SYMBOL==='X'?'x':'o');MindspilleHud.side('profile-ai',OP_SYMBOL==='X'?'x':'o');}
 
   var elW=document.getElementById('score-w'),elR=document.getElementById('score-r');
   var prevW=parseInt(elW.textContent)||0,prevR=parseInt(elR.textContent)||0;
   if(matchW!==prevW){elW.textContent=matchW;elW.classList.remove('score-anim-human','score-glow-w');void elW.offsetWidth;elW.classList.add('score-anim-human','score-glow-w');}
   if(matchR!==prevR){elR.textContent=matchR;elR.classList.remove('score-anim-ai','score-glow-r');void elR.offsetWidth;elR.classList.add('score-anim-ai','score-glow-r');}
 
-  var maxM=isTiebreaker?TOTAL_MANCHES+1:TOTAL_MANCHES;
-  document.getElementById('manche-lbl').textContent='Manche '+(Math.min(manchesDone+1,maxM))+' / '+maxM;
+  var decisiveNow=!matchOver&&manchesDone>=TOTAL_MANCHES;
+  document.getElementById('manche-lbl').textContent=decisiveNow?'Manche décisive':'Manche '+(Math.min(manchesDone+1,TOTAL_MANCHES))+' / '+TOTAL_MANCHES;
   updateDots();
 }
 
-/* ── Barres de progression linéaires style Chifoumi ── */
+/* ── Barres de progression linéaires style Chifoumi ──
+   Les manches prévues sur une rangée ; les manches décisives (égalité à la
+   fin des manches prévues) sur une rangée à part, dessous. */
 function updateDots(){
   var bar=document.getElementById('roundsProgress');
   if(!bar)return;
   bar.innerHTML='';
-  var total=isTiebreaker?TOTAL_MANCHES+1:TOTAL_MANCHES;
+  var total=TOTAL_MANCHES;
   for(var i=0;i<total;i++){
     var dot=document.createElement('div');
     dot.className='round-dot';
@@ -1287,6 +1296,11 @@ function updateDots(){
       dot.classList.add('current');
     }
     bar.appendChild(dot);
+  }
+  if(window.MindspilleHud){
+    var extra=[];
+    for(var j=TOTAL_MANCHES;j<mancheResults.length;j++)extra.push(mancheResults[j]==='w'?'win':mancheResults[j]==='r'?'lose':'draw');
+    MindspilleHud.decisive(bar,extra,!matchOver&&manchesDone>=TOTAL_MANCHES);
   }
 }
 

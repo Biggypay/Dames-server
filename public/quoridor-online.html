@@ -105,6 +105,7 @@ body.chrome-hidden #forfeit-bar,body.spectator #forfeit-bar{display:none!importa
 #confetti-canvas{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:100}
 </style>
   <script defer src="/mindspille-i18n.js"></script>
+  <script src="/mindspille-hud.js"></script>
 </head>
 <body>
 
@@ -241,6 +242,8 @@ var OP_NAME        = MY_SLOT === 1 ? P2_NAME : P1_NAME;
    affiche est celui du profil, jamais « Vous » / « Adversaire » : un
    spectateur ne joue pas, ces libelles ne veulent rien dire pour lui. */
 function setProfilePhoto(slotId, url, fallbackClass) {
+  /* Le portrait du joueur : sa photo, sinon son initiale (mindspille-hud.js). */
+  if (window.MindspilleHud) { MindspilleHud.paint(slotId, url); return; }
   var host = document.getElementById(slotId);
   if (!host) return;
   if (url) {
@@ -308,6 +311,12 @@ function updateSeriesUI(next){
   for(var i=0;i<6;i++){var d=document.createElement('span');d.className='round-dot';
     if(i<played){var r=hist[i];d.className+=' '+(r===MY_SLOT?'win':r===0?'draw':(r===1||r===2)?'lose':'');}
     else if(i===played&&!seriesState.suddenDeath)d.className+=' current'; el.appendChild(d);}
+  /* La mort subite : ses manches sur une rangée à part, sous les six prévues. */
+  if(window.MindspilleHud){
+    var dec=(Array.isArray(seriesState.decisive)?seriesState.decisive:[]).map(function(r){return r===MY_SLOT?'win':r===0?'draw':'lose';});
+    var w=seriesState.wins||{};
+    MindspilleHud.decisive(el,dec,!!seriesState.suddenDeath&&(Number(w[1])||0)===(Number(w[2])||0)&&!gameOver);
+  }
 }
 var gameOver = false, gameReady = false, resultSent = false;
 var isProcessing = false;

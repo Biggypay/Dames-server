@@ -90,6 +90,7 @@ body.chrome-hidden #forfeit-bar,body.spectator #forfeit-bar{display:none!importa
 #confetti-canvas{position:fixed;inset:0;pointer-events:none;z-index:900}
 </style>
   <script defer src="/mindspille-i18n.js"></script>
+  <script src="/mindspille-hud.js"></script>
 </head>
 <body>
 
@@ -100,7 +101,6 @@ body.chrome-hidden #forfeit-bar,body.spectator #forfeit-bar{display:none!importa
       <div class="profile-avatar" id="avatar-me"><div class="av-w" id="dot-me">✗</div></div>
     </div>
     <div class="profile-name" id="name-me">Vous</div>
-    <div class="goal-hint" id="goal-me"></div>
   </div>
 
   <div class="top-center">
@@ -116,7 +116,6 @@ body.chrome-hidden #forfeit-bar,body.spectator #forfeit-bar{display:none!importa
       <div class="profile-avatar" id="avatar-op"><div class="av-r" id="dot-op">◯</div></div>
     </div>
     <div class="profile-name" id="name-op">Adversaire</div>
-    <div class="goal-hint" id="goal-op"></div>
   </div>
 </div>
 
@@ -220,6 +219,8 @@ window.addEventListener('message', function(e) {
 });
 
 function setProfilePhoto(slotId, url, fallbackClass, glyph) {
+  /* Le portrait du joueur : sa photo, sinon son initiale (mindspille-hud.js). */
+  if (window.MindspilleHud) { MindspilleHud.paint(slotId, url); return; }
   var host = document.getElementById(slotId);
   if (!host) return;
   if (url) {
@@ -248,6 +249,11 @@ function applyProfiles() {
   var mySymbol = symbolForSlot(MY_SLOT), opSymbol = symbolForSlot(MY_SLOT === 1 ? 2 : 1);
   setProfilePhoto('avatar-me', meAvatar, mySymbol === 'X' ? 'av-w' : 'av-r', mySymbol === 'X' ? '✗' : '◯');
   setProfilePhoto('avatar-op', opAvatar, opSymbol === 'X' ? 'av-w' : 'av-r', opSymbol === 'X' ? '✗' : '◯');
+  /* Sous chaque nom, son symbole : tiré au sort au début du match, le même à chaque manche. */
+  if (window.MindspilleHud) {
+    MindspilleHud.side('profile-me', mySymbol === 'X' ? 'x' : 'o');
+    MindspilleHud.side('profile-op', opSymbol === 'X' ? 'x' : 'o');
+  }
 }
 
 if (IS_SPECTATOR) try { document.body.classList.add('spectator'); } catch (_) {}
@@ -296,6 +302,15 @@ function updateSeriesUI(next) {
       bar.className += ' current';
     }
     el.appendChild(bar);
+  }
+  /* La mort subite : ses manches sur une rangée à part, sous les six prévues. */
+  if (window.MindspilleHud) {
+    var decisive = (Array.isArray(seriesState.decisive) ? seriesState.decisive : []).map(function (result) {
+      return result === MY_SLOT ? 'win' : result === 0 ? 'draw' : 'lose';
+    });
+    var wins = seriesState.wins || {};
+    var tied = (Number(wins[1]) || 0) === (Number(wins[2]) || 0);
+    MindspilleHud.decisive(el, decisive, !!seriesState.suddenDeath && tied && !gameOver);
   }
 }
 var gameOver = false, gameReady = false, resultSent = false;
@@ -756,6 +771,8 @@ function renderLoop() {
 }
 
 function showActiveGomokuSymbol(slot) {
+  /* Le tour se lit au profil allumé (l'autre est pâle) : le portrait reste. */
+  if (window.MindspilleHud) return;
   var mine = slot === MY_SLOT;
   var host = document.getElementById(mine ? 'avatar-me' : 'avatar-op');
   if (!host) return;
@@ -1060,10 +1077,6 @@ function startNewGame() {
   var myIsX = symbolForSlot(MY_SLOT) === 'X';
   if (arcMe) arcMe.setAttribute('stroke', myIsX ? '#e2e8f0' : '#f87171');
   if (arcOp) arcOp.setAttribute('stroke', myIsX ? '#f87171' : '#e2e8f0');
-  var goalMe = document.getElementById('goal-me');
-  var goalOp = document.getElementById('goal-op');
-  if (goalMe) goalMe.textContent = myIsX ? '✗ CROIX' : '◯ RONDS';
-  if (goalOp) goalOp.textContent = myIsX ? '◯ RONDS' : '✗ CROIX';
 
   var whoStarts = currentSlot === MY_SLOT ? 'Vous commencez (' + (symbolForSlot(MY_SLOT) === 'X' ? 'croix' : 'ronds') + ')' : OP_NAME + ' commence (' + (symbolForSlot(currentSlot) === 'X' ? 'croix' : 'ronds') + ')';
   showToast('✏️', 'Partie commencée', whoStarts + '\nAlignez cinq pions pour gagner.', 2400, function () {

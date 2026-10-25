@@ -103,6 +103,7 @@ body.chrome-hidden #forfeit-bar,body.spectator #forfeit-bar{display:none!importa
 .cap-count{font-family:'Cinzel',serif;font-size:9px;font-weight:700;color:rgba(255,255,255,0.7);margin-left:2px}
 </style>
   <script defer src="/mindspille-i18n.js"></script>
+  <script src="/mindspille-hud.js"></script>
 </head>
 <body>
 <div id="top">
@@ -455,7 +456,7 @@ function initSocket(){
         var wc=0, rc=0;
         for(var r=0;r<BS;r++) for(var c=0;c<BS;c++) if(board[r][c]){ if(board[r][c].player===0) wc++; else rc++; }
         capturedBy = [Math.max(0, 20-rc), Math.max(0, 20-wc)];
-        document.getElementById('score-w').textContent = wc; document.getElementById('score-r').textContent = rc;
+        setPieceCounts(wc, rc);
         
         syncPieces(); clearHighlights(); clearLastMove(); stopTimer(); stopGraceTimer();
         updateCapturedDisplay();
@@ -644,8 +645,7 @@ function adoptServerState(serverBoard, data){
   var wc = 0, rc = 0;
   for(var r=0; r<BS; r++) for(var c=0; c<BS; c++) if(board[r][c]){ if(board[r][c].player === 0) wc++; else rc++; }
   capturedBy = [Math.max(0, 20-rc), Math.max(0, 20-wc)];
-  document.getElementById('score-w').textContent = wc;
-  document.getElementById('score-r').textContent = rc;
+  setPieceCounts(wc, rc);
   syncPieces(); clearHighlights(); clearLastMove(); updateCapturedDisplay();
   if(data.lastMove && data.lastMove.from) showLastMoveOrigin(data.lastMove.from.row, data.lastMove.from.col);
   stopTimer(); stopGraceTimer();
@@ -1085,10 +1085,21 @@ function getAllValidMoves(player){
 function checkGameOver(){
   var wc=0, rc=0;
   for(var r=0; r<BS; r++) for(var c=0; c<BS; c++) if(board[r][c]){ if(board[r][c].player===0) wc++; else rc++; }
-  document.getElementById('score-w').textContent=wc; document.getElementById('score-r').textContent=rc;
+  setPieceCounts(wc, rc);
   if(wc===0) return 1; if(rc===0) return 0;
   if(getAllValidMoves(0).moves.length===0) return 1; if(getAllValidMoves(1).moves.length===0) return 0;
   return -1;
+}
+
+/* Les pions restants au centre de l'en-tête : à gauche ceux du profil de
+   gauche (vous ; le joueur 1 pour un spectateur), à droite ceux de
+   l'adversaire — jamais les pions de l'autre à côté de votre profil, quelle
+   que soit votre couleur (owner, 2026-10-25). */
+function setPieceCounts(wc, rc){
+  var mineWhite = MY_PLAYER === 0;
+  var left = document.getElementById('score-w'), right = document.getElementById('score-r');
+  if(left){ left.textContent = mineWhite ? wc : rc; left.className = 'snum ' + (mineWhite ? 'sw' : 'sr'); }
+  if(right){ right.textContent = mineWhite ? rc : wc; right.className = 'snum ' + (mineWhite ? 'sr' : 'sw'); }
 }
 
 function updateCapturedDisplay(){
@@ -1109,6 +1120,8 @@ function updateCapturedDisplay(){
     var span = document.createElement('span'); span.className = 'cap-count'; span.textContent = '×'+count; el.appendChild(span);
   }
   buildDots(elH, hCount, hColor); buildDots(elA, aCount, aColor);
+  /* Le centre suit les mêmes comptes : chaque nombre du côté de son joueur. */
+  setPieceCounts(MY_PLAYER === 0 ? hCount : aCount, MY_PLAYER === 0 ? aCount : hCount);
 }
 
 function clearHighlights(){ while(hlGroup.children.length) hlGroup.remove(hlGroup.children[0]); while(moveHlGroup.children.length) moveHlGroup.remove(moveHlGroup.children[0]); }
@@ -1434,6 +1447,8 @@ function hasKing(player){
    n'a plus a tenir lieu de portrait. Si la photo ne charge pas, la pastille
    revient : jamais de trou a la place d'un visage. */
 function setProfilePhoto(hostId, url, fallbackHtml){
+  /* Le portrait du joueur : sa photo, sinon son initiale (mindspille-hud.js). */
+  if(window.MindspilleHud){ MindspilleHud.paint(hostId, url); return; }
   var host = document.getElementById(hostId);
   if(!host) return;
   if(!url){ host.innerHTML = fallbackHtml; return; }
@@ -1468,8 +1483,9 @@ function updUI(){
   var opAvatar = MY_SLOT === 1 ? P2_AVATAR : P1_AVATAR;
   setProfilePhoto('avatar-human', myAvatar, pastilleMe);
   setProfilePhoto('avatar-ai', opAvatar, pastilleOp);
-  if(myAvatar) setKingBadge('avatar-human', hasKing(MY_PLAYER));
-  if(opAvatar) setKingBadge('avatar-ai', hasKing(1-MY_PLAYER));
+  /* La couronne se pose sur le portrait, photo ou initiale. */
+  if(myAvatar || window.MindspilleHud) setKingBadge('avatar-human', hasKing(MY_PLAYER));
+  if(opAvatar || window.MindspilleHud) setKingBadge('avatar-ai', hasKing(1-MY_PLAYER));
   document.getElementById('timer-arc-human').setAttribute('stroke', isHW?'#ffffff':'#e74c3c');
   document.getElementById('timer-arc-ai').setAttribute('stroke', isHW?'#e74c3c':'#ffffff');
   document.getElementById('profile-human').querySelector('.profile-name').textContent = IS_SPECTATOR ? P1_NAME : MY_NAME;
@@ -1486,6 +1502,8 @@ function restoreDamesProfilePhotos(){
   setProfilePhoto('avatar-ai',MY_SLOT===1?P2_AVATAR:P1_AVATAR,'<div class="av-'+(mineWhite?'red':'white')+(hasKing(1-MY_PLAYER)?' av-king':'')+'"></div>');
 }
 function showTurnPiece(isMyTurn){
+  /* Le tour se lit au profil allumé (l'autre est pâle) : le portrait reste. */
+  if(window.MindspilleHud)return;
   var player=isMyTurn?MY_PLAYER:1-MY_PLAYER;
   var host=document.getElementById(isMyTurn?'avatar-human':'avatar-ai');
   if(host){host.dataset.turnSymbol='1';host.innerHTML='<div class="av-'+(player===0?'white':'red')+(hasKing(player)?' av-king':'')+'"></div>';}
@@ -1510,8 +1528,7 @@ function startSpectatorGame(state){
   var wc=0, rc=0;
   for(var r=0; r<BS; r++) for(var c=0; c<BS; c++) if(board[r][c]){ if(board[r][c].player===0) wc++; else rc++; }
   capturedBy=[Math.max(0,20-rc),Math.max(0,20-wc)];
-  document.getElementById('score-w').textContent=wc;
-  document.getElementById('score-r').textContent=rc;
+  setPieceCounts(wc, rc);
   syncPieces(); clearHighlights(); clearLastMove(); stopTimer(); stopGraceTimer();
   updateCapturedDisplay(); stopForfeitCountdown();
   if(state.lastMove && state.lastMove.from) showLastMoveOrigin(state.lastMove.from.row, state.lastMove.from.col);
@@ -1734,8 +1751,7 @@ function replayCommit(b, slot){
   var wc = 0, rc = 0;
   for(var r=0;r<BS;r++) for(var c=0;c<BS;c++) if(board[r][c]){ if(board[r][c].player===0) wc++; else rc++; }
   capturedBy = [Math.max(0,20-rc), Math.max(0,20-wc)];
-  document.getElementById('score-w').textContent = wc;
-  document.getElementById('score-r').textContent = rc;
+  setPieceCounts(wc, rc);
   updateCapturedDisplay(); updUI();
 }
 var replayToken = 0;
