@@ -3257,6 +3257,17 @@ app.get('/mindspille-3d.js', (req, res) => {
   res.sendFile(path.join(PUBLIC, 'mindspille-3d.js'));
 });
 
+// Les dessins du Chifoumi (pierre, feuille, ciseaux) à la place des émojis, sur
+// les trois pages du jeu. Les pages les demandent avec `?v=` : un nouveau
+// dessin change l'adresse, le cache peut donc durer.
+const CHIFOUMI_ART = new Set(['pierre.webp', 'feuille.webp', 'ciseaux.webp']);
+app.get('/chifoumi/:file', (req, res) => {
+  if (!CHIFOUMI_ART.has(req.params.file)) return res.status(404).end();
+  res.setHeader('Content-Type', 'image/webp');
+  res.setHeader('Cache-Control', 'public, max-age=604800');
+  res.sendFile(path.join(PUBLIC, 'chifoumi', req.params.file));
+});
+
 // Pause de tournoi (overlay « Tournoi en pause ») et garde-fou de synchronisation
 // du Quoridor en ligne. Les sept pages multijoueur l'incluent ; sans cette route
 // il répondait 404 et ni l'un ni l'autre ne s'exécutait.
