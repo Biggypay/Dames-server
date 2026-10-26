@@ -1103,7 +1103,7 @@ if (!IS_REPLAY) initSocket();
    REPLAY : positions envoyees par l'application
    replay:init     { player1Name, player2Name }
    replay:position { board (225 chiffres : 0 vide, 1 / 2 = joueur), last:{r,c},
-                     slot, round, wins:{1,2}, animate }
+                     slot, round, wins:{1,2}, history:[vainqueur de chaque manche jouee, 0 = nulle], animate }
    Rien ne part vers le serveur ; aucune donnee de match n'est modifiee.
 ══════════════════════════════════════════ */
 window.addEventListener('message', function (e) {
@@ -1124,7 +1124,14 @@ window.addEventListener('message', function (e) {
     if (d.last && inBounds(d.last.r, d.last.c)) next.last = d.last;
     applyServerState(next, undefined, !!d.animate);
     if (!next.last) lastMove = null;
-    if (d.wins) updateSeriesUI({ regularRounds: 6, roundsPlayed: (d.round || 1) - 1, currentRound: d.round || 1, wins: d.wins, draws: 0, history: [], suddenDeath: false });
+    if (d.wins) {
+      /* Les manches gagnées et perdues de chaque camp (owner, 2026-10-26). */
+      var played = Array.isArray(d.history) ? d.history.filter(function (w) { return w === 0 || w === 1 || w === 2; }).slice(0, 99) : [];
+      var tied = (Number(d.wins[1]) || 0) === (Number(d.wins[2]) || 0);
+      updateSeriesUI({ regularRounds: 6, roundsPlayed: played.length || (d.round || 1) - 1, currentRound: d.round || 1, wins: d.wins,
+        draws: played.filter(function (w) { return w === 0; }).length, history: played.slice(0, 6), decisive: played.slice(6),
+        suddenDeath: played.length >= 6 && tied });
+    }
     draw();
   }
 });
@@ -1138,6 +1145,7 @@ window.addEventListener('resize', function () {
 </script>
 <script src="/tournament-pause-client.js"></script>
 <script src="/mindspille-banners.js"></script>
+<script src="/mindspille-proof.js"></script>
 <script src="/mindspille-split.js"></script>
 <script src="/mindspille-chat.js"></script>
 </body>

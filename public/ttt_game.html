@@ -1541,7 +1541,8 @@ renderLoop();
 /* ══════════════════════════════════════════
    REPLAY : positions envoyees par l'application
    replay:init     { player1Name, player2Name }
-   replay:position { board (9 car. X/O/.), last (0..8), round, score:{w,r} }
+   replay:position { board (9 car. X/O/.), last (0..8), round, score:{w,r},
+                     results:['w'|'r'|'d'] (manches deja jouees, vues du joueur 1) }
    Rien ne part vers le serveur ; aucune donnee de match n'est modifiee.
 ══════════════════════════════════════════ */
 var replayBoardKey=null;
@@ -1554,6 +1555,8 @@ function applyReplayPosition(d){
   for(i=0;i<9;i++){var ch=str.charAt(i);cells.push(ch==='X'||ch==='O'?ch:null);if(cells[i])filled++;if(board[i])prevFilled++;}
   var r=Number(d.round);if(r>=1&&r<=99)manchesDone=r-1;
   if(d.score&&isFinite(d.score.w)&&isFinite(d.score.r)){matchW=d.score.w|0;matchR=d.score.r|0;}
+  /* Les manches gagnees et perdues de chaque camp (owner, 2026-10-26). */
+  if(Array.isArray(d.results))mancheResults=d.results.filter(function(x){return x==='w'||x==='r'||x==='d';}).slice(0,99);
   /* Nouvelle manche (ou retour en arriere) : on repart d'un plateau vide. */
   var removing=false;
   for(i=0;i<9;i++){if(board[i]&&board[i]!==cells[i])removing=true;}
@@ -1608,6 +1611,7 @@ initSocket();
 </script>
 <script src="/tournament-pause-client.js"></script>
 <script src="/mindspille-banners.js"></script>
+<script src="/mindspille-proof.js"></script>
 <script src="/mindspille-split.js"></script>
 <script src="/mindspille-chat.js"></script>
 </body>

@@ -1215,7 +1215,7 @@ function finishTTTRound(room, roomId, winnerSlot, winLine) {
     if (room.status !== 'playing') return;
     io.to(roomId).emit('ttt_state_sync', tttSnapshot(room));
     startTTTTurnTimer(room, roomId, state.currentPlayer + 1);
-  }, 2800);
+  }, ROUND_PROOF_MS);
 }
 
 function quoriInitialState() {
@@ -1523,6 +1523,11 @@ const TURN_DURATION  = testDurationMs('TURN_DURATION_MS', 30 * 1000);
 const GRACE_DURATION = testDurationMs('GRACE_DURATION_MS', 60 * 1000);
 // Délai laissé à un joueur déconnecté pour revenir avant le forfait.
 const RECONNECT_DURATION = testDurationMs('RECONNECT_DURATION_MS', 60 * 1000);
+// La preuve d'une manche : le plateau final (la ligne du Tic-Tac-Toe, les cinq
+// pions alignés, le pion arrivé au bout) reste à l'écran avant la manche
+// suivante (owner, 2026-10-26 : « ça doit rester visible pendant quelques
+// secondes »). Il était effacé après 2,2 à 2,8 s, sous le message de manche.
+const ROUND_PROOF_MS = testDurationMs('ROUND_PROOF_MS', 4000);
 
 const opponentOf = slot => (slot === 1 ? 2 : 1);
 const onlySlots = slots => slots.filter(slot => slot === 1 || slot === 2);
@@ -2624,7 +2629,7 @@ function finishQuoridorRound(qroom, roomId, winnerSlot, reason='normal'){
     io.to(roomId).emit('quoridor_round_start',payload);
     io.to(roomId).emit('quoridor_state_sync',quoriSnapshot(qroom));
     persistRoomSoon('quoridor',qroom); startQuoriTurnTimer(qroom,roomId,starter);
-  },2200);
+  },ROUND_PROOF_MS);
 }
 
 function notifyQuoriRoomOver(qroom, roomId, winnerSlot, reason = 'normal') {
@@ -2697,7 +2702,7 @@ function finishGomokuRound(groom, roomId, winnerSlot, reason = 'normal') {
     io.to(roomId).emit('gomoku_state_sync', gomokuSnapshot(groom));
     persistRoomSoon('gomoku', groom);
     startGomokuTurnTimer(groom, roomId, groom.currentSlot);
-  }, 2200);
+  }, ROUND_PROOF_MS);
 }
 
 function notifyGomokuRoomOver(groom, roomId, winnerSlot, reason = 'normal') {
@@ -3252,6 +3257,14 @@ app.get('/mindspille-banners.js', (req, res) => {
   res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache');
   res.sendFile(path.join(PUBLIC, 'mindspille-banners.js'));
+});
+
+// La preuve du résultat : le message de manche et la fiche de fin se posent en
+// haut, le plateau final reste lisible. Voir public/mindspille-proof.js.
+app.get('/mindspille-proof.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(PUBLIC, 'mindspille-proof.js'));
 });
 
 // L'en-tête des plateaux en ligne : le portrait de chaque joueur (sa photo,

@@ -108,6 +108,23 @@ const readState = page => page.evaluate(() => ({
   modalShown: document.getElementById('gameOverModal').classList.contains('show')
 }));
 
+/* La preuve d'une manche reste à l'écran ROUND_PROOF_MS (4 s) avant que le
+   serveur ne remette le plateau à zéro : on attend ce plateau neuf des DEUX
+   côtés plutôt qu'un délai fixe, qui cassait dès que la preuve s'allongeait. */
+async function waitForFreshBoard(pages, timeoutMs = 12000) {
+  const deadline = Date.now() + timeoutMs;
+  let states = [];
+  while (Date.now() < deadline) {
+    states = await Promise.all(pages.map(readState));
+    if (states.every(s => s.gameReady && !s.gameOver && s.stones === 0)) {
+      await sleep(500);
+      return { ok: true, states };
+    }
+    await sleep(200);
+  }
+  return { ok: false, states };
+}
+
 async function main() {
   /* Sans navigateur dans l'image (integration continue nue), on ne fait pas
      echouer la suite : on annonce le saut, et les tests de protocole restent
@@ -196,10 +213,10 @@ async function main() {
     const afterRound1 = await readState(page1);
     check('manche 1 gagnée : la SÉRIE ne se termine pas (6 manches réglementaires)',
       afterRound1.gameOver === false, afterRound1);
+    check('la preuve reste à l’écran : les cinq pions alignés sont encore là', afterRound1.stones === 9, afterRound1);
 
-    await sleep(2600);
-    const round2State1 = await readState(page1);
-    check('manche 2 : le plateau est réinitialisé et rejouable', round2State1.gameReady === true && round2State1.stones === 0, round2State1);
+    const round2 = await waitForFreshBoard([page1, page2]);
+    check('manche 2 : le plateau est réinitialisé et rejouable', round2.ok, round2.states);
 
     async function playBrowserRoundToWin(winnerPage, loserPage, starterIsWinner) {
       const wCells = [[7, 3], [7, 4], [7, 5], [7, 6], [7, 7]];
@@ -226,9 +243,11 @@ async function main() {
       const starterIsWinner = (round % 2 === 1);
       await playBrowserRoundToWin(openerPage, responderPage, starterIsWinner);
       if (round < 4) {
-        await sleep(2600);
+        await sleep(1500);
         const mid = await readState(page1);
         check(`manche ${round} gagnée : la série continue`, mid.gameOver === false, mid);
+        const next = await waitForFreshBoard([page1, page2]);
+        check(`manche ${round + 1} : le plateau est réinitialisé des deux côtés`, next.ok, next.states);
       }
     }
 
