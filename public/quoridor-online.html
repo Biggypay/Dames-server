@@ -1392,7 +1392,8 @@ if (!IS_REPLAY) initSocket();
 /* ══════════════════════════════════════════
    REPLAY : positions envoyees par l'application
    replay:init     { player1Name, player2Name }
-   replay:position { s1Pos, s2Pos, s1Walls, s2Walls, hW, vW, slot }
+   replay:position { s1Pos, s2Pos, s1Walls, s2Walls, hW, vW, slot,
+                     wins:{1,2}, history:[vainqueur de chaque manche jouee] }
    Rien ne part vers le serveur ; aucune donnee de match n'est modifiee.
 ══════════════════════════════════════════ */
 function replayGrid(g){
@@ -1423,6 +1424,13 @@ window.addEventListener('message', function(e){
     gameReady = true; gameOver = false; resultSent = true;
     restoreFromState({ s1Pos:a, s2Pos:b, s1Walls:Number(d.s1Walls), s2Walls:Number(d.s2Walls), hW:h, vW:v, currentSlot:(d.slot === 1 ? 2 : 1) });
     vmoves = []; vhw = []; vvw = []; mode = 'wait';
+    if (d.wins) {
+      /* Les manches gagnées et perdues de chaque camp (owner, 2026-10-26). */
+      var played = Array.isArray(d.history) ? d.history.filter(function(w){ return w === 0 || w === 1 || w === 2; }).slice(0, 99) : [];
+      var tied = (Number(d.wins[1]) || 0) === (Number(d.wins[2]) || 0);
+      updateSeriesUI({ regularRounds:6, roundsPlayed:played.length, currentRound:played.length + 1, wins:d.wins,
+        draws:0, history:played.slice(0, 6), decisive:played.slice(6), suddenDeath:played.length >= 6 && tied });
+    }
     draw();
   }
 });
