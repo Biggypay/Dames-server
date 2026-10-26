@@ -23,7 +23,7 @@ const ORDER = [
   'test_chifoumi_rounds', 'test_penalty_rounds', 'test_spectator', 'test_tournament_pause',
   'test_turn_clock', 'test_turn_clock_runtime', 'test_reconnect_deadline', 'test_dames_draw', 'test_match_summary',
   'test_gomoku', 'test_tikan', 'test_tikan_browser', 'test_gomoku_browser', 'test_gomoku_ai_browser', 'test_split_layout_browser', 'test_banners_browser',
-  'test_multiplayer_pages_browser', 'test_board_bridge_browser', 'test_dames_end_browser', 'test_chifoumi_end_browser', 'test_chifoumi_art_browser', 'test_hud_browser',
+  'test_multiplayer_pages_browser', 'test_board_bridge_browser', 'test_dames_end_browser', 'test_chifoumi_end_browser', 'test_chifoumi_art_browser', 'test_hud_browser', 'test_proof_browser',
   'test_3d_perf_browser'
 ];
 
