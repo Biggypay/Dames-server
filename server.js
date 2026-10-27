@@ -1273,7 +1273,7 @@ function requireAuth(req, res, next) {
   const h = req.headers['authorization'] || '';
   if (!h.startsWith('Bearer ')) return res.status(401).json({ error: 'Token manquant' });
   try {
-    const payload = jwt.verify(h.slice(7), JWT_SECRET);
+    const payload = jwt.verify(h.slice(7), JWT_SECRET, { algorithms: ['HS256'] });
     const userId = payload && payload.userId;
     if (!isUuid(userId)) return res.status(401).json({ error: 'Token invalide' });
     // Render can restart between /auth/login and /game/join. Restore the user
@@ -1372,7 +1372,7 @@ function createServerToken(user) {
   // restore its in-memory user after a Render restart without trusting any
   // browser-provided identity.
   if (isUuid(user.supabaseId)) payload.supabaseId = user.supabaseId;
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '2h' });
+  return jwt.sign(payload, JWT_SECRET, { algorithm: 'HS256', expiresIn: '2h' });
 }
 
 function issueServerToken(res, user) {
@@ -1383,7 +1383,7 @@ function issueServerToken(res, user) {
 function authenticateSocketToken(socket, token) {
   if (typeof token !== 'string' || token.length > 4096) return false;
   try {
-    const payload = jwt.verify(token, JWT_SECRET);
+    const payload = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
     if (!payload || typeof payload !== 'object' || !isUuid(payload.userId)) return false;
     const { userId } = payload;
     let user = users.get(userId);
