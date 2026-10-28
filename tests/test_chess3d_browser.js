@@ -13,6 +13,10 @@
  *    coordonnées gravées des deux côtés du cadre.
  * 4. Les pièces prises s'affichent en figurines avec l'avance matérielle ; un
  *    pion promu n'est pas une prise.
+ * 5. Les surfaces que le module construit (pièces tournées, tête et crinière du
+ *    cavalier) sont fermées et tournées vers l'extérieur, et les 32 pièces
+ *    restent sous 80 000 triangles : à 205 000, le rendu logiciel de la CI
+ *    tombait à 3 images/s et les tests d'en-tête et de messagerie échouaient.
  */
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -65,7 +69,18 @@ async function openPage(browser, route) {
   }
   await page.goto(URL + route, { waitUntil: 'load' });
   await page.waitForFunction(() => window.MS3D && window.MS3D.last && window.MS3D.stats.frames > 5, null, { timeout: 30000 });
-  await sleep(900);
+  /* Les pages font apparaître les pièces (échelle 0 → 1 en 0,6 s) : une mesure
+     prise pendant l'animation verrait un cavalier réduit à un point. */
+  await page.waitForFunction(() => {
+    let count = 0, settled = true;
+    window.MS3D.last.scene.traverse(o => {
+      if (!o.userData || o.userData.type !== 'piece') return;
+      count++;
+      if (Math.abs(o.scale.x - 1) > 1e-3) settled = false;
+    });
+    return count === 32 && settled;
+  }, null, { timeout: 30000 });
+  await sleep(300);
   return { page, errors };
 }
 
@@ -262,6 +277,55 @@ async function main() {
       pure.promoted[1].pieces.length === 0 && pure.promoted[0].pieces.length === 0 && pure.promoted[0].advantage === 8, pure.promoted);
     check('les prises de la plus lourde à la plus légère (cavalier puis pion), avance +4',
       JSON.stringify(pure.knightDown[0].pieces) === '[2,1]' && pure.knightDown[0].advantage === 4, pure.knightDown);
+
+    console.log('\n5. Des surfaces fermées, tournées vers l’extérieur, et légères');
+    /* Les surfaces que le module construit lui-même : chaque pièce tournée, la
+       tête et la crinière du cavalier. Fermée = chaque arête (par position)
+       borde exactement deux triangles : ni trou ni triangle de trop. */
+    const meshes = await page.evaluate(() => {
+      const report = {}, total = { triangles: 0 };
+      const count = { 1: 16, 2: 4, 3: 4, 4: 4, 5: 2, 6: 2 };
+      for (let type = 1; type <= 6; type++) {
+        const g = window.MindspilleChess3D.piece(0, type);
+        g.children.forEach(m => {
+          const geo = m.geometry;
+          total.triangles += count[type] * (geo.index ? geo.index.count : geo.attributes.position.count) / 3;
+        });
+        report[type] = (type === 2 ? [0, 1, 2] : [0]).map(i => {
+          const geo = g.children[i].geometry, pos = geo.attributes.position, nor = geo.attributes.normal, idx = geo.index;
+          const at = k => idx ? idx.getX(k) : k;
+          const key = j => [pos.getX(j), pos.getY(j), pos.getZ(j)].map(v => Math.round(v * 1e5)).join(',');
+          const edges = new Map();
+          let faces = 0, flipped = 0;
+          const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3(), N = new THREE.Vector3(), V = new THREE.Vector3();
+          for (let k = 0; k < (idx ? idx.count : pos.count); k += 3) {
+            const a = at(k), b = at(k + 1), c = at(k + 2), ka = key(a), kb = key(b), kc = key(c);
+            if (ka === kb || kb === kc || kc === ka) continue;
+            faces++;
+            for (const [u, v] of [[ka, kb], [kb, kc], [kc, ka]]) {
+              const e = u < v ? u + '|' + v : v + '|' + u;
+              edges.set(e, (edges.get(e) || 0) + 1);
+            }
+            A.fromBufferAttribute(pos, a); B.fromBufferAttribute(pos, b); C.fromBufferAttribute(pos, c);
+            N.subVectors(B, A).cross(C.sub(A));
+            V.fromBufferAttribute(nor, a).add(A.fromBufferAttribute(nor, b)).add(B.fromBufferAttribute(nor, c));
+            if (N.dot(V) < 0) flipped++;
+          }
+          let open = 0;
+          edges.forEach(n => { if (n !== 2) open++; });
+          return { faces, open, flipped };
+        });
+      }
+      return { report, triangles: Math.round(total.triangles) };
+    });
+    const surfaces = Object.values(meshes.report).flat();
+    check('chaque surface sculptée est fermée : chaque arête borde exactement deux triangles',
+      surfaces.length === 8 && surfaces.every(r => r.faces > 0 && r.open === 0), meshes.report);
+    check('chaque triangle regarde du même côté que ses normales (vers l’extérieur)',
+      surfaces.every(r => r.flipped === 0), meshes.report);
+    /* Le rendu logiciel des tests et les téléphones modestes paient chaque
+       triangle : 205 000 pour 32 pièces faisaient tomber la page à 3 images/s. */
+    check(`les 32 pièces tiennent en moins de 80 000 triangles (${meshes.triangles})`, meshes.triangles < 80000, meshes.triangles);
 
     check('/echecs-local : aucune erreur JavaScript', errors.length === 0, errors);
     await page.close();
