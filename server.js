@@ -3293,6 +3293,15 @@ app.get('/mindspille-3d.js', (req, res) => {
   res.sendFile(path.join(PUBLIC, 'mindspille-3d.js'));
 });
 
+// Le plateau et les pièces des trois pages d'échecs : pièces Staunton (ivoire et
+// ébène), cavalier sculpté tourné vers l'adversaire, plateau de bois avec ses
+// coordonnées. Voir public/mindspille-chess3d.js.
+app.get('/mindspille-chess3d.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(PUBLIC, 'mindspille-chess3d.js'));
+});
+
 // Les dessins du Chifoumi (pierre, feuille, ciseaux) à la place des émojis, sur
 // les trois pages du jeu. Les pages les demandent avec `?v=` : un nouveau
 // dessin change l'adresse, le cache peut donc durer.

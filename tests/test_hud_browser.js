@@ -112,7 +112,7 @@ const readHeader = page => page.evaluate(() => {
     return {
       portrait: first ? (first.classList.contains('ms-initial') ? 'initial' : first.classList.contains('profile-photo') ? 'photo' : first.className || first.tagName) : 'empty',
       letter: first && first.classList.contains('ms-initial') ? first.textContent : null,
-      piece: !!(avatar && avatar.querySelector('.av-w, .av-r, .av-x, .av-o, .av-white, .av-red, .turn-stone')),
+      piece: !!(avatar && avatar.querySelector('.av-w, .av-r, .av-x, .av-o, .av-white, .av-red, .av-black, .turn-stone')),
       emoji: /[\u{1F300}-\u{1FAFF}⚽]/u.test(avatar ? [...avatar.childNodes].filter(n => !n.classList || !n.classList.contains('role-badge')).map(n => n.textContent).join('') : ''),
       side: (profile.querySelector('.profile-side .ms-side-lbl') || {}).textContent || null,
       active: profile.classList.contains('active'),

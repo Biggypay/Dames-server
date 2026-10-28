@@ -60,6 +60,7 @@
     var detail = new THREE.MeshStandardMaterial({ color: spec.detail, roughness: 0.6, metalness: 0 });
     if (envTexture) { body.envMap = envTexture; detail.envMap = envTexture; }
     body.name = side === 0 ? 'chess-ivory' : 'chess-ebony';
+    detail.name = body.name + '-detail';
     materialCache[side] = { body: body, detail: detail };
     return materialCache[side];
   }

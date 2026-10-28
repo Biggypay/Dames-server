@@ -90,9 +90,12 @@
     var n = parseInt(String(el.textContent || '').replace(/[^\d-]+/g, ''), 10);
     return isFinite(n) ? n : null;
   }
-  /* Pièces prises : « ×7 » quand la page l'écrit, sinon une marque par pièce. */
+  /* Pièces prises : le total que la page pose sur la rangée (échecs : des
+     figurines, data-count), sinon « ×7 », sinon une marque par pièce. */
   function capturedIn(row) {
     if (!row) return null;
+    var counted = row.getAttribute('data-count');
+    if (counted !== null && counted !== '') return numberIn({ textContent: counted }) || 0;
     var total = row.querySelector('.cap-count');
     if (total) return numberIn(total) || 0;
     return row.children.length;
