@@ -1273,7 +1273,7 @@ function requireAuth(req, res, next) {
   const h = req.headers['authorization'] || '';
   if (!h.startsWith('Bearer ')) return res.status(401).json({ error: 'Token manquant' });
   try {
-    const payload = jwt.verify(h.slice(7), JWT_SECRET);
+    const payload = jwt.verify(h.slice(7), JWT_SECRET, { algorithms: ['HS256'] });
     const userId = payload && payload.userId;
     if (!isUuid(userId)) return res.status(401).json({ error: 'Token invalide' });
     // Render can restart between /auth/login and /game/join. Restore the user
@@ -1372,7 +1372,7 @@ function createServerToken(user) {
   // restore its in-memory user after a Render restart without trusting any
   // browser-provided identity.
   if (isUuid(user.supabaseId)) payload.supabaseId = user.supabaseId;
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '2h' });
+  return jwt.sign(payload, JWT_SECRET, { algorithm: 'HS256', expiresIn: '2h' });
 }
 
 function issueServerToken(res, user) {
@@ -1383,7 +1383,7 @@ function issueServerToken(res, user) {
 function authenticateSocketToken(socket, token) {
   if (typeof token !== 'string' || token.length > 4096) return false;
   try {
-    const payload = jwt.verify(token, JWT_SECRET);
+    const payload = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
     if (!payload || typeof payload !== 'object' || !isUuid(payload.userId)) return false;
     const { userId } = payload;
     let user = users.get(userId);
@@ -3078,29 +3078,53 @@ app.get('/health', (req, res) => {
 
 // Serve the 3D runtime from the same origin as the game. Some mobile networks
 // take several seconds (or fail entirely) when the iframe has to open a second
-// TLS connection to a public CDN before it can draw the board. Render fetches
-// the pinned runtime once, keeps it in memory, and browsers cache the versioned
-// URL. The two fixed upstreams are fallbacks only; no user-controlled URL is
-// ever fetched.
+// TLS connection to a public CDN before it can draw the board.
+//
+// The runtime is VENDORED (vendor/three-r128.min.js, the npm three@0.128.0
+// build, see vendor/README.md) and served only if its SHA-384 matches the
+// pinned digest. It used to be downloaded from a CDN at every start and served
+// unchecked, as first-party code, to every board: a compromised certificate
+// (eMudhra alert, October 2026) or an altered CDN would have injected code in
+// every game. The two fixed CDNs remain a fallback, held to the same digest;
+// no user-controlled URL is ever fetched.
+const THREE_RUNTIME_SHA384 = 'CI3ELBVUz9XQO+97x6nwMDPosPR5XvsxW2ua7N1Xeygeh1IxtgqtCkGfQY9WWdHu';
+// Les tests pointent ailleurs pour prouver qu'un fichier altéré n'est jamais servi.
+const THREE_RUNTIME_FILE = process.env.NODE_ENV === 'test' && process.env.THREE_RUNTIME_PATH
+  ? process.env.THREE_RUNTIME_PATH
+  : path.join(__dirname, 'vendor', 'three-r128.min.js');
+function threeRuntimeDigestOk(body) {
+  return crypto.createHash('sha384').update(body).digest('base64') === THREE_RUNTIME_SHA384;
+}
 let threeRuntimeSource = null;
 let threeRuntimeInFlight = null;
 async function loadThreeRuntime() {
   if (threeRuntimeSource) return threeRuntimeSource;
   if (threeRuntimeInFlight) return threeRuntimeInFlight;
   threeRuntimeInFlight = (async () => {
+    let lastError = null;
+    try {
+      const local = fs.readFileSync(THREE_RUNTIME_FILE);
+      if (threeRuntimeDigestOk(local)) {
+        threeRuntimeSource = local;
+        return local;
+      }
+      lastError = new Error('three_runtime_digest_mismatch');
+      console.error('[assets] vendored Three.js runtime does not match its pinned digest');
+    } catch (error) {
+      lastError = error;
+    }
     const sources = [
       'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js',
       'https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js'
     ];
-    let lastError = null;
     for (const source of sources) {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 8000);
       try {
         const response = await fetch(source, { signal: controller.signal });
         if (!response.ok) throw new Error('three_runtime_' + response.status);
-        const body = await response.text();
-        if (body.length < 100000 || !body.includes('THREE')) throw new Error('three_runtime_invalid');
+        const body = Buffer.from(await response.arrayBuffer());
+        if (!threeRuntimeDigestOk(body)) throw new Error('three_runtime_digest_mismatch');
         threeRuntimeSource = body;
         return body;
       } catch (error) {
@@ -3152,9 +3176,9 @@ const serveSmart = (possibleNames, injectRoom = false) => (req, res) => {
         `<div style="font-family:sans-serif; padding: 20px; color: white; background: #1e1b4b; height: 100vh;">
           <h2 style="color:#f87171;">Fichier Introuvable (Erreur 404)</h2>
           <p>Le serveur cherche l'un de ces fichiers : <b>${possibleNames.join(', ')}</b></p>
-          <hr style="border-color:#312e81;">
-          <h3>Fichiers réellement vus par le serveur Render :</h3>
-          <ul><li>${files.length > 0 ? files.join('</li><li>') : 'Aucun fichier (Dossier vide)'}</li></ul>
+          ${process.env.NODE_ENV === 'production' ? '' : `<hr style="border-color:#312e81;">
+          <h3>Fichiers réellement vus par le serveur :</h3>
+          <ul><li>${files.length > 0 ? files.join('</li><li>') : 'Aucun fichier (Dossier vide)'}</li></ul>`}
         </div>`
       );
     }

@@ -17,7 +17,7 @@ const { spawnSync } = require('child_process');
 const path = require('path');
 
 const ORDER = [
-  'test_gomoku_series_logic', 'test_tikan_engine', 'test_html_syntax', 'test_resync', 'test_tictactoe_server',
+  'test_security_runtime', 'test_gomoku_series_logic', 'test_tikan_engine', 'test_html_syntax', 'test_resync', 'test_tictactoe_server',
   'test_chess_engine', 'test_chess_competition_rules', 'test_chess_clock', 'test_echecs_server',
   'test_chess_clock_runtime', 'test_chess_competition_runtime', 'test_ludo_chifoumi',
   'test_chifoumi_rounds', 'test_penalty_rounds', 'test_spectator', 'test_tournament_pause',
