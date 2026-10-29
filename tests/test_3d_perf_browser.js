@@ -9,6 +9,8 @@
  * 3. Plateau immobile : les ombres ne sont plus recalculées à chaque image ;
  *    une pièce qui bouge les fait recalculer.
  * 4. L'image est la même : rien de ce qu'on voit ne dépend du module.
+ * 5. Baisser la définition (appareil trop lent) ne montre jamais une image
+ *    noire : le canevas redimensionné est redessiné aussitôt.
  */
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -204,6 +206,60 @@ const graphics = page => page.evaluate(() => {
       }
       const diff = await pixelDiff(browser, shots[0], shots[1]);
       check(`${route} : la même image avec ou sans le module (${(diff.share * 100).toFixed(2)} % de pixels différents)`, diff.sameSize && diff.share < 0.005, diff);
+    }
+
+    console.log('\n5. Baisser la définition n\'éteint pas l\'image');
+    {
+      /* Un téléphone (densité 3) qui n'arrive plus à suivre : chaque image
+         paraît prendre 40 ms de plus, la définition baisse d'un palier.
+         Redimensionner le canevas efface l'image qui vient d'être dessinée :
+         sans un nouveau rendu aussitôt, le navigateur montrait une image
+         NOIRE — un « éclairage qui s'éteint » aux échecs (owner, 2026-10-29). */
+      const page = await browser.newPage({ viewport: { width: 420, height: 760 }, deviceScaleFactor: 3 });
+      const errors = [];
+      page.on('pageerror', e => errors.push(String(e)));
+      if (process.env.THREE_RUNTIME_FILE) {
+        await page.route('**/vendor/three-r128.min.js', r => r.fulfill({ path: process.env.THREE_RUNTIME_FILE, contentType: 'application/javascript' }));
+      }
+      await page.addInitScript(() => {
+        const realNow = performance.now.bind(performance);
+        let ticks = 0;
+        const raf = window.requestAnimationFrame.bind(window);
+        window.requestAnimationFrame = cb => raf(t => { ticks++; cb(t + ticks * 40); });
+        performance.now = () => realNow() + ticks * 40;
+      });
+      await page.goto(URL + '/echecs-local', { waitUntil: 'load' });
+      await page.waitForFunction(() => window.MS3D && window.MS3D.last && window.MS3D.stats.frames > 5, null, { timeout: 20000 });
+      const seen = await page.evaluate(async () => {
+        const { renderer } = window.MS3D.last;
+        const gl = renderer.getContext();
+        const render = renderer.render;
+        const frames = [];
+        let buf = null;
+        renderer.render = function (scene, camera) {
+          const before = renderer.getPixelRatio();
+          render.call(this, scene, camera);
+          const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+          if (!buf || buf.length !== w * h * 4) buf = new Uint8Array(w * h * 4);
+          gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+          let sum = 0;
+          for (let i = 0; i < buf.length; i += 64) sum += buf[i] + buf[i + 1] + buf[i + 2];
+          frames.push({ light: sum / (buf.length / 64), changed: renderer.getPixelRatio() !== before, ratio: renderer.getPixelRatio() });
+        };
+        // Au plus 400 images (45 par mesure) : le palier arrive bien avant.
+        while (!frames.some(f => f.changed) && frames.length < 400) await new Promise(r => setTimeout(r, 100));
+        await new Promise(r => setTimeout(r, 300));
+        renderer.render = render;
+        return { frames, redraws: window.MS3D.stats.redraws };
+      });
+      const lights = seen.frames.map(f => f.light).sort((a, b) => a - b);
+      const median = lights[lights.length >> 1] || 0;
+      const at = seen.frames.filter(f => f.changed);
+      check(`la définition a baissé d'un palier (${at.map(f => f.ratio).join(', ') || 'aucun'})`, at.length >= 1 && seen.redraws >= 1, { redraws: seen.redraws, frames: seen.frames.length });
+      check('l\'image du palier est dessinée, jamais noire', at.length >= 1 && at.every(f => f.light > median * 0.8),
+        { median, at: at.map(f => f.light) });
+      check('aucune erreur JavaScript (densité 3)', errors.length === 0, errors);
+      await page.close();
     }
   } catch (error) {
     failures++;
