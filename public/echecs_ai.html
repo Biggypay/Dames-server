@@ -28,8 +28,8 @@ body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%
 
 .av-white{width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#f5f5f5 0%,#ffffff 50%,#e0e0e0 100%);border:3px solid #c0c0c0;box-shadow:0 2px 8px rgba(255,255,255,0.4),inset 0 2px 4px rgba(255,255,255,0.8);position:relative}
 .av-white::after{content:'';position:absolute;top:20%;left:20%;width:35%;height:20%;border-radius:50%;background:rgba(255,255,255,0.9);transform:rotate(-45deg)}
-.av-red{width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#c0392b 0%,#e74c3c 50%,#a93226 100%);border:3px solid #922b21;box-shadow:0 2px 8px rgba(231,76,60,0.4),inset 0 2px 4px rgba(255,150,150,0.3);position:relative}
-.av-red::after{content:'';position:absolute;top:20%;left:20%;width:35%;height:20%;border-radius:50%;background:rgba(255,200,200,0.4);transform:rotate(-45deg)}
+.av-black{width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#3a332e 0%,#1d1916 55%,#0d0b0a 100%);border:3px solid #6b6058;box-shadow:0 2px 8px rgba(0,0,0,0.5),inset 0 2px 4px rgba(255,255,255,0.12);position:relative}
+.av-black::after{content:'';position:absolute;top:20%;left:20%;width:35%;height:20%;border-radius:50%;background:rgba(255,255,255,0.18);transform:rotate(-45deg)}
 .av-king::before{content:'♔';position:absolute;top:50%;left:50%;transform:translate(-50%,-55%);font-size:14px;color:#fbbf24;text-shadow:0 1px 2px rgba(0,0,0,0.5)}
 .profile-name{font-family:'Cinzel',serif;font-size:9px;letter-spacing:1.5px;color:rgba(255,255,255,0.45);text-transform:uppercase;transition:color 0.3s;max-width:72px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .profile.active .profile-name{color:rgba(255,255,255,0.9)}
@@ -58,9 +58,9 @@ body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%
 .sym-white-wrap{position:relative;width:72px;height:72px}
 .sym-white{width:66px;height:66px;border-radius:50%;background:linear-gradient(135deg,#f5f5f5 0%,#ffffff 50%,#e0e0e0 100%);border:4px solid #c0c0c0;box-shadow:0 4px 20px rgba(255,255,255,0.5),inset 0 4px 8px rgba(255,255,255,0.9);position:absolute;top:3px;left:3px}
 .sym-white::after{content:'';position:absolute;top:18%;left:18%;width:35%;height:18%;border-radius:50%;background:rgba(255,255,255,0.95);transform:rotate(-45deg)}
-.sym-red-wrap{position:relative;width:72px;height:72px}
-.sym-red{width:66px;height:66px;border-radius:50%;background:linear-gradient(135deg,#c0392b 0%,#e74c3c 50%,#a93226 100%);border:4px solid #922b21;box-shadow:0 4px 20px rgba(231,76,60,0.5),inset 0 4px 8px rgba(255,150,150,0.4);position:absolute;top:3px;left:3px}
-.sym-red::after{content:'';position:absolute;top:18%;left:18%;width:35%;height:18%;border-radius:50%;background:rgba(255,200,200,0.5);transform:rotate(-45deg)}
+.sym-black-wrap{position:relative;width:72px;height:72px}
+.sym-black{width:66px;height:66px;border-radius:50%;background:linear-gradient(135deg,#3a332e 0%,#1d1916 55%,#0d0b0a 100%);border:4px solid #6b6058;box-shadow:0 4px 20px rgba(0,0,0,0.55),inset 0 4px 8px rgba(255,255,255,0.12);position:absolute;top:3px;left:3px}
+.sym-black::after{content:'';position:absolute;top:18%;left:18%;width:35%;height:18%;border-radius:50%;background:rgba(255,255,255,0.2);transform:rotate(-45deg)}
 #toast-title{font-family:'Cinzel',serif;color:#fbbf24;font-size:22px;font-weight:700;margin-bottom:6px}
 #toast-sub{font-size:12px;color:rgba(255,255,255,.6);letter-spacing:1px;white-space:pre-line}
 
@@ -78,13 +78,14 @@ body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%
 #bot{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 14px;background:rgba(255,255,255,0.08);backdrop-filter:blur(12px);border-top:1px solid rgba(255,255,255,0.15);z-index:20}
 .score-row{display:flex;gap:8px;align-items:center}
 .snum{font-family:'Cinzel',serif;font-size:20px;font-weight:700}
-.sw{color:#ffffff}.sr{color:#f87171}.ssep{color:rgba(255,255,255,.3);font-size:13px}
+.sw{color:#ffffff}.sr{color:#c9bfb2}.ssep{color:rgba(255,255,255,.3);font-size:13px}
 .manche-lbl{font-size:9px;color:rgba(255,255,255,.35);letter-spacing:1px}
-.captured-row{display:flex;flex-wrap:wrap;align-items:center;gap:2px;justify-content:center;min-height:14px;max-width:80px}
-.cap-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
-.cap-dot-white{background:radial-gradient(circle at 35% 35%,#f0ecdc,#b8b0a0);border:1px solid rgba(255,255,255,0.4)}
-.cap-dot-red{background:radial-gradient(circle at 35% 35%,#e04030,#881818);border:1px solid rgba(255,100,80,0.4)}
-.cap-count{font-family:'Cinzel',serif;font-size:9px;font-weight:700;color:rgba(255,255,255,0.7);margin-left:2px}
+.captured-row{display:flex;flex-wrap:nowrap;align-items:center;gap:3px;justify-content:center;min-height:14px;max-width:96px}
+/* Figurines des pièces prises : noires cerclées de clair, blanches cerclées de sombre, lisibles sur le fond. */
+.cap-figs{font-family:"Segoe UI Symbol","Apple Symbols","Noto Sans Symbols 2","Noto Sans Symbols","DejaVu Sans",sans-serif;font-size:13px;line-height:1;letter-spacing:-1px;white-space:nowrap;overflow:hidden}
+.cap-figs.cap-black{color:#1b1715;-webkit-text-stroke:.7px rgba(255,255,255,.85)}
+.cap-figs.cap-white{color:#f6efe0;-webkit-text-stroke:.5px rgba(0,0,0,.45)}
+.cap-adv{font-family:'Inter',sans-serif;font-size:10px;font-weight:700;color:#fbbf24;font-variant-numeric:tabular-nums}
 
 /* Bouton Rejouer (fin de partie) */
 #replay-btn{position:absolute;bottom:70px;left:50%;transform:translateX(-50%);z-index:60;display:none;
@@ -123,8 +124,8 @@ body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%
   </div>
   <div class="profile" id="profile-ai">
     <div class="profile-timer-wrap">
-      <svg viewBox="0 0 58 58"><circle class="timer-track" cx="29" cy="29" r="26"/><circle class="timer-arc" id="timer-arc-ai" cx="29" cy="29" r="26" stroke="#e74c3c"/></svg>
-      <div class="profile-avatar" id="avatar-ai"><div class="av-red av-king"></div></div>
+      <svg viewBox="0 0 58 58"><circle class="timer-track" cx="29" cy="29" r="26"/><circle class="timer-arc" id="timer-arc-ai" cx="29" cy="29" r="26" stroke="#a8a29e"/></svg>
+      <div class="profile-avatar" id="avatar-ai"><div class="av-black av-king"></div></div>
     </div>
     <div class="profile-name" id="name-ai">IA</div>
     <div class="captured-row" id="cap-ai"></div>
@@ -166,6 +167,7 @@ body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%
 <script src="/vendor/three-r128.min.js"></script>
 <script src="/mindspille-3d.js"></script>
 <script src="/echecs-engine.js"></script>
+<script src="/mindspille-chess3d.js"></script>
 <script>
 window.onerror=function(msg,url,line,col,err){
   var ld=document.getElementById('loading');
@@ -183,13 +185,13 @@ var Chess = ChessEngineFactory();
 ══════════════════════════════════════════ */
 var P = new URLSearchParams(window.location.search);
 // ── MODE ENTRAÎNEMENT vs IA (aucun argent, aucun réseau) ──
-// L'humain est TOUJOURS Blanc (joue en premier), l'IA est Rouge.
+// L'humain est TOUJOURS Blanc (joue en premier), l'IA a les Noirs.
 var DIFFICULTY = (P.get('difficulty') || P.get('level') || 'expert').toLowerCase();
 if(DIFFICULTY === 'max' || DIFFICULTY === 'extreme') DIFFICULTY = 'expert';
 if(['easy','medium','hard','expert'].indexOf(DIFFICULTY) < 0) DIFFICULTY = 'expert';
 var AI_DEBUG = !!P.get('debug');
 
-var MY_PLAYER = 0; // 0=Blanc (humain), 1=Rouge (IA)
+var MY_PLAYER = 0; // 0 = Blancs, 1 = Noirs
 var MY_NAME = P.get('name') || P.get('username') || 'Vous';
 var OP_NAME = 'IA';
 
@@ -302,7 +304,7 @@ var userZoomed = false;   /* le pincement du joueur prime sur le recadrage */
 
 function boardFitRadius(){
     if(typeof BO !== 'number' || typeof CELL !== 'number') return 0;
-  return BO + CELL * 0.5 + 0.45;
+  return BO + CELL * 0.5 + MindspilleChess3D.FRAME + 0.1;
 }
 
 function fitDistanceFor(phi, theta){
@@ -346,20 +348,10 @@ setTimeout(function(){ fitBoardToScreen(true); }, 0);
 setTimeout(function(){ fitBoardToScreen(true); }, 300);
 setTimeout(function(){ fitBoardToScreen(true); }, 1200);
 
-scene.add(new THREE.AmbientLight(0xffffff, 0.45));
-var keyL = new THREE.DirectionalLight(0xfff8f0, 0.90);
-keyL.position.set(6, 18, 12); keyL.castShadow = true;
-keyL.shadow.mapSize.width = 1024; keyL.shadow.mapSize.height = 1024;
-keyL.shadow.camera.near = 0.5; keyL.shadow.camera.far = 45;
-keyL.shadow.camera.left = -13; keyL.shadow.camera.right = 13;
-keyL.shadow.camera.top = 13; keyL.shadow.camera.bottom = -13;
-scene.add(keyL);
-var fillR = new THREE.DirectionalLight(0xffd8b0, 0.42); fillR.position.set(13, 8, 2); scene.add(fillR);
-var fillL = new THREE.DirectionalLight(0xb8ccff, 0.35); fillL.position.set(-11, 8, -7); scene.add(fillL);
-var backL = new THREE.DirectionalLight(0xffe0c8, 0.22); backL.position.set(0, 5, -14); scene.add(backL);
-scene.add(new THREE.HemisphereLight(0x8888bb, 0x442200, 0.28));
-var spot = new THREE.SpotLight(0xfbbf24, 0.38); spot.position.set(-5, 14, -4); spot.angle = Math.PI/5.5; spot.penumbra = 0.65; scene.add(spot);
-
+/* L'éclairage, le plateau et les pièces viennent de mindspille-chess3d.js :
+   bois verni, Blancs ivoire, Noirs ébène, cavaliers tournés vers l'adversaire. */
+var chessLights = MindspilleChess3D.lights(scene), keyL = chessLights.key;
+MindspilleChess3D.attach(renderer);
 var boardGroup = new THREE.Group(), piecesGroup = new THREE.Group(), hlGroup = new THREE.Group();
 var moveHlGroup = new THREE.Group(), lastMoveGroup = new THREE.Group(), particlesGroup = new THREE.Group();
 var checkGroup = new THREE.Group();
@@ -382,26 +374,7 @@ function applyShake(){
 }
 
 function createBoardMesh(){
-  var baseMat = new THREE.MeshStandardMaterial({color:0x2a1a10, roughness:0.92});
-  var base = new THREE.Mesh(new THREE.BoxGeometry(BS*CELL+0.7, 0.22, BS*CELL+0.7), baseMat);
-  base.position.y = -0.11; base.receiveShadow = true; boardGroup.add(base);
-  var lM = new THREE.MeshStandardMaterial({color:0xb8936a, roughness:0.80});
-  var dM = new THREE.MeshStandardMaterial({color:0x100a28, roughness:0.60, metalness:0.12});
-  for(var r=0; r<BS; r++) for(var c=0; c<BS; c++){
-    var isDark = (r+c)%2===1;
-    var cell = new THREE.Mesh(new THREE.BoxGeometry(CELL, 0.12, CELL), isDark?dM:lM);
-    cell.position.set(c*CELL-BO, 0.04, r*CELL-BO); cell.receiveShadow = true;
-    cell.userData = {row:r, col:c}; boardGroup.add(cell);
-  }
-  var bMat = new THREE.MeshStandardMaterial({color:0xfbbf24, roughness:0.18, metalness:0.88, emissive:0xfbbf24, emissiveIntensity:0.10});
-  var bk = 0.09, bL = BS*CELL+0.3, bh = 0.22;
-  var borders = [
-    {g:new THREE.BoxGeometry(bk, bh, bL+bk*2), x:-BO-CELL/2-bk/2, z:0},
-    {g:new THREE.BoxGeometry(bk, bh, bL+bk*2), x:BO+CELL/2+bk/2, z:0},
-    {g:new THREE.BoxGeometry(bL+bk*2, bh, bk), x:0, z:-BO-CELL/2-bk/2},
-    {g:new THREE.BoxGeometry(bL+bk*2, bh, bk), x:0, z:BO+CELL/2+bk/2}
-  ];
-  for(var i=0; i<borders.length; i++){ var bm = new THREE.Mesh(borders[i].g, bMat); bm.position.set(borders[i].x, 0.11, borders[i].z); boardGroup.add(bm); }
+  MindspilleChess3D.board(boardGroup, { cell: CELL, size: BS });
 }
 createBoardMesh();
 
@@ -423,72 +396,12 @@ function updateParticles(){
 }
 
 /* ══════════════════════════════════════════
-   PIÈCES D'ÉCHECS 3D (mêmes matériaux que les dames)
+   PIÈCES D'ÉCHECS 3D — mindspille-chess3d.js
+   Staunton tournées, cavalier sculpté ; chaque pièce regarde le camp adverse
+   (les Blancs vers la 8e rangée, les Noirs vers la 1re), quelle que soit la vue.
 ══════════════════════════════════════════ */
-function pieceMaterials(player){
-  var mainC = player===0?0xe8e0cc:0xc02818, edgeC = player===0?0x909080:0x781410, emivC = player===0?0x181410:0x380800, emiI = player===0?0.03:0.12;
-  return {
-    body: new THREE.MeshStandardMaterial({color:mainC, roughness:0.38, metalness:0.18, emissive:emivC, emissiveIntensity:emiI}),
-    trim: new THREE.MeshStandardMaterial({color:edgeC, roughness:0.20, metalness:0.75}),
-    gold: new THREE.MeshStandardMaterial({color:0xfbbf24, roughness:0.12, metalness:0.96, emissive:0xfbbf24, emissiveIntensity:0.48})
-  };
-}
-
 function buildPieceMesh(player, type){
-  var g = new THREE.Group();
-  var m = pieceMaterials(player);
-  function add(geo, mat, y, x, z, rx, rz){
-    var mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set(x||0, y||0, z||0);
-    if(rx) mesh.rotation.x = rx;
-    if(rz) mesh.rotation.z = rz;
-    mesh.castShadow = true; mesh.receiveShadow = true;
-    g.add(mesh); return mesh;
-  }
-  add(new THREE.CylinderGeometry(0.27, 0.34, 0.12, 24), m.body, 0.06);
-  var ring = add(new THREE.TorusGeometry(0.30, 0.030, 12, 24), m.trim, 0.12);
-  ring.rotation.x = Math.PI/2;
-
-  if(type === 1){ // Pion
-    add(new THREE.CylinderGeometry(0.10, 0.21, 0.26, 20), m.body, 0.25);
-    add(new THREE.SphereGeometry(0.155, 20, 16), m.body, 0.48);
-  } else if(type === 4){ // Tour
-    add(new THREE.CylinderGeometry(0.21, 0.25, 0.38, 20), m.body, 0.31);
-    add(new THREE.CylinderGeometry(0.26, 0.23, 0.10, 20), m.body, 0.55);
-    for(var i=0; i<4; i++){
-      var a = (i/4)*Math.PI*2 + Math.PI/4;
-      add(new THREE.BoxGeometry(0.11, 0.12, 0.11), m.body, 0.66, Math.cos(a)*0.17, Math.sin(a)*0.17);
-    }
-  } else if(type === 2){ // Cavalier
-    add(new THREE.CylinderGeometry(0.16, 0.24, 0.24, 20), m.body, 0.24);
-    var head = add(new THREE.BoxGeometry(0.20, 0.40, 0.26), m.body, 0.52, 0, 0.02);
-    head.rotation.x = -0.42;
-    var muzzle = add(new THREE.BoxGeometry(0.14, 0.15, 0.20), m.body, 0.63, 0, -0.17);
-    muzzle.rotation.x = -0.2;
-    add(new THREE.ConeGeometry(0.045, 0.13, 8), m.trim, 0.78, -0.06, 0.10);
-    add(new THREE.ConeGeometry(0.045, 0.13, 8), m.trim, 0.78, 0.06, 0.10);
-    g.rotation.y = player===0 ? Math.PI : 0;
-  } else if(type === 3){ // Fou
-    add(new THREE.CylinderGeometry(0.09, 0.23, 0.40, 20), m.body, 0.32);
-    add(new THREE.SphereGeometry(0.145, 20, 16), m.body, 0.58);
-    add(new THREE.SphereGeometry(0.055, 12, 10), m.trim, 0.74);
-  } else if(type === 5){ // Dame
-    add(new THREE.CylinderGeometry(0.11, 0.26, 0.48, 20), m.body, 0.36);
-    var crown = add(new THREE.TorusGeometry(0.15, 0.045, 12, 24), m.gold, 0.64);
-    crown.rotation.x = Math.PI/2;
-    for(var i=0; i<6; i++){
-      var a = (i/6)*Math.PI*2;
-      add(new THREE.ConeGeometry(0.04, 0.12, 8), m.gold, 0.72, Math.cos(a)*0.15, Math.sin(a)*0.15);
-    }
-    add(new THREE.SphereGeometry(0.075, 14, 12), m.gold, 0.76);
-  } else { // Roi
-    add(new THREE.CylinderGeometry(0.12, 0.27, 0.52, 20), m.body, 0.38);
-    var collar = add(new THREE.TorusGeometry(0.14, 0.04, 12, 24), m.gold, 0.66);
-    collar.rotation.x = Math.PI/2;
-    add(new THREE.BoxGeometry(0.055, 0.24, 0.055), m.gold, 0.83);
-    add(new THREE.BoxGeometry(0.17, 0.055, 0.055), m.gold, 0.86);
-  }
-  return g;
+  return MindspilleChess3D.piece(player, type);
 }
 
 function makePiece(player, row, col, type){
@@ -505,7 +418,7 @@ function animPop(mesh){
   loop();
 }
 function animCapture(mesh, onComplete){
-  var t0 = Date.now(); createExplosion(mesh.position.x, mesh.position.y+0.3, mesh.position.z, mesh.userData.player===0?0xf8f6f0:0xd63020, 22);
+  var t0 = Date.now(); createExplosion(mesh.position.x, mesh.position.y+0.3, mesh.position.z, MindspilleChess3D.sparkColor(mesh.userData.player), 22);
   function animate(){ var p = (Date.now()-t0)/300; if(p<1){ var sc = 1-p; mesh.scale.set(sc, sc, sc); mesh.position.y+=0.04; mesh.rotation.y+=0.25; requestAnimationFrame(animate); } else { piecesGroup.remove(mesh); if(onComplete) onComplete(); } }
   animate();
 }
@@ -555,21 +468,36 @@ function updateScores(){
   document.getElementById('score-r').textContent = n.r;
 }
 
+/* Les pièces prises, en figurines de la plus lourde à la plus légère, puis
+   l'avance matérielle : « ♛♜♞ ♟×3 +5 » (un pion promu n'a pas été pris).
+   data-count garde le nombre de pièces prises pour l'écran partagé. */
 function updateCapturedDisplay(){
-  var elH = document.getElementById('cap-human'), elA = document.getElementById('cap-ai');
-  var hCount = capturedBy[MY_PLAYER], aCount = capturedBy[1 - MY_PLAYER];
-  var hColor = MY_PLAYER === 0 ? 'white' : 'red';
-  var aColor = MY_PLAYER === 0 ? 'red' : 'white';
-
-  function buildDots(el, count, cls){
-    el.innerHTML = ''; if(count===0) return;
-    var show = Math.min(count, 10);
-    for(var i=0; i<show; i++){ var d = document.createElement('div'); d.className = 'cap-dot cap-dot-'+cls; el.appendChild(d); }
-    var span = document.createElement('span'); span.className = 'cap-count'; span.textContent = '×'+count; el.appendChild(span);
+  var info = MindspilleChess3D.captured(S.b);
+  function paint(el, side){
+    var took = info[side], pieces = took.pieces;
+    el.innerHTML = '';
+    el.setAttribute('data-count', String(pieces.length));
+    if(!pieces.length) return;
+    var figs = document.createElement('span');
+    /* Les Blancs prennent des pièces noires, et inversement. */
+    figs.className = 'cap-figs ' + (side === 0 ? 'cap-black' : 'cap-white');
+    var pawns = 0, text = '';
+    for(var i=0; i<pieces.length; i++){
+      if(pieces[i] === 1) pawns++; else text += MindspilleChess3D.glyph(pieces[i]);
+    }
+    if(pawns) text += MindspilleChess3D.glyph(1) + (pawns > 1 ? '\u00D7' + pawns : '');
+    figs.textContent = text;
+    el.appendChild(figs);
+    if(took.advantage > 0){
+      var adv = document.createElement('span');
+      adv.className = 'cap-adv';
+      adv.textContent = '+' + took.advantage;
+      el.appendChild(adv);
+    }
   }
-  buildDots(elH, hCount, hColor); buildDots(elA, aCount, aColor);
+  paint(document.getElementById('cap-human'), MY_PLAYER);
+  paint(document.getElementById('cap-ai'), 1 - MY_PLAYER);
 }
-
 function clearHighlights(){ while(hlGroup.children.length) hlGroup.remove(hlGroup.children[0]); while(moveHlGroup.children.length) moveHlGroup.remove(moveHlGroup.children[0]); }
 function clearLastMove(){ while(lastMoveGroup.children.length) lastMoveGroup.remove(lastMoveGroup.children[0]); }
 function clearCheckDisplay(){ while(checkGroup.children.length) checkGroup.remove(checkGroup.children[0]); }
@@ -755,7 +683,7 @@ function handleGameEnd(winner, reason){
   hidePromoOverlay(); pendingPromotion = null;
   updateCheckDisplay();
   var humanWon = (winner === MY_PLAYER);
-  var winnerEmoji = humanWon ? '⚪' : '🔴';
+  var winnerEmoji = humanWon ? '⚪' : '⚫';
   var title, sub;
   var showReplay = function(){
     var rb = document.getElementById('replay-btn'); if(rb) rb.classList.add('show');
@@ -776,9 +704,9 @@ function handleGameEnd(winner, reason){
 function updUI(){
   var ahEl=document.getElementById('avatar-human'), aaEl=document.getElementById('avatar-ai');
   ahEl.innerHTML='<div class="av-white av-king"></div>';
-  aaEl.innerHTML='<div class="av-red av-king"></div>';
+  aaEl.innerHTML='<div class="av-black av-king"></div>';
   document.getElementById('timer-arc-human').setAttribute('stroke', '#ffffff');
-  document.getElementById('timer-arc-ai').setAttribute('stroke', '#e74c3c');
+  document.getElementById('timer-arc-ai').setAttribute('stroke', '#a8a29e');
   document.getElementById('profile-human').querySelector('.profile-name').textContent = MY_NAME;
   document.getElementById('profile-ai').querySelector('.profile-name').textContent = OP_NAME;
   updateScores();
@@ -813,7 +741,7 @@ function showToast(emoji, title, sub, delay, cb){
 }
 function symHtml(sym){
   if(sym==='⚪') return '<div class="sym-white-wrap"><div class="sym-white"></div></div>';
-  if(sym==='🔴') return '<div class="sym-red-wrap"><div class="sym-red"></div></div>';
+  if(sym==='⚫') return '<div class="sym-black-wrap"><div class="sym-black"></div></div>';
   return sym;
 }
 
