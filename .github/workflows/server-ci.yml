@@ -25,7 +25,10 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          # La version exacte de Render (.node-version) : 24.22.1 corrige les
+          # failles du 21 octobre 2026 (TLS, Brotli, DNS) et retire les
+          # certificats eMudhra compromis du magasin de Node.
+          node-version-file: .node-version
           cache: npm
 
       - name: Install dependencies
