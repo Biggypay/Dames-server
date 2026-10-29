@@ -17,7 +17,9 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # La suite complète prend 13 à 14,6 min (octobre 2026) : 15 min ne
+    # laissaient plus de marge pour un fichier de test de plus.
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
