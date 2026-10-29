@@ -143,7 +143,7 @@
     return state;
   }
 
-  var stats = { released: 0, sweeps: 0, shadowUpdates: 0, frames: 0, pixelRatio: 0, renderers: 0 };
+  var stats = { released: 0, sweeps: 0, shadowUpdates: 0, frames: 0, pixelRatio: 0, renderers: 0, redraws: 0 };
 
   function enhance(renderer) {
     stats.renderers++;
@@ -153,8 +153,10 @@
     var setPixelRatio = renderer.setPixelRatio.bind(renderer);
     function applyRatio() {
       var ratio = Math.max(1, Math.min(wanted, cap));
-      if (Math.abs(renderer.getPixelRatio() - ratio) > 1e-3) setPixelRatio(ratio);
+      var changed = Math.abs(renderer.getPixelRatio() - ratio) > 1e-3;
+      if (changed) setPixelRatio(ratio);
       stats.pixelRatio = ratio;
+      return changed;
     }
     renderer.setPixelRatio = function (value) {
       wanted = value;
@@ -205,6 +207,7 @@
       sum += gap; squares += gap * gap; count++;
       if (count < 45) return;
       var average = sum / count;
+      var resized = false;
       var spread = Math.sqrt(Math.max(0, squares / count - average * average));
       sum = 0; squares = 0; count = 0;
       // Une cadence régulière à 30 images/s (iPhone en économie d'énergie) est
@@ -213,16 +216,30 @@
       if (average > SLOW_FRAME_MS && !capped && Math.min(wanted, cap) > 1) {
         cap = Math.max(1, Math.min(wanted, cap) - STEP);
         goodSince = 0;
-        applyRatio();
+        resized = applyRatio();
       } else if (average < FAST_FRAME_MS && cap < wanted) {
         if (!goodSince) goodSince = now;
         else if (now - goodSince > 8000) {
           cap = cap + STEP >= wanted ? Infinity : cap + STEP;
           goodSince = 0;
-          applyRatio();
+          resized = applyRatio();
         }
       } else {
         goodSince = 0;
+      }
+      /* Changer la définition redimensionne le canevas, ce qui EFFACE l'image
+         qui vient d'être dessinée : le navigateur affichait alors une image
+         noire — un « éclairage qui s'éteint » un instant, à chaque palier
+         (owner, 2026-10-29, aux échecs). L'image est redessinée aussitôt, à
+         la nouvelle définition, avant d'être montrée. */
+      if (resized) {
+        stats.redraws++;
+        if (scene && renderer.shadowMap.enabled) scene.autoUpdate = false;
+        try {
+          render.call(renderer, scene, camera);
+        } finally {
+          if (scene && renderer.shadowMap.enabled) scene.autoUpdate = auto;
+        }
       }
     };
     return renderer;
