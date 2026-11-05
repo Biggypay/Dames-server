@@ -212,8 +212,12 @@ async function fullMatch(browser) {
   const spinning = await waitFor(async () => /tourne/.test(await text(p1, '#status')) ? true : null, 4000, 40);
   check('la roue tourne chez Alice', spinning === true);
   check('pendant le tour de roue, le score reste 0-0', (await scores(p1)) === '0-0' && (await scores(p2)) === '0-0');
-  const revealed = await chips(p2);
-  check('au tour de roue, les deux couleurs sont montrées', revealed.me.color === '4' && revealed.op.color === '0', revealed);
+  /* Chaque écran reçoit le tour de roue de son côté : Bob peut le recevoir un instant après Alice. */
+  const revealed = await waitFor(async () => {
+    const c = await chips(p2);
+    return c.me.color === '4' && c.op.color === '0' ? c : null;
+  }, 4000, 40);
+  check('au tour de roue, les deux couleurs sont montrées', !!revealed, revealed || await chips(p2));
 
   // Couleurs : 0 Rouge, 1 Orange, 2 Jaune, 3 Vert, 4 Bleu, 5 Violet. Alice à gauche chez elle, Bob chez lui.
   const plays = [
