@@ -2286,6 +2286,9 @@ const ROULETTE_TOTAL_ROUNDS = Roulette.REGULAR_ROUNDS;
 // Un tour de casino : l'élan, l'accélération, la pleine vitesse, puis une
 // longue fin au ralenti (public/roulette-board.js) — 7,2 s (4,8 s jusqu'au 2026-11-05).
 const ROULETTE_SPIN_MS = testDurationMs('ROULETTE_SPIN_MS', 7200);
+// Manche décisive (7e, 8e…) : « ça doit faire battre vite les cœurs » — un tour
+// plus long, la fin au ralenti encore plus lente, le cœur qui bat sur la roue.
+const ROULETTE_DECISIVE_SPIN_MS = testDurationMs('ROULETTE_DECISIVE_SPIN_MS', 8400);
 /* Même couleur pour les deux (toute manche) : rien ne tourne, on rechoisit. */
 const ROULETTE_REPICK_MS = testDurationMs('ROULETTE_REPICK_MS', 2600);
 /* Le dernier tour de roue reste à l'écran un instant avant la fin du match. */
@@ -2366,9 +2369,11 @@ function rouletteRoundPayload(rroom, roomId) {
     scores: [...rroom.scores],
     totalRounds: ROULETTE_TOTAL_ROUNDS,
     decisive: rroom.decisive === true,
-    // Manches réglementaires déjà jouées (le libellé « Manche 3 / 5 ») et, en
-    // manches décisives, la place dans la paire (1 : la première, 2 : la réponse).
+    // Manches réglementaires déjà jouées (le libellé « Manche 3 / 6 »), les
+    // manches décisives jouées (« Manche 7 · décisive », « Manche 8 »…) et leur
+    // place dans la paire (1 : la première, 2 : la réponse).
     played: Roulette.regularPlayed(rroom.history),
+    decisivePlayed: Roulette.decisivePlayed(rroom.history),
     decisiveStep: rroom.decisive ? Roulette.decisiveStep(rroom.history) : 0,
     seal: rroom.phase === 'choosing' && rroom.seal ? rroom.seal.hash : null,
     chosen: { 1: rroom.choices[1] !== undefined, 2: rroom.choices[2] !== undefined }
@@ -2423,12 +2428,12 @@ function spinRouletteRound(rroom, roomId) {
   });
   const wheel = Roulette.wheelFor(rroom.decisive, c1, c2);
   const startTime = Date.now();
-  const duration = repick ? 0 : ROULETTE_SPIN_MS;
+  const duration = repick ? 0 : rroom.decisive ? ROULETTE_DECISIVE_SPIN_MS : ROULETTE_SPIN_MS;
   rroom.phase = 'spinning';
   rroom.next = { over: next.over === true, winnerSlot: next.over ? next.winnerSlot : 0, decisive: next.over ? rroom.decisive : next.decisive === true };
   rroom.spin = {
     round: rroom.round, choice1: c1, choice2: c2, drawn, winnerSlot, decisive: rroom.decisive, repick,
-    wheel, landing: drawn === null ? null : Roulette.landingFor(wheel, drawn, seal.salt, c1, c2),
+    wheel, landing: drawn === null ? null : Roulette.landingFor(wheel, drawn, seal.salt, c1, c2, rroom.decisive),
     seal: { kind: seal.kind, value: seal.value, salt: seal.salt, hash: seal.hash },
     scores: [...rroom.scores], startTime, duration,
     final: rroom.next.over, matchWinnerSlot: rroom.next.over ? rroom.next.winnerSlot : 0
@@ -2510,6 +2515,7 @@ function rouletteReconnectState(rroom, slot) {
     round: rroom.round,
     decisive: rroom.decisive === true,
     played: Roulette.regularPlayed(rroom.history),
+    decisivePlayed: Roulette.decisivePlayed(rroom.history),
     decisiveStep: rroom.decisive ? Roulette.decisiveStep(rroom.history) : 0,
     history: rroom.history.map(Roulette.publicRound),
     phase: rroom.phase,
@@ -2527,6 +2533,7 @@ function rouletteSpectatorState(rroom) {
     totalRounds: ROULETTE_TOTAL_ROUNDS,
     decisive: rroom.decisive === true,
     played: Roulette.regularPlayed(rroom.history),
+    decisivePlayed: Roulette.decisivePlayed(rroom.history),
     decisiveStep: rroom.decisive ? Roulette.decisiveStep(rroom.history) : 0,
     history: rroom.history.map(Roulette.publicRound),
     phase: rroom.phase,

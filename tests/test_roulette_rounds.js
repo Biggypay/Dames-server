@@ -9,11 +9,13 @@
  *   • les points (règles du 2026-11-05) : la couleur la plus proche de la
  *     couleur tirée → +1 ; à égale distance → manche nulle ; même couleur
  *     pour les deux → rien ne tourne, on rechoisit, la manche ne compte pas ;
- *   • cinq manches comptées, fin anticipée quand l'écart ne peut plus être
+ *   • six manches comptées, fin anticipée quand l'écart ne peut plus être
  *     comblé ;
- *   • égalité → manches décisives sur les deux couleurs choisies, DEUX PAR
- *     DEUX : après la première d'une paire, l'autre joueur joue toujours la
- *     seconde ; 1-1 → une nouvelle paire ; 2-0 → victoire ;
+ *   • égalité → on continue (7e et 8e manches, puis 9e et 10e…) sur la roue
+ *     ENTIÈRE, avec une couleur scellée et la règle de la plus proche, DEUX
+ *     PAR DEUX : après la première d'une paire, l'autre joueur joue toujours
+ *     la seconde ; 1-1 → une nouvelle paire ; 1-0 (une nulle) ou 2-0 →
+ *     victoire ; un tour de roue plus long ;
  *   • une couleur invalide ou un second choix sont ignorés ;
  *   • 30 s + 60 s de grâce : celui qui n'a pas choisi perd ; personne → annulé ;
  *   • une reconnexion retrouve son propre choix, jamais celui de l'adversaire ;
@@ -44,10 +46,10 @@ const GAME = {
   reconnect: '30000000-0000-4000-8000-0000000000a6'
 };
 const DRAWS = {
-  // Une valeur par manche ouverte, rechoix compris (manches 3 et 9) ; en
-  // manche décisive, 0 = la plus petite des deux couleurs, 1 = la plus grande.
-  [GAME.full]: [3, 1, 5, 5, 2, 4, 1, 0, 1, 0, 1],
-  [GAME.early]: [0, 0, 0],
+  // Une couleur par manche ouverte, rechoix compris (manches 3 et 10) ;
+  // manches décisives comprises : la roue garde ses six couleurs.
+  [GAME.full]: [3, 1, 5, 5, 2, 4, 2, 4, 0, 1, 1, 2],
+  [GAME.early]: [0, 0, 0, 0],
   [GAME.secret]: [5],
   [GAME.reconnect]: [2, 2, 2, 2, 2]
 };
@@ -127,7 +129,7 @@ async function startMatch(p1, p2, gameId) {
   p1.emit('roulette_join', { room: gameId, gameId, player: 1, supabaseId: PLAYER_1, name: 'Alice', bet: 100, currency: 'HTG' });
   p2.emit('roulette_join', { room: gameId, gameId, player: 2, supabaseId: PLAYER_2, name: 'Bob', bet: 100, currency: 'HTG' });
   const start = await started;
-  check(`[${gameId.slice(-2)}] la partie annonce cinq manches`, start.totalRounds === 5, start.totalRounds);
+  check(`[${gameId.slice(-2)}] la partie annonce six manches`, start.totalRounds === 6, start.totalRounds);
   return ready;
 }
 
@@ -159,6 +161,7 @@ async function main() {
       ALLOWED_ORIGIN: 'https://mindspille.lovable.app',
       ROULETTE_TEST_DRAWS: JSON.stringify(DRAWS),
       ROULETTE_SPIN_MS: '300',
+      ROULETTE_DECISIVE_SPIN_MS: '360',
       ROUND_PROOF_MS: '300',
       ROULETTE_FINAL_HOLD_MS: '100',
       ROULETTE_REPICK_MS: '200',
@@ -182,12 +185,13 @@ async function main() {
     sockets.push(p1, p2, spectator);
 
     // ── A. Un match complet : la plus proche, l'égale distance, le rechoix,
-    //       puis deux paires de manches décisives (1-1, puis 2-0) ─────────
-    console.log('A. Cinq manches comptées, égalité, manches décisives deux par deux');
+    //       six manches à 2-2, puis les manches décisives sur la roue entière,
+    //       deux par deux (1-1, puis 1-0 avec une manche nulle) ──────────────
+    console.log('A. Six manches comptées, égalité, manches décisives deux par deux (roue entière)');
     let ready = await startMatch(p1, p2, GAME.full);
     check('la manche 1 publie une empreinte SHA-256 avant les choix', /^[0-9a-f]{64}$/.test(ready.seal || ''), ready);
     check('personne n’a encore choisi', ready.chosen && ready.chosen[1] === false && ready.chosen[2] === false, ready.chosen);
-    check('aucune manche jouée, pas de paire décisive', ready.played === 0 && ready.decisiveStep === 0, ready);
+    check('aucune manche jouée, pas de paire décisive', ready.played === 0 && ready.decisivePlayed === 0 && ready.decisiveStep === 0, ready);
 
     // Couleurs : 0 Rouge, 1 Orange, 2 Jaune, 3 Vert, 4 Bleu, 5 Violet (dans cet ordre sur la roue).
     const plan = [
@@ -196,7 +200,8 @@ async function main() {
       { c: [3, 3], winner: 0, scores: [1, 0], played: 2, repick: true, label: 'même couleur (Vert) : rien ne tourne, on rechoisit, la manche ne compte pas' },
       { c: [2, 0], winner: 2, scores: [1, 1], played: 3, label: 'Violet tiré : le Rouge de Bob (1 case, par le haut de la roue) bat le Jaune (3 cases)' },
       { c: [2, 1], winner: 1, scores: [2, 1], played: 4, label: 'Jaune tiré : pile sur la couleur d’Alice' },
-      { c: [0, 5], winner: 2, scores: [2, 2], played: 5, label: 'Bleu tiré : le Violet de Bob (1 case) bat le Rouge (2 cases)' }
+      { c: [0, 5], winner: 2, scores: [2, 2], played: 5, label: 'Bleu tiré : le Violet de Bob (1 case) bat le Rouge (2 cases)' },
+      { c: [1, 3], winner: 0, scores: [2, 2], played: 6, label: 'sixième manche, Jaune tiré : Orange et Vert à égale distance, nulle' }
     ];
     for (let i = 0; i < plan.length; i++) {
       const round = i + 1;
@@ -209,7 +214,7 @@ async function main() {
       } else {
         check(`manche ${round} : la couleur tirée est la couleur scellée`, spin.drawn === DRAWS[GAME.full][i] && spin.seal.kind === 'color', spin.drawn);
         check(`manche ${round} : la roue a ses six couleurs et s’arrête sur la couleur tirée`,
-          spin.wheel.length === 6 && spin.wheel[spin.landing.segment] === spin.drawn, spin.landing);
+          spin.wheel.length === 6 && spin.wheel[spin.landing.segment] === spin.drawn && spin.duration === 300, spin.landing);
       }
       if (round < plan.length) {
         const result = await onceWhere(p1, 'roulette_round_result', d => d.room === GAME.full && d.round === round);
@@ -218,63 +223,65 @@ async function main() {
         check(`manche ${round + 1} : ${step.played} manche(s) comptée(s) avant elle`, ready.played === step.played && ready.decisive === false, ready);
       }
     }
-    const tied = await onceWhere(p1, 'roulette_round_result', d => d.room === GAME.full && d.round === 6);
-    check('2-2 après cinq manches comptées (six ouvertes) : manches décisives annoncées', tied.next === 'decisive', tied);
+    const tied = await onceWhere(p1, 'roulette_round_result', d => d.room === GAME.full && d.round === 7);
+    check('2-2 après six manches comptées (sept ouvertes) : on continue, manches décisives annoncées', tied.next === 'decisive', tied);
 
-    // Paire 1 : Bob gagne la première… et Alice joue quand même la seconde, qu'elle gagne : 1-1.
-    ready = await onceWhere(p1, 'roulette_round_ready', d => d.room === GAME.full && d.round === 7);
-    check('manche 7 : première décisive de la paire', ready.decisive === true && ready.decisiveStep === 1, ready);
-    const d1 = await playRound(p1, p2, GAME.full, 7, 1, 4);
-    check('décisive : la roue ne garde que l’orange et le bleu, alternés', JSON.stringify(d1.wheel) === JSON.stringify([1, 4, 1, 4, 1, 4]), d1.wheel);
-    check('décisive : le bit scellé 1 désigne la plus grande couleur (bleu) → Bob', d1.drawn === 4 && d1.winnerSlot === 2 && d1.seal.kind === 'bit' && JSON.stringify(d1.scores) === JSON.stringify([2, 3]), d1);
-    check('décisive : la révélation correspond à l’empreinte', sealOk(GAME.full, d1, ready.seal));
-    check('Bob a gagné la première décisive : le match n’est PAS fini, Alice répond', d1.final === false, d1);
-    const r7 = await onceWhere(p1, 'roulette_round_result', d => d.room === GAME.full && d.round === 7);
-    check('après la première décisive : encore une décisive', r7.next === 'decisive', r7);
+    // Paire 1 (manches 7 et 8 comptées) : Bob gagne la première… et Alice joue quand même la seconde, qu'elle gagne : 1-1.
     ready = await onceWhere(p1, 'roulette_round_ready', d => d.room === GAME.full && d.round === 8);
-    check('manche 8 : la réponse (2e de la paire)', ready.decisive === true && ready.decisiveStep === 2, ready);
-    const d2 = await playRound(p1, p2, GAME.full, 8, 0, 3);
-    check('Alice égalise (rouge, bit 0) : 1-1 dans la paire, 3-3', d2.drawn === 0 && d2.winnerSlot === 1 && JSON.stringify(d2.scores) === JSON.stringify([3, 3]) && d2.final === false, d2);
-    await onceWhere(p1, 'roulette_round_result', d => d.room === GAME.full && d.round === 8);
-
-    // Paire 2 : un rechoix (ne compte pas), puis Alice gagne les deux : 2-0.
+    check('la 7e manche comptée : première décisive de la paire', ready.decisive === true && ready.decisiveStep === 1 && ready.played === 6 && ready.decisivePlayed === 0, ready);
+    const d1 = await playRound(p1, p2, GAME.full, 8, 1, 4);
+    check('décisive : la roue garde ses six couleurs (« ne réduis pas »)', JSON.stringify(d1.wheel) === JSON.stringify([0, 1, 2, 3, 4, 5]), d1.wheel);
+    check('décisive : une couleur scellée, Bleu tiré → le Bleu de Bob, pile', d1.drawn === 4 && d1.winnerSlot === 2 && d1.seal.kind === 'color' && JSON.stringify(d1.scores) === JSON.stringify([2, 3]), d1);
+    check('décisive : la révélation correspond à l’empreinte', sealOk(GAME.full, d1, ready.seal));
+    check('décisive : un tour de roue plus long, qui s’arrête sur la couleur tirée', d1.duration === 360 && d1.wheel[d1.landing.segment] === d1.drawn, d1);
+    check('Bob a gagné la première décisive : le match n’est PAS fini, Alice répond', d1.final === false, d1);
+    const r8 = await onceWhere(p1, 'roulette_round_result', d => d.room === GAME.full && d.round === 8);
+    check('après la première décisive : encore une décisive', r8.next === 'decisive', r8);
     ready = await onceWhere(p1, 'roulette_round_ready', d => d.room === GAME.full && d.round === 9);
-    check('manche 9 : une nouvelle paire commence', ready.decisive === true && ready.decisiveStep === 1, ready);
-    const d3 = await playRound(p1, p2, GAME.full, 9, 5, 5);
-    check('décisive, même couleur : rien n’est tiré, on rechoisit', d3.repick === true && d3.drawn === null && d3.winnerSlot === 0 && d3.duration === 0 && d3.final === false, d3);
+    check('la 8e manche comptée : la réponse (2e de la paire)', ready.decisive === true && ready.decisiveStep === 2 && ready.decisivePlayed === 1, ready);
+    const d2 = await playRound(p1, p2, GAME.full, 9, 0, 3);
+    check('Alice égalise (Rouge tiré, pile) : 1-1 dans la paire, 3-3', d2.drawn === 0 && d2.winnerSlot === 1 && JSON.stringify(d2.scores) === JSON.stringify([3, 3]) && d2.final === false, d2);
+    await onceWhere(p1, 'roulette_round_result', d => d.room === GAME.full && d.round === 9);
+
+    // Paire 2 (manches 9 et 10 comptées) : un rechoix (ne compte pas), Alice gagne la première, la seconde est nulle : 1-0.
     ready = await onceWhere(p1, 'roulette_round_ready', d => d.room === GAME.full && d.round === 10);
-    check('le rechoix ne compte pas : toujours la première de la paire', ready.decisive === true && ready.decisiveStep === 1, ready);
-    const d4 = await playRound(p1, p2, GAME.full, 10, 2, 5);
-    check('Alice gagne la première de la paire (jaune) : on attend la réponse de Bob', d4.drawn === 2 && d4.winnerSlot === 1 && d4.final === false, d4);
+    check('une nouvelle paire commence (9e manche comptée)', ready.decisive === true && ready.decisiveStep === 1 && ready.decisivePlayed === 2, ready);
+    const d3 = await playRound(p1, p2, GAME.full, 10, 5, 5);
+    check('décisive, même couleur : rien n’est tiré, on rechoisit', d3.repick === true && d3.drawn === null && d3.winnerSlot === 0 && d3.duration === 0 && d3.final === false, d3);
     ready = await onceWhere(p1, 'roulette_round_ready', d => d.room === GAME.full && d.round === 11);
-    check('manche 11 : la réponse de Bob', ready.decisiveStep === 2, ready);
+    check('le rechoix ne compte pas : toujours la première de la paire', ready.decisive === true && ready.decisiveStep === 1 && ready.decisivePlayed === 2, ready);
+    const d4 = await playRound(p1, p2, GAME.full, 11, 2, 5);
+    check('Orange tiré : le Jaune d’Alice (1 case) bat le Violet (2 cases) ; on attend la réponse de Bob', d4.drawn === 1 && d4.winnerSlot === 1 && d4.final === false, d4);
+    ready = await onceWhere(p1, 'roulette_round_ready', d => d.room === GAME.full && d.round === 12);
+    check('la 10e manche comptée : la réponse de Bob', ready.decisiveStep === 2 && ready.decisivePlayed === 3, ready);
     const over = onceWhere(p1, 'game:over', d => d.room === GAME.full, 8000);
-    const d5 = await playRound(p1, p2, GAME.full, 11, 4, 1);
-    check('Bob ne répond pas (bleu d’Alice tiré) : 2-0 dans la paire, match joué', d5.drawn === 4 && d5.winnerSlot === 1 && d5.final === true && d5.matchWinnerSlot === 1, d5);
+    const d5 = await playRound(p1, p2, GAME.full, 12, 4, 0);
+    check('Jaune tiré : Bleu et Rouge à égale distance, nulle — 1-0 au bout de la paire, Alice gagne', d5.drawn === 2 && d5.winnerSlot === 0 && d5.final === true && d5.matchWinnerSlot === 1 && JSON.stringify(d5.scores) === JSON.stringify([4, 3]), d5);
     const end = await over;
-    check('fin du match : Alice gagne 5-3', end.winnerSlot === 1 && JSON.stringify(end.scores) === JSON.stringify([5, 3]), end);
-    check('l’historique de fin garde les onze manches ouvertes (rechoix compris)', Array.isArray(end.history) && end.history.length === 11, end.history && end.history.length);
+    check('fin du match : Alice gagne 4-3', end.winnerSlot === 1 && JSON.stringify(end.scores) === JSON.stringify([4, 3]), end);
+    check('l’historique de fin garde les douze manches ouvertes (rechoix compris)', Array.isArray(end.history) && end.history.length === 12, end.history && end.history.length);
     await sleep(400);
     const settlementA = rpcCalls.find(call => call.name === 'submit_game_result' && call.payload?.p_game_id === GAME.full);
     check('règlement : Alice vainqueur, résultat « win »', settlementA && settlementA.payload.p_winner_id === PLAYER_1 && settlementA.payload.p_result === 'win', settlementA);
     const summaryA = rpcCalls.find(call => call.name === 'record_match_summary' && call.payload?.p_game_id === GAME.full);
     const logA = summaryA?.payload?.p_summary?.log?.e || [];
-    check('résumé : 9 manches jouées (sans les deux rechoix), score 5-3', summaryA && summaryA.payload.p_summary.rounds === 9
-      && summaryA.payload.p_summary.players[PLAYER_1].score === 5 && summaryA.payload.p_summary.players[PLAYER_2].score === 3, summaryA?.payload?.p_summary);
+    check('résumé : 10 manches jouées (sans les deux rechoix), score 4-3', summaryA && summaryA.payload.p_summary.rounds === 10
+      && summaryA.payload.p_summary.players[PLAYER_1].score === 4 && summaryA.payload.p_summary.players[PLAYER_2].score === 3, summaryA?.payload?.p_summary);
     check('journal : chaque couleur choisie (v) et tirée (t), manche (g) ; un rechoix sans couleur tirée',
-      logA.length === 22 && logA[0].p === 1 && logA[0].g === 1 && logA[0].v === '4' && logA[0].t === 3
-      && logA[1].p === 2 && logA[1].v === '0' && logA.filter(e => e.g === 3 || e.g === 9).every(e => e.t === undefined), logA.slice(0, 4));
+      logA.length === 24 && logA[0].p === 1 && logA[0].g === 1 && logA[0].v === '4' && logA[0].t === 3
+      && logA[1].p === 2 && logA[1].v === '0' && logA.filter(e => e.g === 3 || e.g === 10).every(e => e.t === undefined), logA.slice(0, 4));
 
     // ── B. Fin anticipée et départ pendant le dernier tour de roue ─────────
-    console.log('B. Fin anticipée (3-0 après trois manches)');
+    console.log('B. Fin anticipée (4-0 après quatre manches)');
     ready = await startMatch(p1, p2, GAME.early);
-    for (let round = 1; round <= 2; round++) {
-      await playRound(p1, p2, GAME.early, round, 0, 1);
+    for (let round = 1; round <= 3; round++) {
+      const spun = await playRound(p1, p2, GAME.early, round, 0, 1);
+      if (round === 3) check('3-0 avec trois manches restantes : encore rattrapable', spun.final === false && JSON.stringify(spun.scores) === JSON.stringify([3, 0]), spun);
       await onceWhere(p1, 'roulette_round_ready', d => d.room === GAME.early && d.round === round + 1);
     }
     const earlyOver = onceWhere(p1, 'game:over', d => d.room === GAME.early);
-    const third = await playRound(p1, p2, GAME.early, 3, 0, 1);
-    check('3-0 avec deux manches restantes : le match est joué', third.final === true && third.matchWinnerSlot === 1 && JSON.stringify(third.scores) === JSON.stringify([3, 0]), third);
+    const fourth = await playRound(p1, p2, GAME.early, 4, 0, 1);
+    check('4-0 avec deux manches restantes : le match est joué', fourth.final === true && fourth.matchWinnerSlot === 1 && JSON.stringify(fourth.scores) === JSON.stringify([4, 0]), fourth);
     // Bob quitte pendant le dernier tour de roue : le match décidé se conclut quand même.
     p2.disconnect();
     const earlyEnd = await earlyOver;

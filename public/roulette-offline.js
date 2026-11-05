@@ -26,6 +26,8 @@
   /* ?fast=1 : des manches accélérées, pour les tests de la page. */
   var FAST = P.get('fast') === '1';
   var SPIN_MS = FAST ? 500 : 7200;
+  /* Manche décisive : un tour plus long, le cœur qui bat sur la roue (comme le serveur, 8,4 s). */
+  var DECISIVE_SPIN_MS = FAST ? 500 : 8400;
   var BETWEEN_MS = FAST ? 300 : 2600;
   var REPICK_MS = FAST ? 300 : 2200;
   var FINAL_HOLD_MS = FAST ? 200 : 1300;
@@ -136,18 +138,13 @@
   }
 
   /* ══ Affichage ══ */
-  /* Les manches se comptent sans les rechoix (même couleur : rien ne tourne). */
+  /* Les manches se comptent sans les rechoix (même couleur : rien ne tourne) ;
+     les manches décisives continuent la numérotation : 7, 8, 9… */
   function lastEntry() { return history.length ? history[history.length - 1] : null; }
-  function regularIndex() {
-    var played = R.regularPlayed(history), last = lastEntry();
-    if ((phase === 'between' || phase === 'over') && last && !last.decisive && !last.repick) return Math.max(1, Math.min(R.REGULAR_ROUNDS, played));
-    return Math.min(R.REGULAR_ROUNDS, played + 1);
-  }
-  /* Les manches décisives vont par deux : 1 (la première), 2 (la réponse). */
-  function decisiveIndex() {
-    var played = R.decisivePlayed(history), last = lastEntry();
-    if ((phase === 'between' || phase === 'over') && last && last.decisive && !last.repick) return ((played - 1) % 2) + 1;
-    return (played % 2) + 1;
+  function roundNumber() {
+    var counted = R.countedPlayed(history), last = lastEntry();
+    var n = (phase === 'between' || phase === 'over') && last && !last.repick ? Math.max(1, counted) : counted + 1;
+    return decisive ? n : Math.min(R.REGULAR_ROUNDS, n);
   }
   /* Qui a gagné la première manche décisive de la paire en cours (0 : aucune encore). */
   function pairLeader() {
@@ -158,8 +155,12 @@
   function renderAll() {
     $('playerScore').textContent = scores[0];
     $('aiScore').textContent = scores[1];
-    roundLabelEl.textContent = decisive ? 'Décisive ' + decisiveIndex() + '/2' : 'Manche ' + regularIndex() + ' / ' + R.REGULAR_ROUNDS;
+    roundLabelEl.textContent = decisive ? 'Manche ' + roundNumber() + ' · décisive' : 'Manche ' + roundNumber() + ' / ' + R.REGULAR_ROUNDS;
+    /* Autant de repères que de manches prévues (six). */
     var dots = roundsProgress.querySelectorAll('.round-dot');
+    for (var a = dots.length; a < R.REGULAR_ROUNDS; a++) { var dotEl = document.createElement('div'); dotEl.className = 'round-dot'; roundsProgress.appendChild(dotEl); }
+    for (var b = dots.length - 1; b >= R.REGULAR_ROUNDS; b--) dots[b].remove();
+    dots = roundsProgress.querySelectorAll('.round-dot');
     dots.forEach(function (dot) { dot.className = 'round-dot'; });
     var extra = [], k = 0;
     history.forEach(function (h) {
@@ -175,13 +176,13 @@
       return { round: h.round, drawn: h.drawn, repick: h.repick, result: h.winnerSlot === 1 ? 'me' : h.winnerSlot === 2 ? 'op' : '' };
     }));
   }
-  function hubLabel() { return decisive ? 'Décisive' : 'Manche ' + regularIndex(); }
+  function hubLabel() { return decisive ? 'Décisive' : 'Manche ' + roundNumber(); }
   /* Pendant le choix d'une manche décisive : la réponse, dans une paire. */
   function pairStatus() {
     if (!decisive) return '';
     var lead = pairLeader();
-    if (!lead) return 'Manche décisive · une chance sur deux';
-    if (MODE === 'ai') return lead === 1 ? 'Vous menez · l’IA répond' : 'À vous de répondre · une chance sur deux';
+    if (!lead) return 'Manche décisive · choisissez en secret';
+    if (MODE === 'ai') return lead === 1 ? 'Vous menez · l’IA répond' : 'À vous de répondre · égalisez !';
     return NAMES[lead] + ' mène · ' + NAMES[lead === 1 ? 2 : 1] + ' répond';
   }
 
@@ -241,7 +242,7 @@
     }
     if (MODE === 'local' && phase === 'choosing') {
       var hubKey = 'local|' + round + '|' + decisive;
-      if (hubKey !== lastHubKey) { lastHubKey = hubKey; board.setHub(decisive ? 'Décisive' : 'Manche', decisive ? '⚖' : String(regularIndex()), null, null); }
+      if (hubKey !== lastHubKey) { lastHubKey = hubKey; board.setHub(decisive ? 'Décisive' : 'Manche', String(roundNumber()), null, null); }
     }
   }
 
@@ -390,9 +391,10 @@
     renderAll();
     if (drawn === null) { finish(entry, token); return; }
     var wheel = R.wheelFor(decisive, c1, c2);
-    board.setStatus(decisive ? 'Une chance sur deux…' : 'La roue tourne…');
+    board.setStatus(decisive ? 'Manche décisive · la roue tourne…' : 'La roue tourne…');
     board.setHub(decisive ? 'Décisive' : 'Tirage', '', null, null);
-    board.spinTo(wheel, R.landingFor(wheel, drawn, seal.salt, c1, c2), SPIN_MS).then(function () {
+    /* Manche décisive : plus de suspens à l'arrêt, un tour plus long, le halo qui bat comme un cœur. */
+    board.spinTo(wheel, R.landingFor(wheel, drawn, seal.salt, c1, c2, decisive), decisive ? DECISIVE_SPIN_MS : SPIN_MS, { tension: decisive }).then(function () {
       if (token === matchToken) finish(entry, token);
     });
   }
@@ -410,10 +412,9 @@
       board.setStatus('🎨 Même couleur · on rechoisit', 'draw');
       showToast('🎨', 'Même couleur !', 'Vous avez choisi la même couleur : chacun rechoisit.', 2000);
     } else {
-      /* Chaque puce dit sa distance à la couleur tirée ; la plus proche s'éclaire.
-         En manche décisive, la roue n'a que les deux couleurs choisies. */
+      /* Chaque puce dit sa distance à la couleur tirée ; la plus proche s'éclaire
+         (manches décisives comprises : la roue garde ses six couleurs). */
       var label = function (color, slot) {
-        if (entry.decisive) return ws === slot ? 'Pile !' : '';
         var d = R.colorDistance(color, drawn);
         return d === 0 ? 'Pile !' : d === 1 ? '1 case' : d + ' cases';
       };
@@ -442,16 +443,23 @@
     }
     phase = 'between';
     renderAll();
+    /* La prochaine manche comptée (7, 8, 9…), pour les annonces. */
+    var upcoming = R.countedPlayed(history) + 1;
     if (next.decisive && !entry.decisive) setTimeout(function () {
-      if (token === matchToken) showToast('⚖️', 'Égalité !', 'Manches décisives, deux par deux : la roue ne gardera que vos deux couleurs.', 2600);
+      if (token === matchToken) showToast('⚖️', 'Égalité !', `On continue : manches ${upcoming} et ${upcoming + 1}, les deux se jouent.`, 2600);
     }, 700);
     else if (entry.decisive && !entry.repick) setTimeout(function () {
       if (token !== matchToken) return;
-      /* La première de la paire : l'autre joueur répond toujours. 1-1 : une nouvelle paire. */
+      /* La première de la paire : l'autre joueur répond toujours. 1-1 ou deux nulles : une nouvelle paire. */
       if (R.decisivePlayed(history) % 2 === 1) {
-        if (MODE === 'ai') showToast('⚖️', ws === 1 ? 'Vous menez' : 'À vous de répondre', ws === 1 ? 'L’IA joue la seconde manche décisive.' : 'Gagnez la seconde manche décisive pour égaliser.', 2200);
+        if (!ws) showToast('⚖️', 'Toujours à égalité', `La manche ${upcoming} peut tout décider.`, 2200);
+        else if (MODE === 'ai') showToast('⚖️', ws === 1 ? 'Vous menez' : 'À vous de répondre', ws === 1 ? 'L’IA joue la seconde manche décisive.' : 'Gagnez la seconde manche décisive pour égaliser.', 2200);
         else showToast('⚖️', NAMES[ws] + ' mène', NAMES[ws === 1 ? 2 : 1] + ' joue la seconde manche décisive.', 2200);
-      } else showToast('⚖️', '1 partout !', 'Nouvelle paire de manches décisives.', 2200);
+      } else {
+        var pair = history.filter(function (h) { return h.decisive && !h.repick; }).slice(-2);
+        var bothScored = pair.length === 2 && pair[0].winnerSlot && pair[1].winnerSlot;
+        showToast('⚖️', bothScored ? '1 partout !' : 'Toujours à égalité !', `Nouvelle paire : manches ${upcoming} et ${upcoming + 1}.`, 2200);
+      }
     }, 700);
     nextTimer = setTimeout(function () {
       nextTimer = null;
@@ -495,16 +503,16 @@
     modalContent.className = 'modal ' + cls;
     var list = $('modalHistoryList');
     list.innerHTML = '';
-    /* Le numéro de chaque manche comptée (un rechoix rejoue le même numéro). */
+    /* Le numéro de chaque manche comptée (un rechoix rejoue le même numéro) ; les décisives continuent : 7, 8… */
     var numbers = [], n = 0;
-    history.forEach(function (h, idx) { numbers[idx] = h.decisive ? 0 : (h.repick ? n + 1 : ++n); });
+    history.forEach(function (h, idx) { numbers[idx] = h.repick ? n + 1 : ++n; });
     for (var i = history.length - 1; i >= 0; i--) {
       var h = history[i];
       var res = h.repick ? 'draw' : resultOf(h.winnerSlot);
       var item = document.createElement('div');
       item.className = 'modal-history-item ' + res;
       var label = document.createElement('span');
-      label.textContent = h.decisive ? 'Décisive' : 'Manche ' + Math.min(numbers[i], R.REGULAR_ROUNDS);
+      label.textContent = h.decisive ? 'Manche ' + numbers[i] + ' · décisive' : 'Manche ' + numbers[i];
       item.appendChild(label);
       var pair = document.createElement('span');
       pair.className = 'rr-pair';

@@ -19,12 +19,18 @@
  *   que soient leurs couleurs (la roue est symétrique) ; une manche a un
  *   vainqueur 87 fois sur 100 en moyenne (une sur trois avec la règle
  *   « seul à avoir la couleur tirée »).
- * - Cinq manches. Le match s'arrête plus tôt si l'écart ne peut plus être
- *   comblé. Égalité au bout des cinq : manches décisives.
- * - Manches décisives, DEUX PAR DEUX : la roue ne garde que les deux couleurs
- *   choisies, une chance sur deux chacun. Même si l'un gagne la première de
- *   la paire, l'autre joue la seconde (« pour l'équité ») : 2-0, victoire ;
- *   1-1, une nouvelle paire.
+ * - Six manches (owner, 2026-11-05 : « ça devrait être 6 »). Le match
+ *   s'arrête plus tôt si l'écart ne peut plus être comblé.
+ * - Égalité au bout des six : on continue, 7e et 8e manches, puis 9e et
+ *   10e… « jusqu'à ce qu'un joueur gagne ». Ces manches décisives vont DEUX
+ *   PAR DEUX : même si l'un gagne la première de la paire, l'autre joue la
+ *   seconde (« pour l'équité ») ; un point d'avance au bout de la paire, et
+ *   c'est gagné ; sinon, une nouvelle paire.
+ * - La roue garde ses six couleurs, manches décisives comprises (« ne réduis
+ *   pas, pour ne pas baisser la tension ») : une manche décisive se joue
+ *   comme les autres — la plus proche marque, égale distance nulle, même
+ *   couleur on rechoisit. Seule la mise en scène change : plus de suspens à
+ *   l'arrêt, un tour de roue plus long.
  *
  * Le tirage est scellé AVANT les choix : le serveur publie l'empreinte
  * (SHA-256) de la couleur tirée et d'un sel secret au début de la manche, et
@@ -49,7 +55,7 @@
   ];
   var COLOR_COUNT = COLORS.length;
   /* Manches prévues d'un match, avant toute manche décisive. */
-  var REGULAR_ROUNDS = 5;
+  var REGULAR_ROUNDS = 6;
 
   function isColor(value) {
     return typeof value === 'number' && value % 1 === 0 && value >= 0 && value < COLOR_COUNT;
@@ -62,20 +68,20 @@
   }
 
   /**
-   * Le texte scellé d'une manche. `kind` : 'color' (manche normale, la valeur
-   * est la couleur tirée) ou 'bit' (manche décisive, la valeur choisit entre
-   * les deux couleurs choisies, la plus petite d'abord).
+   * Le texte scellé d'une manche. `kind` : 'color', la valeur est la couleur
+   * tirée (toute manche : la roue a toujours ses six couleurs). Le genre 'bit'
+   * des manches décisives à deux couleurs a disparu le 2026-11-05.
    */
   function sealText(roomId, round, kind, value, salt) {
     return 'roulette:v1:' + roomId + ':' + round + ':' + kind + ':' + value + ':' + salt;
   }
 
-  /** La roue d'une manche : les six couleurs, ou les deux choisies, alternées. */
+  /**
+   * La roue d'une manche : toujours les six couleurs, manches décisives
+   * comprises (owner : « ne réduis pas, pour ne pas baisser la tension »).
+   * Les paramètres restent pour les appels existants.
+   */
   function wheelFor(decisive, choice1, choice2) {
-    if (decisive && isColor(choice1) && isColor(choice2) && choice1 !== choice2) {
-      var a = Math.min(choice1, choice2), b = Math.max(choice1, choice2);
-      return [a, b, a, b, a, b];
-    }
     return [0, 1, 2, 3, 4, 5];
   }
 
@@ -92,17 +98,14 @@
   }
 
   /**
-   * La couleur désignée. Manche normale : celle scellée. Manche décisive :
-   * l'une des deux couleurs choisies selon le bit scellé. null si les deux
-   * joueurs ont choisi la même (on rechoisit).
+   * La couleur désignée : celle scellée, en toute manche. null si les deux
+   * joueurs ont choisi la même (on rechoisit), ou un sceau d'un autre genre.
    */
   function drawnColor(seal, choice1, choice2) {
     if (!seal) return null;
     if (isRepick(choice1, choice2)) return null;
-    if (seal.kind === 'color') return isColor(seal.value) ? seal.value : null;
-    if (seal.kind !== 'bit' || (seal.value !== 0 && seal.value !== 1)) return null;
-    if (!isColor(choice1) || !isColor(choice2) || choice1 === choice2) return null;
-    return seal.value === 0 ? Math.min(choice1, choice2) : Math.max(choice1, choice2);
+    if (seal.kind !== 'color') return null;
+    return isColor(seal.value) ? seal.value : null;
   }
 
   /**
@@ -132,16 +135,22 @@
     return (decisivePlayed(history) % 2) + 1;
   }
 
+  /** Toutes les manches comptées, décisives comprises (les rechoix ne comptent pas). */
+  function countedPlayed(history) {
+    return regularPlayed(history) + decisivePlayed(history);
+  }
+
   /**
    * Après une manche, la suite du match.
    *   { over: true, winnerSlot }      le match est joué ;
    *   { over: false, decisive }       une manche de plus (décisive ou non).
    * Fin anticipée : l'écart dépasse les manches restantes. Égalité au bout
-   * des manches prévues : manches décisives, deux par deux. Le match ne se
-   * décide qu'au bout d'une paire (`decisivePlayed` pair) : après la première
-   * manche de la paire, l'autre joueur répond toujours. Les scores étaient à
-   * égalité en entrant dans les manches décisives : un écart au bout d'une
-   * paire, c'est 2-0 dans cette paire.
+   * des manches prévues : manches décisives (7e, 8e…), deux par deux. Le match
+   * ne se décide qu'au bout d'une paire (`decisivePlayed` pair) : après la
+   * première manche de la paire, l'autre joueur répond toujours. Les scores
+   * étaient à égalité en entrant dans les manches décisives : un écart au bout
+   * d'une paire, c'est 2-0 ou 1-0 (une manche nulle) dans cette paire ; 1-1 ou
+   * 0-0, une nouvelle paire.
    */
   function matchDecision(state) {
     var scores = state.scores || [0, 0];
@@ -181,8 +190,9 @@
    * une seule des deux cases voisines est une couleur choisie, le côté
    * passe de ce côté-là — la roue traîne sur elle puis franchit la ligne
    * ('last-line'), ou s'arrête juste avant de l'atteindre ('near-next').
-   * Le sel décide toujours SI la manche a du suspens (55 %) ; les choix,
-   * publics au moment du tour, n'en décident que le côté.
+   * Le sel décide toujours SI la manche a du suspens (55 % ; 80 % en manche
+   * décisive : 50 % dernière ligne, 30 % juste avant la suivante) ; les
+   * choix, publics au moment du tour, n'en décident que le côté.
    * Toujours franchement dans la case (au moins 6 % de sa largeur depuis une
    * ligne). Pure mise en scène : la couleur tirée est scellée avant les
    * choix, l'arrêt ne la change jamais et ne change pas le point. À égale
@@ -190,7 +200,7 @@
    * ligne laisserait croire que l'un était plus près. Sans sel (un replay),
    * au milieu.
    */
-  function landingFor(wheel, drawn, salt, choice1, choice2) {
+  function landingFor(wheel, drawn, salt, choice1, choice2, decisive) {
     var slots = [];
     for (var i = 0; i < wheel.length; i++) if (wheel[i] === drawn) slots.push(i);
     if (!slots.length) return { segment: 0, offset: 0, style: 'middle' };
@@ -198,7 +208,9 @@
     if (!salt) return { segment: pick, offset: 0, style: 'middle' };
     var tie = isColor(choice1) && isColor(choice2) && choice1 !== choice2 && roundWinner(choice1, choice2, drawn) === 0;
     var roll = saltFraction(salt, 4), f = saltFraction(salt, 2);
-    var style = tie ? 'middle' : roll < 0.35 ? 'last-line' : roll < 0.55 ? 'near-next' : 'middle';
+    /* En manche décisive, le cœur doit battre : 80 % d'arrêts au ras d'une ligne. */
+    var lastLine = decisive ? 0.5 : 0.35, nearNext = decisive ? 0.8 : 0.55;
+    var style = tie ? 'middle' : roll < lastLine ? 'last-line' : roll < nearNext ? 'near-next' : 'middle';
     if (style !== 'middle') {
       // Le sens de rotation fait passer la case pick + 1 avant, puis pick − 1.
       var n = wheel.length;
@@ -251,6 +263,7 @@
     regularPlayed: regularPlayed,
     decisivePlayed: decisivePlayed,
     decisiveStep: decisiveStep,
+    countedPlayed: countedPlayed,
     matchDecision: matchDecision,
     landingFor: landingFor,
     landingAngle: landingAngle,

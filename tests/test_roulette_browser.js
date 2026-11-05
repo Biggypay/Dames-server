@@ -13,9 +13,12 @@
  *   • le point n'est compté qu'à l'arrêt de la roue ; la couleur la plus
  *     proche de la tirée marque, chaque puce dit sa distance ; à égale
  *     distance, manche nulle ; même couleur → on rechoisit ;
- *   • les manches décisives vont par deux : après la première, l'autre joueur
- *     répond (« À vous de répondre », « Vous menez ») ; 1-1, une nouvelle
- *     paire ; 2-0, la fin ;
+ *   • six manches, puis à égalité « Manche 7 · décisive », « Manche 8 »… sur
+ *     la roue ENTIÈRE (six couleurs) ; elles vont par deux : après la
+ *     première, l'autre joueur répond (« À vous de répondre », « Vous
+ *     menez ») ; 1-1, « 1 partout ! » et une nouvelle paire ; 1-0 au bout de
+ *     la paire (une manche nulle), la fin ; en manche décisive, le halo de la
+ *     roue bat comme un cœur (pas en manche normale) ;
  *   • la fiche de fin ne s'ouvre qu'une fois la roue arrêtée, en haut, sans
  *     cacher la roue ;
  *   • temps de grâce : le bandeau dit qui doit jouer ; une couleur touchée
@@ -53,9 +56,9 @@ const GAME = {
 };
 /* Les tirages imposés (NODE_ENV=test) : un match connu d'avance. */
 const DRAWS = {
-  // Une valeur par manche ouverte (le rechoix de la manche 4 compris) ; en
-  // manche décisive, 0 = la plus petite des deux couleurs, 1 = la plus grande.
-  [GAME.match]: [0, 0, 1, 5, 3, 5, 0, 0, 1, 1],
+  // Une couleur par manche ouverte (le rechoix de la manche 4 compris),
+  // manches décisives comprises : la roue garde ses six couleurs.
+  [GAME.match]: [0, 0, 1, 5, 3, 5, 4, 2, 0, 4, 1],
   [GAME.grace]: [4, 4, 4, 4, 4],
   [GAME.reload]: [2, 2, 2, 2, 2]
 };
@@ -229,38 +232,57 @@ async function fullMatch(browser) {
       labels: { a: ['1 case', '1 case'] }, title: 'Orange tiré : Rouge et Jaune à égale distance, manche nulle' },
     { c: [3, 3], drawn: null, a: /Même couleur/, b: /Même couleur/, v: /Même couleur/, s: ['1-1', '1-1'], title: 'même couleur : on rechoisit' },
     { c: [4, 5], drawn: 3, a: /🎉 Manche gagnée · Vert/, b: /💀 Manche perdue · Vert/, v: /Alice marque · Vert/, s: ['2-1', '1-2'],
-      label: 'Manche 4 / 5', title: 'Vert tiré : le Bleu d’Alice (1 case) bat le Violet (2 cases)' },
+      label: 'Manche 4 / 6', title: 'Vert tiré : le Bleu d’Alice (1 case) bat le Violet (2 cases)' },
     { c: [1, 0], drawn: 5, a: /💀 Manche perdue · Violet/, b: /🎉 Manche gagnée · Violet/, v: /Bob marque · Violet/, s: ['2-2', '2-2'],
       title: 'Violet tiré : le Rouge de Bob (1 case) bat l’Orange (2 cases)' },
+    { c: [3, 5], drawn: 4, a: /À égale distance · Bleu/, b: /À égale distance · Bleu/, v: /À égale distance · Bleu/, s: ['2-2', '2-2'],
+      label: 'Manche 6 / 6', title: 'sixième manche, Bleu tiré : Vert et Violet à égale distance, 2-2' },
     { c: [5, 2], drawn: 2, a: /💀 Manche perdue · Jaune/, b: /🎉 Manche gagnée · Jaune/, v: /Bob marque · Jaune/, s: ['2-3', '3-2'],
-      decisive: true, title: 'décisive 1/2 : Bob gagne la première' },
+      labels: { a: ['3 cases', 'Pile !'], b: ['Pile !', '3 cases'] },
+      decisive: true, opens: 'Manche 7 · décisive', title: 'manche 7, décisive : Bob gagne la première de la paire' },
     { c: [0, 3], drawn: 0, a: /🎉 Manche gagnée · Rouge/, b: /💀 Manche perdue · Rouge/, v: /Alice marque · Rouge/, s: ['3-3', '3-3'],
-      decisive: true, answer: true, title: 'décisive 2/2 : Alice répond et égalise, 1-1' },
+      decisive: true, answer: 'Manche 8 · décisive', toast: /1 partout !.*manches 9 et 10/, title: 'manche 8 : Alice répond et égalise, 1-1' },
     { c: [1, 4], drawn: 4, a: /💀 Manche perdue · Bleu/, b: /🎉 Manche gagnée · Bleu/, v: /Bob marque · Bleu/, s: ['3-4', '4-3'],
-      decisive: true, title: 'nouvelle paire, décisive 1/2 : Bob' },
-    { c: [2, 5], drawn: 5, a: /💀 Manche perdue · Violet/, b: /🎉 Manche gagnée · Violet/, v: /Bob marque · Violet/, s: ['3-5', '5-3'],
-      decisive: true, answer: true, title: 'décisive 2/2 : Bob gagne aussi, 2-0, match joué' }
+      decisive: true, opens: 'Manche 9 · décisive', title: 'nouvelle paire, manche 9 : Bob' },
+    { c: [2, 0], drawn: 1, a: /À égale distance · Orange/, b: /À égale distance · Orange/, v: /À égale distance · Orange/, s: ['3-4', '4-3'],
+      decisive: true, answer: 'Manche 10 · décisive', title: 'manche 10 : nulle — 1-0 au bout de la paire, Bob gagne le match' }
   ];
   for (let i = 0; i < plays.length; i++) {
     const play = plays[i];
+    if (play.opens) {
+      /* Une manche décisive s'ouvre : numérotée à la suite (7, 9…), sur la roue entière. */
+      const label = await waitFor(async () => {
+        const [la, lv] = await Promise.all([text(p1, '#roundLabel'), text(viewer, '#roundLabel')]);
+        return la === play.opens && lv === play.opens ? la : null;
+      }, 15000);
+      check(`manche ${i + 1} : « ${play.opens} » en haut, chez Alice et le spectateur`, label === play.opens, await text(p1, '#roundLabel'));
+    }
     if (play.answer) {
       /* Bob a gagné la première de la paire : le match continue, Alice répond. */
       await Promise.all([p1, p2, viewer].map(p => p.waitForFunction(() => /répond/.test(document.getElementById('status').textContent), null, { timeout: 15000 })));
       const [ta, tb, tv, label] = await Promise.all([text(p1, '#status'), text(p2, '#status'), text(viewer, '#status'), text(p1, '#roundLabel')]);
       check(`manche ${i + 1} : chacun joue sa manche décisive — « ${ta} » / « ${tb} » / « ${tv} »`,
-        /À vous de répondre/.test(ta) && /Vous menez/.test(tb) && /Bob mène · Alice répond/.test(tv), [ta, tb, tv]);
-      check(`manche ${i + 1} : « Décisive 2/2 » en haut`, label === 'Décisive 2/2', label);
+        /À vous de répondre · égalisez/.test(ta) && /Vous menez/.test(tb) && /Bob mène · Alice répond/.test(tv), [ta, tb, tv]);
+      check(`manche ${i + 1} : « ${play.answer} » en haut`, label === play.answer, label);
       check(`manche ${i + 1} : la fiche de fin n’est pas ouverte (personne n’a encore gagné)`,
         !(await p1.evaluate(() => document.getElementById('gameOverModal').classList.contains('show'))));
     }
     if (i > 0) { await choose(p1, play.c[0]); await choose(p2, play.c[1]); }
+    if (i > 0 && play.drawn !== null && (play.decisive || i === 1)) {
+      /* Manche décisive : le halo de la roue bat comme un cœur ; manche normale : non. */
+      const mood = await waitFor(() => p1.evaluate(() => {
+        const stage = document.getElementById('wheel');
+        return stage.classList.contains('rr-spinning') ? (stage.classList.contains('rr-tense') ? 'tense' : 'calm') : null;
+      }), 3000, 30);
+      check(`manche ${i + 1} : ${play.decisive ? 'décisive, le halo bat comme un cœur' : 'manche normale, pas de battement'}`, mood === (play.decisive ? 'tense' : 'calm'), mood);
+    }
     await Promise.all([waitStatus(p1, play.a), waitStatus(p2, play.b), waitStatus(viewer, play.v)]);
     const [ta, tb, tv] = await Promise.all([text(p1, '#status'), text(p2, '#status'), text(viewer, '#status')]);
     check(`manche ${i + 1} (${play.title}) : chaque écran dit le bon résultat`, play.a.test(ta) && play.b.test(tb) && play.v.test(tv), [ta, tb, tv]);
     if (play.drawn !== null) {
       const where = await Promise.all([p1, p2, viewer].map(underPointer));
       check(`manche ${i + 1} : la roue s'arrête sur la couleur tirée, sur les trois écrans`, where.every(w => w.color === play.drawn && w.hit === play.drawn), where);
-      if (play.decisive) check(`manche ${i + 1} : décisive, la roue ne garde que les deux couleurs choisies`, where[0].colors === 2, where[0]);
+      if (play.decisive) check(`manche ${i + 1} : décisive, la roue garde ses six couleurs`, where.every(w => w.colors === 6), where);
     }
     if (play.labels) {
       const [ca, cb] = await Promise.all([chips(p1), chips(p2)]);
@@ -276,6 +298,17 @@ async function fullMatch(browser) {
       const verified = await waitFor(async () => (await Promise.all([p1, p2, viewer].map(p => p.getAttribute('#seal', 'data-state')))).every(s => s === 'verified'), 4000);
       check(`manche ${i + 1} : « Tirage vérifié » sur les trois écrans`, verified === true);
     }
+    /* L'annonce vient après le résultat (et après « Tirage vérifié » : la manche suivante peut déjà s'ouvrir). */
+    if (play.toast) {
+      const toast = await waitFor(async () => {
+        const t = await p1.evaluate(() => {
+          const el = document.getElementById('toast');
+          return el && el.style.display !== 'none' && el.style.opacity !== '0' ? el.textContent.replace(/\s+/g, ' ').trim() : '';
+        });
+        return play.toast.test(t) ? t : null;
+      }, 4000, 60);
+      check(`manche ${i + 1} : l’annonce « ${toast || '—'} »`, !!toast);
+    }
   }
 
   const decisiveRow = await p1.evaluate(() => {
@@ -284,20 +317,22 @@ async function fullMatch(browser) {
   });
   check('les manches décisives ont leur rangée : quatre repères (le rechoix n’y compte pas)', decisiveRow === 4, decisiveRow);
   const regularRow = await p1.evaluate(() => [...document.querySelectorAll('#roundsProgress .round-dot')].map(d => d.className.replace('round-dot', '').trim()));
-  check('les cinq manches comptées ont chacune leur repère (le rechoix non)', regularRow.length === 5 && regularRow.every(c => /played/.test(c)), regularRow);
+  check('les six manches comptées ont chacune leur repère (le rechoix non)', regularRow.length === 6 && regularRow.every(c => /played/.test(c)), regularRow);
 
   const ends = await waitFor(async () => {
     const shown = await Promise.all([p1, p2, viewer].map(p => p.evaluate(() => document.getElementById('gameOverModal').classList.contains('show'))));
     return shown.every(Boolean) ? true : null;
   }, 10000);
   check('la fiche de fin s’ouvre chez les deux joueurs et le spectateur', ends === true);
-  check('Alice : défaite 3 - 5', (await text(p1, '#modalTitle')).includes('DÉFAITE') && (await text(p1, '#finalScore')) === '3 - 5', await text(p1, '#finalScore'));
-  check('Bob : victoire 5 - 3, gain net affiché', (await text(p2, '#modalTitle')).includes('VICTOIRE') && (await text(p2, '#finalScore')) === '5 - 3' && /\+1800 HTG/.test(await text(p2, '#prizeLine')), [await text(p2, '#modalTitle'), await text(p2, '#prizeLine')]);
+  check('Alice : défaite 3 - 4', (await text(p1, '#modalTitle')).includes('DÉFAITE') && (await text(p1, '#finalScore')) === '3 - 4', await text(p1, '#finalScore'));
+  check('Bob : victoire 4 - 3, gain net affiché', (await text(p2, '#modalTitle')).includes('VICTOIRE') && (await text(p2, '#finalScore')) === '4 - 3' && /\+1800 HTG/.test(await text(p2, '#prizeLine')), [await text(p2, '#modalTitle'), await text(p2, '#prizeLine')]);
   check('le spectateur : Bob remporte la Roulette Royale', /Bob remporte la Roulette Royale/.test(await text(viewer, '#finalMessage')));
   const rows = await p2.evaluate(() => document.querySelectorAll('#modalHistoryList .modal-history-item').length);
-  check('l’historique de fin compte les 10 manches ouvertes (le rechoix compris)', rows === 10, rows);
+  check('l’historique de fin compte les 11 manches ouvertes (le rechoix compris)', rows === 11, rows);
   const labels = await p2.evaluate(() => [...document.querySelectorAll('#modalHistoryList .modal-history-item > span:first-child')].map(el => el.textContent).reverse());
-  check('l’historique numérote les manches comptées (le rechoix reprend le numéro)', JSON.stringify(labels.slice(0, 6)) === JSON.stringify(['Manche 1', 'Manche 2', 'Manche 3', 'Manche 4', 'Manche 4', 'Manche 5']), labels);
+  check('l’historique numérote les manches comptées (le rechoix reprend le numéro, les décisives continuent : 7, 8, 9, 10)',
+    JSON.stringify(labels) === JSON.stringify(['Manche 1', 'Manche 2', 'Manche 3', 'Manche 4', 'Manche 4', 'Manche 5', 'Manche 6',
+      'Manche 7 · décisive', 'Manche 8 · décisive', 'Manche 9 · décisive', 'Manche 10 · décisive']), labels);
   const proof = await p2.evaluate(() => {
     const card = document.querySelector('#gameOverModal .modal').getBoundingClientRect();
     const close = getComputedStyle(document.getElementById('closeBtn')).display;
@@ -530,7 +565,7 @@ async function main() {
       SUPABASE_URL: DB_URL, SUPABASE_SERVICE_ROLE_KEY: 'test-service-role',
       ALLOWED_ORIGIN: GAME_URL,
       ROULETTE_TEST_DRAWS: JSON.stringify(DRAWS),
-      ROULETTE_SPIN_MS: '1400', ROUND_PROOF_MS: '700', ROULETTE_REPICK_MS: '500', ROULETTE_FINAL_HOLD_MS: '400',
+      ROULETTE_SPIN_MS: '1400', ROULETTE_DECISIVE_SPIN_MS: '1400', ROUND_PROOF_MS: '700', ROULETTE_REPICK_MS: '500', ROULETTE_FINAL_HOLD_MS: '400',
       TURN_DURATION_MS: '4000', GRACE_DURATION_MS: '4500', RECONNECT_DURATION_MS: '15000'
     },
     stdio: ['ignore', 'pipe', 'pipe']

@@ -7,11 +7,14 @@
  *     proche de la couleur tirée ; à égale distance, manche nulle ; même
  *     couleur pour les deux, on rechoisit — et, pour toute paire de couleurs,
  *     chaque joueur a exactement la même chance (la roue est symétrique) ;
- *   • la fin du match : cinq manches (les rechoix ne comptent pas), fin
- *     anticipée quand l'écart ne peut plus être comblé, manches décisives à
- *     égalité, DEUX PAR DEUX : rien ne se décide après la première d'une paire ;
- *   • la manche décisive ne garde que les deux couleurs choisies (une chance
- *     sur deux) ;
+ *   • la fin du match : six manches (les rechoix ne comptent pas), fin
+ *     anticipée quand l'écart ne peut plus être comblé, puis à égalité les
+ *     manches 7 et 8, 9 et 10… DEUX PAR DEUX jusqu'à ce qu'un joueur gagne :
+ *     rien ne se décide après la première d'une paire ; une paire à 1-0 (une
+ *     manche nulle) décide, à 1-1 ou 0-0 elle en appelle une autre ;
+ *   • la manche décisive garde la roue entière (six couleurs) et ses règles :
+ *     la plus proche marque, égale distance nulle, même couleur on rechoisit ;
+ *     son tirage est une couleur scellée, comme les autres ;
  *   • le tirage est uniforme, scellé avant les choix, vérifiable, et toute
  *     retouche de la valeur ou du sel se voit ;
  *   • la roue s'arrête sur la couleur tirée, au même endroit partout —
@@ -37,7 +40,7 @@ check('six couleurs', R.COLORS.length === 6 && R.COLOR_COUNT === 6);
 check('identifiants 0 à 5 dans l’ordre', R.COLORS.every((c, i) => c.id === i));
 check('noms, teintes et formes tous différents', new Set(R.COLORS.map(c => c.name)).size === 6
   && new Set(R.COLORS.map(c => c.hex)).size === 6 && new Set(R.COLORS.map(c => c.shape)).size === 6);
-check('cinq manches prévues', R.REGULAR_ROUNDS === 5);
+check('six manches prévues', R.REGULAR_ROUNDS === 6);
 check('toColor accepte 0..5 et « 3 », refuse le reste',
   R.toColor(0) === 0 && R.toColor('3') === 3 && R.toColor(6) === null && R.toColor(-1) === null
   && R.toColor(2.5) === null && R.toColor('rouge') === null && R.toColor(null) === null && R.toColor('12') === null);
@@ -71,46 +74,42 @@ check(`une manche a un vainqueur ${(100 * winning / cells).toFixed(1)} fois sur 
   Math.abs(winning / cells - 13 / 15) < 1e-9 && Math.abs(minPair - 2 / 3) < 1e-9, { winning, cells, minPair });
 
 console.log('Suite du match');
-const go = (scores, roundsPlayed, extra) => R.matchDecision({ scores, roundsPlayed, totalRounds: 5, ...extra });
+const go = (scores, roundsPlayed, extra) => R.matchDecision({ scores, roundsPlayed, totalRounds: 6, ...extra });
 check('0-0 après 1 manche : on continue', JSON.stringify(go([0, 0], 1)) === JSON.stringify({ over: false, decisive: false }));
-check('3-0 après 3 manches : fin anticipée (2 restantes)', JSON.stringify(go([3, 0], 3)) === JSON.stringify({ over: true, winnerSlot: 1 }));
-check('2-0 après 3 manches : encore rattrapable', go([2, 0], 3).over === false);
-check('0-2 après 4 manches : fin anticipée pour le 2', JSON.stringify(go([0, 2], 4)) === JSON.stringify({ over: true, winnerSlot: 2 }));
-check('1-0 après 4 manches : rattrapable (1 restante)', go([1, 0], 4).over === false);
-check('2-1 après 5 manches : le 1 gagne', JSON.stringify(go([2, 1], 5)) === JSON.stringify({ over: true, winnerSlot: 1 }));
-check('1-1 après 5 manches : manche décisive', JSON.stringify(go([1, 1], 5)) === JSON.stringify({ over: false, decisive: true }));
-check('0-0 après 5 manches : manche décisive', go([0, 0], 5).decisive === true);
+check('4-0 après 4 manches : fin anticipée (2 restantes)', JSON.stringify(go([4, 0], 4)) === JSON.stringify({ over: true, winnerSlot: 1 }));
+check('3-0 après 3 manches : encore rattrapable (3 restantes)', go([3, 0], 3).over === false);
+check('0-3 après 4 manches : fin anticipée pour le 2', JSON.stringify(go([0, 3], 4)) === JSON.stringify({ over: true, winnerSlot: 2 }));
+check('2-0 après 4 manches : rattrapable (2 restantes)', go([2, 0], 4).over === false);
+check('1-0 après 5 manches : rattrapable (1 restante)', go([1, 0], 5).over === false);
+check('3-2 après 6 manches : le 1 gagne', JSON.stringify(go([3, 2], 6)) === JSON.stringify({ over: true, winnerSlot: 1 }));
+check('3-3 après 6 manches : on continue, manches décisives', JSON.stringify(go([3, 3], 6)) === JSON.stringify({ over: false, decisive: true }));
+check('2-2 après 6 manches (deux nulles) : manches décisives', go([2, 2], 6).decisive === true);
+check('0-0 après 6 manches : manches décisives', go([0, 0], 6).decisive === true);
 const dec = (scores, decisivePlayed) => R.matchDecision({ scores, decisive: true, decisivePlayed });
-check('1re décisive gagnée par le 2 : l’autre joue quand même la 2e', JSON.stringify(dec([1, 2], 1)) === JSON.stringify({ over: false, decisive: true }));
-check('paire 2-0 pour le 2 : fin', JSON.stringify(dec([1, 3], 2)) === JSON.stringify({ over: true, winnerSlot: 2 }));
-check('paire 1-1 : une nouvelle paire', JSON.stringify(dec([2, 2], 2)) === JSON.stringify({ over: false, decisive: true }));
-check('3e décisive gagnée : on attend la réponse', dec([3, 2], 3).over === false);
-check('2e paire 2-0 pour le 1 : fin', JSON.stringify(dec([4, 2], 4)) === JSON.stringify({ over: true, winnerSlot: 1 }));
-check('rechoix (même couleur) : rien ne se décide', JSON.stringify(dec([1, 1], 0)) === JSON.stringify({ over: false, decisive: true }));
+check('7e manche gagnée par le 2 : l’autre joue quand même la 8e', JSON.stringify(dec([3, 4], 1)) === JSON.stringify({ over: false, decisive: true }));
+check('7e manche nulle : la 8e se joue', JSON.stringify(dec([3, 3], 1)) === JSON.stringify({ over: false, decisive: true }));
+check('paire 2-0 pour le 2 : fin', JSON.stringify(dec([3, 5], 2)) === JSON.stringify({ over: true, winnerSlot: 2 }));
+check('paire 1-0 (une manche nulle) pour le 1 : fin', JSON.stringify(dec([4, 3], 2)) === JSON.stringify({ over: true, winnerSlot: 1 }));
+check('paire 1-1 : une nouvelle paire (9e et 10e)', JSON.stringify(dec([4, 4], 2)) === JSON.stringify({ over: false, decisive: true }));
+check('paire 0-0 (deux nulles) : une nouvelle paire', JSON.stringify(dec([3, 3], 2)) === JSON.stringify({ over: false, decisive: true }));
+check('9e manche gagnée : on attend la réponse', dec([5, 4], 3).over === false);
+check('2e paire 2-0 pour le 1 : fin', JSON.stringify(dec([6, 4], 4)) === JSON.stringify({ over: true, winnerSlot: 1 }));
+check('rechoix (même couleur) : rien ne se décide', JSON.stringify(dec([3, 3], 0)) === JSON.stringify({ over: false, decisive: true }));
 const hist = [
   { round: 1, decisive: false, repick: true }, { round: 2, decisive: false }, { round: 3, decisive: false },
   { round: 4, decisive: true }, { round: 5, decisive: true, repick: true }
 ];
-check('manches comptées : sans les rechoix', R.regularPlayed(hist) === 2 && R.decisivePlayed(hist) === 1);
+check('manches comptées : sans les rechoix', R.regularPlayed(hist) === 2 && R.decisivePlayed(hist) === 1 && R.countedPlayed(hist) === 3);
 check('place dans la paire : 2 (la réponse) après une décisive jouée', R.decisiveStep(hist) === 2 && R.decisiveStep([]) === 1
   && R.decisiveStep(hist.concat([{ round: 6, decisive: true }])) === 1);
 
-console.log('Manche décisive : deux couleurs');
-check('la roue garde les deux couleurs, alternées', JSON.stringify(R.wheelFor(true, 4, 1)) === JSON.stringify([1, 4, 1, 4, 1, 4]));
+console.log('Manche décisive : la roue garde ses six couleurs');
+check('manche décisive : les six couleurs (« ne réduis pas »)', JSON.stringify(R.wheelFor(true, 4, 1)) === JSON.stringify([0, 1, 2, 3, 4, 5]));
 check('manche normale : les six couleurs', JSON.stringify(R.wheelFor(false, 4, 1)) === JSON.stringify([0, 1, 2, 3, 4, 5]));
-check('décisive, bit 0 : la plus petite couleur', R.drawnColor({ kind: 'bit', value: 0 }, 4, 1) === 1);
-check('décisive, bit 1 : la plus grande couleur', R.drawnColor({ kind: 'bit', value: 1 }, 4, 1) === 4);
-check('décisive, même couleur : on rechoisit (null)', R.drawnColor({ kind: 'bit', value: 1 }, 3, 3) === null);
-check('manche normale : la couleur scellée', R.drawnColor({ kind: 'color', value: 5 }, 0, 1) === 5);
-check('manche normale, même couleur : on rechoisit (null)', R.drawnColor({ kind: 'color', value: 5 }, 2, 2) === null);
-check('décisive : toujours un vainqueur quand les couleurs diffèrent', [0, 1].every(bit => {
-  for (let a = 0; a < 6; a++) for (let b = 0; b < 6; b++) {
-    if (a === b) continue;
-    const d = R.drawnColor({ kind: 'bit', value: bit }, a, b);
-    if (R.roundWinner(a, b, d) === 0) return false;
-  }
-  return true;
-}));
+check('toute manche : la couleur scellée', R.drawnColor({ kind: 'color', value: 5 }, 0, 1) === 5);
+check('même couleur : on rechoisit (null)', R.drawnColor({ kind: 'color', value: 5 }, 2, 2) === null);
+check('un ancien sceau « bit » (roue à deux couleurs) n’a plus cours', R.drawnColor({ kind: 'bit', value: 1 }, 4, 1) === null);
+check('manche décisive à égale distance : nulle, comme les autres (Rouge et Jaune, Orange tiré)', R.roundWinner(0, 2, 1) === 0);
 
 console.log('Tirage scellé');
 const seal = R.sealDraw('room-x', 3, false);
@@ -121,8 +120,11 @@ check('un autre sel ne correspond plus', !R.verifySeal('room-x', 3, { ...seal, s
 check('une autre manche ne correspond plus', !R.verifySeal('room-x', 4, seal));
 check('une autre partie ne correspond plus', !R.verifySeal('room-y', 3, seal));
 check('l’empreinte = SHA-256 du texte publié', crypto.createHash('sha256').update(R.sealText('room-x', 3, 'color', seal.value, seal.salt)).digest('hex') === seal.hash);
-const decisiveSeal = R.sealDraw('room-x', 6, true);
-check('scellé décisif : un bit', decisiveSeal.kind === 'bit' && (decisiveSeal.value === 0 || decisiveSeal.value === 1) && R.verifySeal('room-x', 6, decisiveSeal));
+const decisiveSeal = R.sealDraw('room-x', 7, true);
+check('scellé décisif : une couleur, comme les autres', decisiveSeal.kind === 'color' && R.isColor(decisiveSeal.value) && R.verifySeal('room-x', 7, decisiveSeal));
+const oldBitSalt = crypto.randomBytes(16).toString('hex');
+const oldBit = { kind: 'bit', value: 1, salt: oldBitSalt, hash: R.hashSeal('room-x', 7, 'bit', 1, oldBitSalt) };
+check('un ancien sceau « bit » relu après une mise à jour : la manche se rejoue (null)', R.sanitizeSeal('room-x', 7, oldBit) === null && !R.verifySeal('room-x', 7, oldBit));
 check('sanitizeSeal garde un sceau intact', JSON.stringify(R.sanitizeSeal('room-x', 3, seal)) === JSON.stringify(seal));
 check('sanitizeSeal refuse un sceau retouché', R.sanitizeSeal('room-x', 3, { ...seal, value: (seal.value + 2) % 6 }) === null);
 
@@ -133,9 +135,10 @@ for (let i = 0; i < N; i++) counts[R.sealDraw('u', i, false).value]++;
 const expected = N / 6;
 const chi2 = counts.reduce((sum, c) => sum + ((c - expected) ** 2) / expected, 0);
 check(`tirage uniforme sur 60 000 (khi-deux ${chi2.toFixed(2)} < 20,52)`, chi2 < 20.52, counts);
-const bits = [0, 0];
-for (let i = 0; i < 20000; i++) bits[R.sealDraw('u', i, true).value]++;
-check('bit décisif équilibré (49–51 %)', bits[0] / 20000 > 0.49 && bits[0] / 20000 < 0.51, bits);
+const decisiveCounts = [0, 0, 0, 0, 0, 0];
+for (let i = 0; i < N; i++) decisiveCounts[R.sealDraw('u', i, true).value]++;
+const chi2d = decisiveCounts.reduce((sum, c) => sum + ((c - expected) ** 2) / expected, 0);
+check(`tirage décisif uniforme lui aussi (khi-deux ${chi2d.toFixed(2)} < 20,52)`, chi2d < 20.52, decisiveCounts);
 
 // Équité, avec le vrai tirage : quelles que soient les deux couleurs choisies
 // (différentes, tous les écarts), chaque joueur gagne une manche normale avec
@@ -170,8 +173,9 @@ for (let drawn = 0; drawn < 6; drawn++) {
   for (let k = 0; k < 400; k++) {
     const salt = crypto.randomBytes(16).toString('hex');
     // Des couleurs qui ne donnent jamais une égalité : celle tirée contre une autre.
-    for (const wheel of [R.wheelFor(false), R.wheelFor(true, drawn, (drawn + 2) % 6)]) {
-      const landing = R.landingFor(wheel, drawn, salt, drawn, (drawn + 3) % 6);
+    for (const decisive of [false, true]) {
+      const wheel = R.wheelFor(decisive, drawn, (drawn + 3) % 6);
+      const landing = R.landingFor(wheel, drawn, salt, drawn, (drawn + 3) % 6, decisive);
       if (wheel[landing.segment] !== drawn) landingsOk = false;
       if (Math.abs(landing.offset) > 0.88 + 1e-9) insideOk = false;
       if (landing.style === 'last-line' && !(landing.offset >= 0.78 && landing.offset <= 0.881)) lineSideOk = false;
@@ -219,10 +223,20 @@ check(`une couleur choisie arrive : la roue s’arrête juste avant elle (${JSON
 check('… même quand celle tirée n’est pas choisie (Bleu et Jaune, Orange tiré)', awayBoth['near-next'] === 0 && awayBoth['last-line'] > 0, awayBoth);
 // Les choix ne décident que le côté : la part de suspens reste celle du sel.
 check('les choix ne changent pas la part de suspens (55 %)', [towardsPassed, towardsComing, awayBoth].every(st => st.middle === styles.middle / 6));
-// Manche décisive : les deux voisines sont l'autre couleur — le sel garde son partage 35 / 20.
-const decisiveSides = sideStats(1, 4, R.wheelFor(true, 1, 4), 1);
-check(`manche décisive : les deux voisines sont l’autre couleur, le sel décide (${JSON.stringify(decisiveSides)})`,
-  decisiveSides['last-line'] === styles['last-line'] / 6 && decisiveSides['near-next'] === styles['near-next'] / 6, decisiveSides);
+// Manche décisive (« ça doit faire battre vite les cœurs ») : 80 % d'arrêts au ras d'une ligne —
+// 50 % juste après, 30 % juste avant la suivante ; le côté va toujours vers une couleur choisie voisine.
+const decisiveStats = (c1, c2, drawn = 1) => {
+  const out = { 'last-line': 0, 'near-next': 0, middle: 0 };
+  for (const salt of ROLL_SALTS) out[R.landingFor(R.wheelFor(true, c1, c2), drawn, salt, c1, c2, true).style]++;
+  return out;
+};
+const decisiveFree = decisiveStats(1, 4);      // Orange pile, aucune voisine choisie
+const decisivePassed = decisiveStats(1, 2);    // Jaune choisi, juste passé
+check(`manche décisive : 80 % de suspens — 50 % dernière ligne, 30 % juste avant la suivante (${JSON.stringify(decisiveFree)})`,
+  Math.abs(share(decisiveFree['last-line']) - 0.5) < 0.01 && Math.abs(share(decisiveFree['near-next']) - 0.3) < 0.01 && Math.abs(share(decisiveFree.middle) - 0.2) < 0.01, decisiveFree);
+check(`manche décisive, une couleur choisie voisine : la roue traîne dessus (${JSON.stringify(decisivePassed)})`,
+  decisivePassed['near-next'] === 0 && Math.abs(share(decisivePassed['last-line']) - 0.8) < 0.01, decisivePassed);
+check('manche décisive à égale distance : toujours au milieu', decisiveStats(0, 2)['middle'] === ROLL_SALTS.length);
 // La couleur tirée et la case d'arrêt ne dépendent jamais des choix.
 let choicesNeverMove = true;
 for (let k = 0; k < 500; k++) {
@@ -244,8 +258,9 @@ vm.runInNewContext(source, sandbox);
 const browserRules = sandbox.self.RouletteRules;
 check('window.RouletteRules exposé sans module', !!browserRules && browserRules.COLORS.length === 6);
 check('mêmes réponses que le serveur', browserRules.roundWinner(2, 4, 4) === 2 && browserRules.roundWinner(0, 4, 3) === 2
-  && browserRules.drawnColor({ kind: 'bit', value: 1 }, 4, 1) === 4
-  && JSON.stringify(browserRules.matchDecision({ scores: [1, 2], decisive: true, decisivePlayed: 1 })) === JSON.stringify({ over: false, decisive: true }));
+  && browserRules.drawnColor({ kind: 'color', value: 1 }, 4, 1) === 1 && browserRules.REGULAR_ROUNDS === 6
+  && JSON.stringify(browserRules.wheelFor(true, 4, 1)) === JSON.stringify([0, 1, 2, 3, 4, 5])
+  && JSON.stringify(browserRules.matchDecision({ scores: [3, 4], decisive: true, decisivePlayed: 1 })) === JSON.stringify({ over: false, decisive: true }));
 
 if (failures) {
   console.log(`\n${failures} échec(s)`);

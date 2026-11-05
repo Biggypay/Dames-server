@@ -14,7 +14,8 @@
  * point d'arrêt — la case tirée, et l'endroit dans la case, parfois juste
  * après la ligne ou juste avant la suivante — vient du serveur (le sel du
  * tirage scellé) : le spectacle est le même sur tous les écrans et ne change
- * jamais la couleur tirée.
+ * jamais la couleur tirée. En manche décisive (7e, 8e…), le tour dure plus
+ * longtemps et le halo de la roue bat comme un cœur, de plus en plus vite.
  *
  * Chaque couleur porte sa forme (cercle, triangle, étoile, carré, losange,
  * hexagone) : on la reconnaît aussi sans distinguer les couleurs.
@@ -38,6 +39,9 @@
     '.rr-rotor svg{display:block;width:100%;height:100%;overflow:visible}',
     '.rr-glow{position:absolute;inset:-6%;border-radius:50%;background:radial-gradient(circle,rgba(251,191,36,.28),transparent 62%);pointer-events:none;z-index:0}',
     '.rr-stage.rr-spinning .rr-glow{animation:rr-pulse 1.2s ease-in-out infinite alternate}',
+    /* Manche décisive : le halo bat comme un cœur (piloté image par image dans spinTo). */
+    /* Un anneau rouge autour de la jante (la roue cache le centre du halo). */
+    '.rr-stage.rr-tense .rr-glow{animation:none;inset:-13%;background:radial-gradient(circle closest-side,transparent 74%,rgba(239,68,68,.72) 82%,rgba(244,63,94,.34) 91%,transparent 100%);will-change:transform,opacity}',
     '@keyframes rr-pulse{from{opacity:.55}to{opacity:1}}',
     '.rr-hub{position:absolute;inset:35%;border-radius:50%;z-index:3;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;',
     'background:radial-gradient(circle at 35% 30%,#fde68a,#f59e0b 55%,#b45309);border:3px solid #78350f;color:#3b1d06;',
@@ -227,6 +231,23 @@
     };
   })();
 
+  /*
+   * Le cœur d'une manche décisive : la cadence monte de 76 à 150 battements par
+   * minute pendant que la roue ralentit, chaque battement en deux temps
+   * (« boum-boum »). `pulse(p)`, p ∈ [0, 1) la place dans le battement : 0 à 1.
+   */
+  var HEART = {
+    bpm: function (u) {
+      var x = Math.max(0, Math.min(1, (u - 0.25) / 0.6));
+      return 76 + 74 * x * x * (3 - 2 * x);
+    },
+    pulse: function (p) {
+      var lub = Math.exp(-Math.pow((p - 0.06) / 0.045, 2));
+      var dub = 0.65 * Math.exp(-Math.pow((p - 0.26) / 0.05, 2));
+      return Math.max(lub, dub);
+    }
+  };
+
   function mount(opts) {
     var els = opts || {};
     var stage = els.stage;
@@ -235,6 +256,7 @@
       + '<div class="rr-hub"><span class="rr-hub-top"></span><span class="rr-hub-main"></span></div>';
     var rotor = stage.querySelector('.rr-rotor');
     var pointer = stage.querySelector('.rr-pointer');
+    var glow = stage.querySelector('.rr-glow');
     var hub = stage.querySelector('.rr-hub');
     var hubTop = stage.querySelector('.rr-hub-top');
     var hubMain = stage.querySelector('.rr-hub-main');
@@ -267,6 +289,13 @@
     function setPointer(deg) {
       pointer.style.transform = deg ? 'translateX(-50%) rotate(' + deg.toFixed(2) + 'deg)' : '';
     }
+    /* Le halo du cœur (manche décisive) : plus vif et un peu plus large à chaque battement. */
+    function setGlow(pulse, on) {
+      if (!glow) return;
+      if (!on) { glow.style.opacity = ''; glow.style.transform = ''; return; }
+      glow.style.opacity = (0.3 + 0.7 * pulse).toFixed(3);
+      glow.style.transform = 'scale(' + (1 + 0.05 * pulse).toFixed(4) + ')';
+    }
     /* Un tour en cours s'arrête net (nouveau tour, remise à zéro) : la promesse se tient quand même. */
     function stopSpin() {
       if (spinFrame) { cancelAnimationFrame(spinFrame); spinFrame = 0; }
@@ -281,8 +310,11 @@
      * passe sous le pointeur le fait claquer, d'autant plus visiblement que la
      * roue ralentit. Un minuteur de secours conclut le tour si l'onglet, caché,
      * ne dessine plus (le résultat n'attend jamais l'image suivante).
+     * `options.tension` (manche décisive) : le halo de la roue bat comme un
+     * cœur — 76 battements par minute au départ, 150 quand la roue rampe vers
+     * la dernière ligne (owner : « ça doit faire battre vite les cœurs »).
      */
-    function spinTo(wheel, landing, durationMs) {
+    function spinTo(wheel, landing, durationMs, options) {
       stopSpin();
       setWheel(wheel);
       clearHit();
@@ -302,6 +334,9 @@
       stage.classList.add('rr-spinning');
       var seg = 360 / wheel.length;
       var depth = Math.min(9, seg * 0.15);
+      var tense = !!(options && options.tension);
+      var beat = 0;
+      stage.classList.toggle('rr-tense', tense);
       /* Le temps part de l'appel (comme le minuteur de secours), pas de la première image. */
       var started = window.performance && performance.now ? performance.now() : null;
       var lastLine = Math.floor(from / seg), kick = 0, lastFrame = started || 0;
@@ -311,6 +346,8 @@
           if (spinTimer) { clearTimeout(spinTimer); spinTimer = null; }
           finishSpin = null;
           stage.classList.remove('rr-spinning');
+          stage.classList.remove('rr-tense');
+          setGlow(0, false);
           setPointer(0);
           if (landed !== false) {
             rotor.style.transform = 'rotate(' + to + 'deg)';
@@ -331,6 +368,10 @@
           kick *= Math.exp(-dt / 75);
           if (line !== lastLine) { kick = -16; lastLine = line; }
           setPointer(Math.abs(kick) < 0.2 ? 0 : kick);
+          if (tense) {
+            beat += dt * HEART.bpm(u) / 60000;
+            setGlow(HEART.pulse(beat % 1), true);
+          }
           if (u >= 1) { if (finishSpin) finishSpin(true); return; }
           spinFrame = requestAnimationFrame(frame);
         }
@@ -360,6 +401,8 @@
     function resetWheel() {
       stopSpin();
       stage.classList.remove('rr-spinning');
+      stage.classList.remove('rr-tense');
+      setGlow(0, false);
       clearHit();
       setWheel(R.wheelFor(false));
     }
@@ -637,10 +680,10 @@
     for (var i = 0; i < 16; i++) { var b = randomInt(256); hex += (b < 16 ? '0' : '') + b.toString(16); }
     return hex;
   }
-  /** Un tirage scellé local (IA, entre amis) : même forme que celui du serveur. */
+  /** Un tirage scellé local (IA, entre amis) : même forme que celui du serveur — une couleur, toute manche. */
   function localSeal(roomId, round, decisive) {
-    var kind = decisive ? 'bit' : 'color';
-    var value = decisive ? randomInt(2) : randomInt(R.COLOR_COUNT);
+    var kind = 'color';
+    var value = randomInt(R.COLOR_COUNT);
     var salt = randomSalt();
     return sha256Hex(R.sealText(roomId, round, kind, value, salt)).then(function (hash) {
       return { kind: kind, value: value, salt: salt, hash: hash || '' };

@@ -92,8 +92,9 @@
             <li>La couleur gagnante est tirée au hasard par le serveur avant vos choix, puis scellée.</li>
             <li>La couleur la plus proche de celle tirée sur la roue marque 1 point. Pile dessus, c’est forcément vous. À égale distance : manche nulle.</li>
             <li>Même couleur pour les deux : rien ne tourne, on rechoisit.</li>
-            <li>5 manches. Le match s’arrête plus tôt si l’écart ne peut plus être comblé.</li>
-            <li>Égalité : manches décisives, deux par deux. La roue ne garde que vos deux couleurs, une chance sur deux. Même si l’un gagne la première, l’autre joue la seconde : 2-0, victoire ; 1-1, on recommence.</li>
+            <li>6 manches. Le match s’arrête plus tôt si l’écart ne peut plus être comblé.</li>
+            <li>Égalité après 6 manches : on continue, 7e et 8e manches, puis 9e et 10e… jusqu’à ce qu’un joueur gagne. La roue garde ses six couleurs.</li>
+            <li>Les deux manches d’une paire se jouent toujours : même si l’un gagne la première, l’autre joue la seconde. Un point d’avance au bout de la paire, et c’est gagné.</li>
             <li>30 s pour choisir, puis 60 s de grâce. Sans choix, le match est perdu.</li>
           </ul>
         </div>
@@ -318,18 +319,13 @@ function renderScores() {
   $('playerScore').textContent = scores[leftSlot() - 1];
   $('aiScore').textContent = scores[rightSlot() - 1];
 }
-/* Les manches se comptent sans les rechoix (même couleur : rien ne tourne). */
+/* Les manches se comptent sans les rechoix (même couleur : rien ne tourne) ;
+   les manches décisives continuent la numérotation : 7, 8, 9… */
 function lastEntry() { return history.length ? history[history.length - 1] : null; }
-function regularIndex() {
-  var played = R.regularPlayed(history), last = lastEntry();
-  if ((phase === 'between' || phase === 'over') && last && !last.decisive && !last.repick) return Math.max(1, Math.min(totalRounds, played));
-  return Math.min(totalRounds, played + 1);
-}
-/* Les manches décisives vont par deux : 1 (la première), 2 (la réponse). */
-function decisiveIndex() {
-  var played = R.decisivePlayed(history), last = lastEntry();
-  if ((phase === 'between' || phase === 'over') && last && last.decisive && !last.repick) return ((played - 1) % 2) + 1;
-  return (played % 2) + 1;
+function roundNumber() {
+  var counted = R.countedPlayed(history), last = lastEntry();
+  var n = (phase === 'between' || phase === 'over') && last && !last.repick ? Math.max(1, counted) : counted + 1;
+  return decisive ? n : Math.min(totalRounds, n);
 }
 /* Qui a gagné la première manche décisive de la paire en cours (0 : aucune encore). */
 function pairLeader() {
@@ -338,7 +334,7 @@ function pairLeader() {
   return 0;
 }
 function renderRoundLabel() {
-  roundLabelEl.textContent = decisive ? 'Décisive ' + decisiveIndex() + '/2' : 'Manche ' + regularIndex() + ' / ' + totalRounds;
+  roundLabelEl.textContent = decisive ? 'Manche ' + roundNumber() + ' · décisive' : 'Manche ' + roundNumber() + ' / ' + totalRounds;
 }
 /* Autant de repères que de manches prévues ; les manches décisives sur leur propre rangée. */
 function renderDots() {
@@ -419,8 +415,8 @@ function choosingStatus() {
   var mine = myChoice !== null || lockPending;
   if (mine && !chosen[rightSlot()]) return 'Couleur verrouillée · l’adversaire choisit…';
   if (!mine && chosen[rightSlot()]) return 'L’adversaire a choisi · à vous !';
-  if (lead) return lead === MY_SLOT ? 'Vous menez · l’adversaire répond' : 'À vous de répondre · une chance sur deux';
-  if (decisive) return 'Manche décisive · une chance sur deux';
+  if (lead) return lead === MY_SLOT ? 'Vous menez · l’adversaire répond' : 'À vous de répondre · égalisez !';
+  if (decisive) return 'Manche décisive · choisissez en secret';
   if (selected !== null) return 'Verrouillez votre couleur';
   return 'Choisissez votre couleur en secret';
 }
@@ -490,7 +486,7 @@ function clearTurn() {
   profileAi.classList.remove('timer-urgent');
   if (!forfeitTimer) forfeitBar.classList.remove('show');
 }
-function hubLabel() { return decisive ? 'Décisive' : 'Manche ' + regularIndex(); }
+function hubLabel() { return decisive ? 'Décisive' : 'Manche ' + roundNumber(); }
 function tickTurn() {
   turnRAF = null;
   if (!turn || phase !== 'choosing' || gameOver) return;
@@ -603,11 +599,12 @@ function handleSpin(sp) {
   var drawn = R.toColor(sp.drawn);
   if (sp.repick || drawn === null) { finishSpin(sp, token); return; }
   var wheel = Array.isArray(sp.wheel) && sp.wheel.length >= 2 && sp.wheel.every(R.isColor) ? sp.wheel : R.wheelFor(decisive, sp.choice1, sp.choice2);
-  var landing = sp.landing && wheel[sp.landing.segment] === drawn ? sp.landing : R.landingFor(wheel, drawn, sp.seal && sp.seal.salt, sp.choice1, sp.choice2);
-  board.setStatus(decisive ? 'Une chance sur deux…' : 'La roue tourne…');
+  var landing = sp.landing && wheel[sp.landing.segment] === drawn ? sp.landing : R.landingFor(wheel, drawn, sp.seal && sp.seal.salt, sp.choice1, sp.choice2, decisive);
+  board.setStatus(decisive ? 'Manche décisive · la roue tourne…' : 'La roue tourne…');
   board.setHub(decisive ? 'Décisive' : 'Tirage', '', null, null);
   var remaining = Number(sp.startTime) + Number(sp.duration) - serverNow();
-  board.spinTo(wheel, landing, remaining > 250 ? Math.min(remaining, 8000) : 0).then(function () {
+  /* Manche décisive : le halo de la roue bat comme un cœur, de plus en plus vite. */
+  board.spinTo(wheel, landing, remaining > 250 ? Math.min(remaining, 9500) : 0, { tension: decisive }).then(function () {
     if (token === spinToken) finishSpin(sp, token);
   });
 }
@@ -659,8 +656,8 @@ function distanceLabel(d) {
 }
 /*
  * Le résultat d'une manche, à l'arrêt de la roue : chaque puce dit sa distance
- * à la couleur tirée, la plus proche s'éclaire. En manche décisive, la roue
- * n'a que les deux couleurs : la tirée est celle d'un des deux.
+ * à la couleur tirée, la plus proche s'éclaire — manches décisives comprises
+ * (la roue garde ses six couleurs).
  */
 function showResult(entry) {
   var drawn = R.toColor(entry.drawn), ws = Number(entry.winnerSlot) || 0;
@@ -672,9 +669,8 @@ function showResult(entry) {
     board.setStatus('🎨 Même couleur · on rechoisit', 'draw');
     return;
   }
-  var dec = entry.decisive === true;
   function chip(color, slot) {
-    var label = dec ? (ws === slot ? 'Pile !' : '') : distanceLabel(R.colorDistance(color, drawn));
+    var label = distanceLabel(R.colorDistance(color, drawn));
     return { kind: 'color', color: color, winner: ws === slot, miss: ws !== slot, label: label };
   }
   var me = chip(lc, leftSlot()), op = chip(rc, rightSlot());
@@ -721,17 +717,26 @@ function onRoundResult(d) {
   phase = 'between';
   renderDots();
 }
+/* Égalité après les manches prévues : on continue, deux manches à la fois (7 et 8, puis 9 et 10…). */
 function announceDecisive() {
-  showToast('⚖️', 'Égalité !', 'Manches décisives, deux par deux : la roue ne gardera que vos deux couleurs.', 2800);
+  var next = R.countedPlayed(history) + 1;
+  showToast('⚖️', 'Égalité !', `On continue : manches ${next} et ${next + 1}, les deux se jouent.`, 2800);
 }
 /* Après une manche décisive : la réponse de l'autre joueur, ou une nouvelle paire. */
 function announcePair(winnerSlot) {
   if (gameOver) return;
+  var next = R.countedPlayed(history) + 1;
   if (R.decisivePlayed(history) % 2 === 1) {
-    if (IS_SPECTATOR) showToast('⚖️', slotName(winnerSlot) + ' mène', slotName(winnerSlot === 1 ? 2 : 1) + ' joue la seconde manche décisive.', 2400);
+    if (!winnerSlot) showToast('⚖️', 'Toujours à égalité', `La manche ${next} peut tout décider.`, 2400);
+    else if (IS_SPECTATOR) showToast('⚖️', slotName(winnerSlot) + ' mène', slotName(winnerSlot === 1 ? 2 : 1) + ' joue la seconde manche décisive.', 2400);
     else if (winnerSlot === MY_SLOT) showToast('⚖️', 'Vous menez', 'L’adversaire joue la seconde manche décisive.', 2400);
     else showToast('⚖️', 'À vous de répondre', 'Gagnez la seconde manche décisive pour égaliser.', 2400);
-  } else showToast('⚖️', '1 partout !', 'Nouvelle paire de manches décisives.', 2400);
+  } else {
+    /* La paire finie à égalité : 1-1, ou deux manches nulles. */
+    var pair = history.filter(function (h) { return h.decisive && !h.repick; }).slice(-2);
+    var bothScored = pair.length === 2 && pair[0].winnerSlot && pair[1].winnerSlot;
+    showToast('⚖️', bothScored ? '1 partout !' : 'Toujours à égalité !', `Nouvelle paire : manches ${next} et ${next + 1}.`, 2400);
+  }
 }
 
 /* L'état complet, au retour d'un joueur (ou d'un spectateur) : rien n'est rejoué deux fois. */
@@ -818,16 +823,16 @@ function miniChip(color) {
 }
 function renderModalHistory() {
   modalHistoryList.innerHTML = '';
-  /* Le numéro de chaque manche comptée (un rechoix rejoue le même numéro). */
+  /* Le numéro de chaque manche comptée (un rechoix rejoue le même numéro) ; les décisives continuent : 7, 8… */
   var numbers = [], n = 0;
-  history.forEach(function (h, idx) { numbers[idx] = h.decisive ? 0 : (h.repick ? n + 1 : ++n); });
+  history.forEach(function (h, idx) { numbers[idx] = h.repick ? n + 1 : ++n; });
   for (var i = history.length - 1; i >= 0; i--) {
     var h = history[i];
     var res = h.repick ? 'draw' : resultOf(h.winnerSlot);
     var item = document.createElement('div');
     item.className = 'modal-history-item ' + res;
     var label = document.createElement('span');
-    label.textContent = h.decisive ? 'Décisive' : 'Manche ' + Math.min(numbers[i], totalRounds);
+    label.textContent = h.decisive ? 'Manche ' + numbers[i] + ' · décisive' : 'Manche ' + numbers[i];
     item.appendChild(label);
     var pair = document.createElement('span');
     pair.className = 'rr-pair';
@@ -1136,7 +1141,7 @@ window.addEventListener('message', function (e) {
     };
     if (drawn === null) { done(); return; }
     var wheel = R.wheelFor(entry.decisive, entry.choice1, entry.choice2);
-    board.setStatus(decisive ? 'Une chance sur deux…' : 'La roue tourne…');
+    board.setStatus(decisive ? 'Manche décisive · la roue tourne…' : 'La roue tourne…');
     board.spinTo(wheel, R.landingFor(wheel, drawn, ''), 1400).then(done);
     return;
   }
@@ -1149,7 +1154,7 @@ window.addEventListener('message', function (e) {
   board.setSeal(null);
   renderAll();
   renderChoosing();
-  board.setStatus(d.phase === 'locked' ? 'Les deux couleurs sont verrouillées' : '🎬 Replay · manche ' + regularIndex());
+  board.setStatus(d.phase === 'locked' ? 'Les deux couleurs sont verrouillées' : '🎬 Replay · manche ' + roundNumber());
 });
 
 updUI();
