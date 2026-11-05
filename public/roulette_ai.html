@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Roulette Royale · Entraînement | Mindspille</title>
+<link rel="stylesheet" href="/roulette-page.css">
+  <script defer src="/mindspille-i18n.js"></script>
+  <script src="/mindspille-hud.js"></script>
+  <script src="/roulette-rules.js"></script>
+  <script src="/roulette-board.js"></script>
+</head>
+<body data-mode="ai">
+
+<canvas id="confetti-canvas"></canvas>
+
+<div id="toast">
+  <div id="toast-emoji"></div>
+  <div id="toast-title"></div>
+  <div id="toast-sub"></div>
+</div>
+
+<div id="top">
+  <div class="profile" id="profile-human">
+    <div class="profile-timer-wrap">
+      <svg viewBox="0 0 58 58">
+        <circle class="timer-track" cx="29" cy="29" r="26"/>
+        <circle class="timer-arc" id="timer-arc-human" cx="29" cy="29" r="26" stroke="#ffffff"/>
+      </svg>
+      <div class="profile-avatar" id="avatar-human">👤</div>
+    </div>
+    <div class="profile-name" id="name-human">MOI</div>
+  </div>
+
+  <div class="top-center">
+    <div class="score-row">
+      <span class="snum sw" id="playerScore">0</span>
+      <span class="ssep">vs</span>
+      <span class="snum sr" id="aiScore">0</span>
+    </div>
+    <span class="manche-lbl" id="roundLabel">Manche 1 / 5</span>
+    <div class="rounds-progress" id="roundsProgress">
+      <div class="round-dot"></div>
+      <div class="round-dot"></div>
+      <div class="round-dot"></div>
+      <div class="round-dot"></div>
+      <div class="round-dot"></div>
+    </div>
+    <div class="bet-badge" id="betBadge">Entraînement · sans mise</div>
+  </div>
+
+  <div class="profile" id="profile-ai">
+    <div class="profile-timer-wrap">
+      <svg viewBox="0 0 58 58">
+        <circle class="timer-track" cx="29" cy="29" r="26"/>
+        <circle class="timer-arc" id="timer-arc-ai" cx="29" cy="29" r="26" stroke="#e74c3c"/>
+      </svg>
+      <div class="profile-avatar" id="avatar-ai"><img class="profile-photo" alt="" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23475569'/%3E%3Cstop offset='1' stop-color='%231e293b'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ccircle cx='32' cy='32' r='32' fill='url(%23g)'/%3E%3Crect x='30' y='12' width='4' height='10' rx='2' fill='%23e2e8f0'/%3E%3Ccircle cx='32' cy='11' r='3.4' fill='%23fbbf24'/%3E%3Crect x='17' y='21' width='30' height='24' rx='7' fill='%23e2e8f0'/%3E%3Ccircle cx='25.5' cy='32' r='3.4' fill='%230f172a'/%3E%3Ccircle cx='38.5' cy='32' r='3.4' fill='%230f172a'/%3E%3Crect x='25' y='39' width='14' height='2.6' rx='1.3' fill='%230f172a'/%3E%3C/svg%3E"></div>
+    </div>
+    <div class="profile-name" id="name-ai">IA</div>
+  </div>
+</div>
+
+<div id="wrap">
+  <div class="rr-board">
+    <div class="rr-col rr-col-a">
+      <div id="wheel" aria-label="Roue des couleurs"></div>
+      <div class="rr-foot">
+        <div id="history"></div>
+        <div class="rr-foot-row">
+          <button type="button" class="rr-link" id="rulesBtn" aria-expanded="false" aria-controls="rulesBox">Règles</button>
+          <button type="button" id="seal"></button>
+        </div>
+        <div id="sealBox"></div>
+        <div class="rr-rules" id="rulesBox" hidden>
+          <ul>
+            <li>Vous et l’IA choisissez chacun une couleur.</li>
+            <li>La couleur gagnante est tirée au hasard avant vos choix, puis scellée.</li>
+            <li>Seul à avoir la couleur tirée : +1 point. Personne, ou tous les deux : manche nulle.</li>
+            <li>5 manches. Le match s’arrête plus tôt si l’écart ne peut plus être comblé.</li>
+            <li>Égalité : manche décisive. La roue ne garde que vos deux couleurs, une chance sur deux. Même couleur : on rechoisit.</li>
+            <li>L’IA choisit au hasard : elle ne connaît jamais le tirage.</li>
+            <li>30 s pour choisir ; ensuite, la couleur touchée part d’elle-même (sinon une au hasard).</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <div class="rr-col rr-col-b">
+      <div id="duel"></div>
+      <div class="rr-action" id="action">
+        <div class="status" id="status"></div>
+        <button type="button" class="rr-lock" id="lockBtn" disabled hidden></button>
+      </div>
+      <div id="palette" aria-label="Choisissez votre couleur"></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="gameOverModal">
+  <div class="modal" id="modalContent">
+    <h2 id="modalTitle">Partie terminée !</h2>
+    <div class="final-score" id="finalScore">0 - 0</div>
+    <div class="final-message" id="finalMessage"></div>
+    <div class="modal-history" id="modalHistory">
+      <h4>Historique des manches</h4>
+      <div class="modal-history-list" id="modalHistoryList"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="restart-btn" id="replayBtn" type="button">↻ Rejouer</button>
+      <button class="restart-btn secondary" id="closeBtn" type="button">Fermer</button>
+    </div>
+  </div>
+</div>
+
+<script src="/roulette-offline.js"></script>
+<script src="/mindspille-split.js"></script>
+</body>
+</html>

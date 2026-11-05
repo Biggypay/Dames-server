@@ -131,7 +131,8 @@ async function main() {
     return;
   }
 
-  check('dix-neuf pages portent un bandeau', PAGES.length === 19, PAGES);
+  /* Dix-neuf pages, plus la Roulette Royale en ligne (2026-11-05). */
+  check('vingt pages portent un bandeau', PAGES.length === 20, PAGES);
   for (const name of PAGES) {
     const source = fs.readFileSync(path.join(PUBLIC, name), 'utf8');
     const old = OLD_TEXTS.filter(text => source.includes(text));

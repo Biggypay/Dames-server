@@ -26,6 +26,7 @@ const TikanEngine = require('./lib/tikan-engine.js');
 const ChessEngine = ChessEngineFactory();
 const crypto     = require('crypto');
 const { ensureSeriesState, seriesPayload, recordRoundResult, advanceRoundStarter } = require('./lib/gomoku-series');
+const Roulette = require('./lib/color-roulette');
 const PORT       = process.env.PORT || 3000;
 
 // ── SÉCURITÉ : secret JWT ──────────────────────────────────
@@ -152,6 +153,7 @@ const echecsRooms   = new Map();
 const ludoRooms      = new Map();
 const gomokuRooms   = new Map();
 const tikanRooms    = new Map();
+const rouletteRooms = new Map();
 
 // ══════════════════════════════════════════════════════════
 //  SÉCURITÉ — limiteur de débit, validation, anti-fraude
@@ -200,7 +202,7 @@ function socketIsPlayer(room, socketId) {
 // Si la partie était en pause parce que CE joueur s'était déconnecté (jamais
 // une pause de tournoi), son retour la reprend exactement comme `*_join` :
 // même tour, avec le temps déjà consommé.
-const RESUME_EVENT_PREFIX = { dames: 'dames', tictactoe: 'ttt', quoridor: 'quoridor', penalty: 'penalty', chifoumi: 'chifoumi', echecs: 'echecs', ludo: 'ludo', gomoku: 'gomoku', tikan: 'tikan' };
+const RESUME_EVENT_PREFIX = { dames: 'dames', tictactoe: 'ttt', quoridor: 'quoridor', penalty: 'penalty', chifoumi: 'chifoumi', echecs: 'echecs', ludo: 'ludo', gomoku: 'gomoku', tikan: 'tikan', roulette: 'roulette' };
 function claimPlayerSocket(socket, roomState, roomId, player) {
   const seat = roomState?.players?.[player];
   if (!seat) return false;
@@ -288,8 +290,8 @@ function bindDatabaseGame(room, gameId) {
   return true;
 }
 
-const DB_GAME_TYPES = { dames: 'checkers', tictactoe: 'tictactoe', quoridor: 'quoridor', penalty: 'penalty_shootout', chifoumi: 'rock_paper_scissors', echecs: 'chess', ludo: 'ludo', gomoku: 'gomoku', tikan: 'tikan' };
-const ROOM_MAPS = { dames: damesRooms, tictactoe: tttRooms, quoridor: quoriRooms, penalty: penaltyRooms, chifoumi: chifoumiRooms, echecs: echecsRooms, ludo: ludoRooms, gomoku: gomokuRooms, tikan: tikanRooms };
+const DB_GAME_TYPES = { dames: 'checkers', tictactoe: 'tictactoe', quoridor: 'quoridor', penalty: 'penalty_shootout', chifoumi: 'rock_paper_scissors', echecs: 'chess', ludo: 'ludo', gomoku: 'gomoku', tikan: 'tikan', roulette: 'color_roulette' };
+const ROOM_MAPS = { dames: damesRooms, tictactoe: tttRooms, quoridor: quoriRooms, penalty: penaltyRooms, chifoumi: chifoumiRooms, echecs: echecsRooms, ludo: ludoRooms, gomoku: gomokuRooms, tikan: tikanRooms, roulette: rouletteRooms };
 // Room snapshots are persisted after actual state changes. The periodic loop is
 // only a crash-safety fallback and the fingerprint below makes unchanged rooms
 // a no-op. Persisting every room every three seconds generated unnecessary WAL
@@ -526,6 +528,7 @@ function hydratePersistedRoom(record) {
   // éteint n'est facturé à personne, et le reste exact est conservé.
   if (record.game_type === 'echecs' && room.clock) room.clock = ChessClock.sanitizeClock(room.clock);
   if (record.game_type === 'chifoumi') room.revealPending = false;
+  if (record.game_type === 'roulette') sanitizeRouletteRoom(room);
   if (record.game_type === 'quoridor') {
     room.gameState = room.gameState && typeof room.gameState === 'object' ? room.gameState : quoriInitialState();
     room.stateVersion = Math.max(0, Number(room.stateVersion ?? room.gameState.stateVersion) || 0);
@@ -592,6 +595,11 @@ async function restorePersistedRooms() {
       } else if (room.status === 'finished' && room.pendingSettlement) {
         const pending = room.pendingSettlement;
         void settleRoomInSupabase(room, record.game_type, pending.winnerSlot, pending.reason);
+      } else if (record.game_type === 'roulette' && room.phase === 'spinning' && room.next?.over === true) {
+        // Roulette Royale : les deux choix verrouillés avaient déjà décidé le
+        // match ; un redémarrage pendant le dernier tour de roue ne le rejoue pas.
+        room.status = 'playing';
+        notifyRouletteRoomOver(room, room.id, room.next.winnerSlot, 'normal');
       } else if (room.status === 'paused' && room.adminPaused === true) {
         // An administrator pause survives a Render restart. Never convert it
         // into a disconnect forfeit; the exact serialized board remains frozen.
@@ -981,6 +989,7 @@ function spectatorRoomSnapshot(gameName, room) {
       }
     };
   }
+  if (gameName === 'roulette') return { ...common, state: rouletteSpectatorState(room) };
   if (gameName === 'ludo') return { ...common, state: ludoPublicState(room) };
   if (gameName === 'tikan') {
     return {
@@ -1590,6 +1599,17 @@ const TURN_GAMES = {
       if (late.length === 1) return notifyChifoumiRoomOver(room, roomId, opponentOf(late[0]), 'timeout');
       scheduleChifoumiReveal(room, roomId);
     }
+  },
+  roulette: {
+    event: 'roulette', simultaneous: true, timing: standardTiming,
+    key: room => `round${Number(room.round) || 0}`,
+    ready: room => room.phase === 'choosing' && !!room.seal,
+    debtors: room => [1, 2].filter(slot => room.choices?.[slot] === undefined),
+    expire: (room, roomId, late) => {
+      if (late.length === 2) return finishBothDisconnected(room, 'roulette', roomId);
+      if (late.length === 1) return notifyRouletteRoomOver(room, roomId, opponentOf(late[0]), 'timeout');
+      spinRouletteRound(room, roomId);
+    }
   }
 };
 
@@ -1647,9 +1667,11 @@ function armTurnClock(gameName, room, roomId, announce) {
   room.graceStartTime = starts.graceStartTime;
   if (announce || room.turnClockPhase !== phase) {
     room.turnClockPhase = phase;
+    // `serverTime` : l'heure du serveur à l'envoi, pour les pages qui
+    // corrigent l'horloge du téléphone (Roulette Royale) ; les autres l'ignorent.
     const payload = phase === 'turn'
-      ? { startTime: starts.turnStartTime, duration: clock.turnMs }
-      : { startTime: starts.graceStartTime, duration: clock.graceMs };
+      ? { startTime: starts.turnStartTime, duration: clock.turnMs, serverTime: now }
+      : { startTime: starts.graceStartTime, duration: clock.graceMs, serverTime: now };
     if (!game.simultaneous) payload.player = room.turnPlayer;
     io.to(roomId).emit(`${game.event}_${phase === 'turn' ? 'turn_start' : 'turn_warning'}`, payload);
   }
@@ -2245,6 +2267,265 @@ function scheduleChifoumiReveal(croom, roomId) {
   if (croom.revealTimer.unref) croom.revealTimer.unref();
 }
 
+// ══════════════════════════════════════════════════════════
+//  ROULETTE ROYALE — six couleurs, deux joueurs, tirage scellé
+// ══════════════════════════════════════════════════════════
+// Les règles sont dans lib/color-roulette.js (le même fichier que les pages :
+// public/roulette-rules.js). Ici, le déroulé d'une partie, manche après manche :
+//   choosing — la manche est ouverte, son tirage déjà fait et scellé (seule
+//              l'empreinte est publiée) ; chacun choisit en secret, avec le
+//              chronomètre de tous les jeux (30 s, puis 60 s de grâce) ;
+//   spinning — les deux ont choisi : la couleur est connue de tous, la roue
+//              tourne sur tous les écrans, le point est déjà compté ;
+//   between  — la preuve reste à l'écran (ROUND_PROOF_MS), puis la manche
+//              suivante.
+// Un choix n'est jamais envoyé à l'adversaire ni aux spectateurs avant que
+// les deux soient verrouillés : seulement « a choisi ». Le match décidé, il se
+// règle à la fin du tour de roue, quoi qu'il arrive aux connexions entre-temps.
+const ROULETTE_TOTAL_ROUNDS = Roulette.REGULAR_ROUNDS;
+const ROULETTE_SPIN_MS = testDurationMs('ROULETTE_SPIN_MS', 4800);
+/* Même couleur en manche décisive : rien ne tourne, on rechoisit. */
+const ROULETTE_REPICK_MS = testDurationMs('ROULETTE_REPICK_MS', 2600);
+/* Le dernier tour de roue reste à l'écran un instant avant la fin du match. */
+const ROULETTE_FINAL_HOLD_MS = testDurationMs('ROULETTE_FINAL_HOLD_MS', 1500);
+const ROULETTE_PHASES = new Set(['choosing', 'spinning', 'between']);
+
+// Tests d'exécution seulement (NODE_ENV=test) : une suite de tirages imposée
+// par room, en JSON — {"room-a":[0,1,2]} — pour jouer un match connu d'avance.
+// Hors tests, le tirage vient toujours de crypto.randomInt.
+const ROULETTE_TEST_DRAWS = (() => {
+  if (process.env.NODE_ENV !== 'test' || !process.env.ROULETTE_TEST_DRAWS) return null;
+  try { return JSON.parse(process.env.ROULETTE_TEST_DRAWS); } catch (_) { return null; }
+})();
+function rouletteRandomFor(rroom, roomId) {
+  const list = ROULETTE_TEST_DRAWS && Array.isArray(ROULETTE_TEST_DRAWS[roomId]) ? ROULETTE_TEST_DRAWS[roomId] : null;
+  if (!list) return crypto;
+  return {
+    randomInt: (min, max) => {
+      const index = Math.max(0, Number(rroom.testDrawIndex) || 0);
+      rroom.testDrawIndex = index + 1;
+      const value = Number(list[index % list.length]);
+      return Math.min(max - 1, Math.max(min, Number.isInteger(value) ? value : min));
+    },
+    randomBytes: size => crypto.randomBytes(size)
+  };
+}
+
+function rouletteNewRoom(roomId, bet, currency) {
+  return {
+    id: roomId, players: {}, status: 'waiting', betAmount: Number(bet) || 0, currency: currency || 'HTG',
+    disconnectTimer: null, round: 1, scores: [0, 0], choices: {}, history: [], decisive: false,
+    phase: 'choosing', seal: null, spin: null, next: null,
+    turnTimer: null, graceTimer: null, revealTimer: null, nextRoundTimer: null,
+    turnStartTime: null, graceStartTime: null
+  };
+}
+
+/** Une room relue après un redémarrage : seuls des champs valides repartent. */
+function sanitizeRouletteRoom(rroom) {
+  rroom.round = Math.max(1, Math.floor(Number(rroom.round) || 1));
+  rroom.scores = [0, 1].map(i => Math.max(0, Math.floor(Number(rroom.scores?.[i]) || 0)));
+  rroom.decisive = rroom.decisive === true;
+  rroom.history = Array.isArray(rroom.history) ? rroom.history.map(Roulette.publicRound).filter(Boolean) : [];
+  const choices = {};
+  for (const slot of [1, 2]) {
+    const color = Roulette.toColor(rroom.choices?.[slot]);
+    if (color !== null) choices[slot] = color;
+  }
+  rroom.choices = choices;
+  rroom.phase = ROULETTE_PHASES.has(rroom.phase) ? rroom.phase : 'choosing';
+  rroom.seal = Roulette.sanitizeSeal(rroom.id, rroom.round, rroom.seal);
+  // Un tirage illisible : la manche se rejoue entièrement, jamais un sceau
+  // refait APRÈS des choix déjà connus du serveur.
+  if (rroom.phase === 'choosing' && !rroom.seal) rroom.choices = {};
+  rroom.next = rroom.next && typeof rroom.next === 'object'
+    ? { over: rroom.next.over === true, winnerSlot: rroom.next.winnerSlot === 1 || rroom.next.winnerSlot === 2 ? rroom.next.winnerSlot : 0, decisive: rroom.next.decisive === true }
+    : null;
+  if (rroom.phase !== 'choosing' && !rroom.next) rroom.phase = 'choosing';
+  if (rroom.phase === 'spinning' && (!rroom.spin || typeof rroom.spin !== 'object')) rroom.phase = 'between';
+}
+
+function clearRouletteTimers(rroom) {
+  pauseTurnClock(rroom);
+  if (rroom.revealTimer) { clearTimeout(rroom.revealTimer); rroom.revealTimer = null; }
+  if (rroom.nextRoundTimer) { clearTimeout(rroom.nextRoundTimer); rroom.nextRoundTimer = null; }
+}
+
+function rouletteRegularRoundsPlayed(rroom) {
+  return rroom.history.filter(entry => !entry.decisive).length;
+}
+
+/** Ce que tout le monde peut savoir de la manche en cours. */
+function rouletteRoundPayload(rroom, roomId) {
+  return {
+    room: roomId,
+    round: rroom.round,
+    scores: [...rroom.scores],
+    totalRounds: ROULETTE_TOTAL_ROUNDS,
+    decisive: rroom.decisive === true,
+    seal: rroom.phase === 'choosing' && rroom.seal ? rroom.seal.hash : null,
+    chosen: { 1: rroom.choices[1] !== undefined, 2: rroom.choices[2] !== undefined }
+  };
+}
+
+/** Le tour de roue public (choix, couleur tirée, sceau révélé), une fois les deux choix verrouillés. */
+function roulettePublicSpin(rroom, roomId) {
+  if (!rroom.spin) return null;
+  return { ...rroom.spin, room: roomId, serverTime: Date.now(), totalRounds: ROULETTE_TOTAL_ROUNDS };
+}
+
+/** Ouvre une manche : tirage fait et scellé, choix vides, chronomètre lancé. */
+function openRouletteRound(rroom, roomId) {
+  if (rroom.status !== 'playing') return;
+  clearRouletteTimers(rroom);
+  rroom.choices = {};
+  rroom.phase = 'choosing';
+  rroom.spin = null;
+  rroom.next = null;
+  rroom.seal = Roulette.sealDraw(roomId, rroom.round, rroom.decisive, rouletteRandomFor(rroom, roomId));
+  persistRoomSoon('roulette', rroom);
+  io.to(roomId).emit('roulette_round_ready', rouletteRoundPayload(rroom, roomId));
+  runTurnClock('roulette', rroom, roomId);
+}
+
+/** Les deux couleurs sont verrouillées : la roue tourne, le point est compté. */
+function spinRouletteRound(rroom, roomId) {
+  if (rroom.status !== 'playing' || rroom.phase !== 'choosing') return;
+  const c1 = rroom.choices[1], c2 = rroom.choices[2];
+  if (c1 === undefined || c2 === undefined || !rroom.seal) return;
+  clearRouletteTimers(rroom);
+  const seal = rroom.seal;
+  const drawn = Roulette.drawnColor(seal, c1, c2);
+  const repick = rroom.decisive && drawn === null;
+  const winnerSlot = Roulette.roundWinner(c1, c2, drawn);
+  if (winnerSlot) rroom.scores[winnerSlot - 1] += 1;
+  rroom.history.push({ round: rroom.round, choice1: c1, choice2: c2, drawn, winnerSlot, decisive: rroom.decisive, repick });
+  for (const [slot, color] of [[1, c1], [2, c2]]) {
+    // La couleur en texte, comme le Penalty (la base la garde en texte) ; t = la couleur tirée.
+    MatchSummary.logMove(rroom, drawn === null ? { p: slot, g: rroom.round, v: String(color) } : { p: slot, g: rroom.round, v: String(color), t: drawn });
+  }
+  const next = Roulette.matchDecision({
+    scores: rroom.scores,
+    roundsPlayed: rouletteRegularRoundsPlayed(rroom),
+    totalRounds: ROULETTE_TOTAL_ROUNDS,
+    decisive: rroom.decisive,
+    lastWinner: winnerSlot
+  });
+  const wheel = Roulette.wheelFor(rroom.decisive, c1, c2);
+  const startTime = Date.now();
+  const duration = repick ? 0 : ROULETTE_SPIN_MS;
+  rroom.phase = 'spinning';
+  rroom.next = { over: next.over === true, winnerSlot: next.over ? next.winnerSlot : 0, decisive: next.over ? rroom.decisive : next.decisive === true };
+  rroom.spin = {
+    round: rroom.round, choice1: c1, choice2: c2, drawn, winnerSlot, decisive: rroom.decisive, repick,
+    wheel, landing: drawn === null ? null : Roulette.landingFor(wheel, drawn, seal.salt),
+    seal: { kind: seal.kind, value: seal.value, salt: seal.salt, hash: seal.hash },
+    scores: [...rroom.scores], startTime, duration,
+    final: rroom.next.over, matchWinnerSlot: rroom.next.over ? rroom.next.winnerSlot : 0
+  };
+  persistRoomSoon('roulette', rroom);
+  io.to(roomId).emit('roulette_spin', roulettePublicSpin(rroom, roomId));
+  scheduleRouletteSpinEnd(rroom, roomId, Math.max(0, startTime + duration - Date.now()));
+}
+
+function scheduleRouletteSpinEnd(rroom, roomId, delay) {
+  if (rroom.revealTimer) clearTimeout(rroom.revealTimer);
+  const settle = rroom.next?.over === true;
+  rroom.revealTimer = setTimeout(() => {
+    rroom.revealTimer = null;
+    finishRouletteSpin(rroom, roomId);
+  }, delay + (settle ? ROULETTE_FINAL_HOLD_MS : 0));
+  if (rroom.revealTimer.unref) rroom.revealTimer.unref();
+}
+
+/** La roue s'est arrêtée : fin du match, ou la preuve puis la manche suivante. */
+function finishRouletteSpin(rroom, roomId) {
+  if (rroom.phase !== 'spinning' || rroom.status === 'finished') return;
+  const next = rroom.next || { over: false, decisive: rroom.decisive };
+  if (next.over) {
+    // Le match est joué depuis le verrouillage des deux choix : il se conclut,
+    // même si une connexion est tombée pendant le tour de roue.
+    if (rroom.status === 'paused') rroom.status = 'playing';
+    return notifyRouletteRoomOver(rroom, roomId, next.winnerSlot, 'normal');
+  }
+  if (rroom.status !== 'playing') return;
+  rroom.phase = 'between';
+  const last = rroom.history[rroom.history.length - 1];
+  persistRoomSoon('roulette', rroom);
+  io.to(roomId).emit('roulette_round_result', {
+    room: roomId,
+    round: last?.round ?? rroom.round,
+    winnerSlot: last?.winnerSlot || 0,
+    drawn: last?.drawn ?? null,
+    choice1: last?.choice1 ?? null,
+    choice2: last?.choice2 ?? null,
+    repick: last?.repick === true,
+    decisive: last?.decisive === true,
+    scores: [...rroom.scores],
+    totalRounds: ROULETTE_TOTAL_ROUNDS,
+    next: next.decisive ? 'decisive' : 'next'
+  });
+  scheduleRouletteNextRound(rroom, roomId, last?.repick ? ROULETTE_REPICK_MS : ROUND_PROOF_MS);
+}
+
+function scheduleRouletteNextRound(rroom, roomId, delay) {
+  if (rroom.nextRoundTimer) clearTimeout(rroom.nextRoundTimer);
+  rroom.nextRoundTimer = setTimeout(() => {
+    rroom.nextRoundTimer = null;
+    if (rroom.status !== 'playing' || rroom.phase !== 'between') return;
+    rroom.round += 1;
+    rroom.decisive = rroom.decisive || rroom.next?.decisive === true;
+    openRouletteRound(rroom, roomId);
+  }, delay);
+  if (rroom.nextRoundTimer.unref) rroom.nextRoundTimer.unref();
+}
+
+/** Reprise d'une manche, là où elle en était (reconnexion, fin de pause, redémarrage). */
+function resumeRouletteRound(rroom, roomId) {
+  if (rroom.status !== 'playing') return;
+  if (rroom.phase === 'spinning') {
+    const ends = Number(rroom.spin?.startTime || 0) + Number(rroom.spin?.duration || 0);
+    return scheduleRouletteSpinEnd(rroom, roomId, Math.max(600, ends - Date.now()));
+  }
+  if (rroom.phase === 'between') return scheduleRouletteNextRound(rroom, roomId, 1500);
+  if (!rroom.seal) return openRouletteRound(rroom, roomId);
+  if (rroom.choices[1] !== undefined && rroom.choices[2] !== undefined) return spinRouletteRound(rroom, roomId);
+  runTurnClock('roulette', rroom, roomId);
+}
+
+/** Ce qu'un joueur qui revient doit retrouver (jamais le choix de l'adversaire). */
+function rouletteReconnectState(rroom, slot) {
+  return {
+    scores: [...rroom.scores],
+    round: rroom.round,
+    decisive: rroom.decisive === true,
+    history: rroom.history.map(Roulette.publicRound),
+    phase: rroom.phase,
+    seal: rroom.phase === 'choosing' && rroom.seal ? rroom.seal.hash : null,
+    myChoice: rroom.choices[slot] ?? null,
+    opponentHasChosen: rroom.choices[slot === 1 ? 2 : 1] !== undefined,
+    spin: rroom.phase === 'spinning' ? roulettePublicSpin(rroom, rroom.id) : null
+  };
+}
+
+function rouletteSpectatorState(rroom) {
+  return {
+    scores: [...rroom.scores],
+    round: rroom.round,
+    totalRounds: ROULETTE_TOTAL_ROUNDS,
+    decisive: rroom.decisive === true,
+    history: rroom.history.map(Roulette.publicRound),
+    phase: rroom.phase,
+    seal: rroom.phase === 'choosing' && rroom.seal ? rroom.seal.hash : null,
+    chosen: { 1: rroom.choices[1] !== undefined, 2: rroom.choices[2] !== undefined },
+    spin: rroom.phase === 'spinning' ? roulettePublicSpin(rroom, rroom.id) : null,
+    turnStartTime: rroom.turnStartTime,
+    graceStartTime: rroom.graceStartTime,
+    turnDuration: TURN_DURATION,
+    graceDuration: GRACE_DURATION
+  };
+}
+
 // Ludo 2 joueurs : le dé, les coups légaux et la victoire sont décidés
 // uniquement par le serveur. Le navigateur ne peut jamais choisir un résultat.
 const LUDO_TURN_DURATION = 30 * 1000;
@@ -2422,6 +2703,7 @@ function clearTimersForGame(gameName, room) {
   else if (gameName === 'ludo') clearLudoTurnTimers(room);
   else if (gameName === 'gomoku') clearGomokuTurnTimers(room);
   else if (gameName === 'tikan') stopTikanSimulation(room);
+  else if (gameName === 'roulette') clearRouletteTimers(room);
 }
 
 // Reprise après une pause : le même tour continue avec le temps qu'il lui
@@ -2437,6 +2719,7 @@ function resumeTimersForGame(gameName, room) {
   else if (gameName === 'chifoumi') resumeChifoumiRound(room, room.id);
   else if (gameName === 'ludo') startLudoTurnTimer(room, room.id);
   else if (gameName === 'tikan') resumeTikanSimulation(room);
+  else if (gameName === 'roulette') resumeRouletteRound(room, room.id);
 }
 
 function setTournamentRoomPaused(gameName, room, paused, revision) {
@@ -2922,6 +3205,29 @@ function notifyChifoumiRoomOver(room, roomId, winnerSlot, reason = 'normal') {
   io.to(roomId).emit('game:result', { postMessage: base });
 }
 
+function notifyRouletteRoomOver(room, roomId, winnerSlot, reason = 'normal') {
+  if (room.status === 'finished') return;
+  room.status = 'finished'; clearRouletteTimers(room);
+  if (room.disconnectTimer) { clearTimeout(room.disconnectTimer); room.disconnectTimer = null; }
+  room.reconnectDeadline = null;
+  const { bet, totalPot, commission, netGain } = calcFinancial(room.betAmount);
+  const p1 = room.players[1], p2 = room.players[2];
+  void settleRoomInSupabase(room, 'roulette', winnerSlot, reason);
+  const history = Array.isArray(room.history) ? room.history.map(Roulette.publicRound) : [];
+  if (winnerSlot === 0) {
+    const base = { type: 'game_over', game: 'roulette', room: roomId, winner: 'draw', winnerSlot: 0, p1Id: p1?.supabaseId, p2Id: p2?.supabaseId, betAmount: bet, totalPot, commission: 0, netGain: bet, currency: room.currency || 'HTG', reason: reason === 'mutual_quit' ? 'mutual_quit' : 'draw', scores: room.scores, history };
+    if (p1?.socketId) { io.to(p1.socketId).emit('game:over', { ...base, result: 'draw', myResult: 0 }); io.to(p1.socketId).emit('game:result', { postMessage: { ...base, result: 'draw' } }); }
+    if (p2?.socketId) { io.to(p2.socketId).emit('game:over', { ...base, result: 'draw', myResult: 0 }); io.to(p2.socketId).emit('game:result', { postMessage: { ...base, result: 'draw' } }); }
+    io.to(roomId).emit('game:result', { postMessage: base });
+    return;
+  }
+  const winP = winnerSlot === 1 ? p1 : p2, losP = winnerSlot === 1 ? p2 : p1;
+  const base = { type: 'game_over', game: 'roulette', room: roomId, winner: winnerSlot === 1 ? 'player1' : 'player2', winnerSlot, winnerSupabaseId: winP?.supabaseId, loserSupabaseId: losP?.supabaseId, p1Id: p1?.supabaseId, p2Id: p2?.supabaseId, betAmount: bet, totalPot, commission, netGain, currency: room.currency || 'HTG', reason, scores: room.scores, history };
+  if (winP?.socketId) { io.to(winP.socketId).emit('game:over', { ...base, result: 'win', myResult: +netGain }); io.to(winP.socketId).emit('game:result', { postMessage: { ...base, result: 'win', myResult: +netGain } }); }
+  if (losP?.socketId) { io.to(losP.socketId).emit('game:over', { ...base, result: 'loss', myResult: -bet }); io.to(losP.socketId).emit('game:result', { postMessage: { ...base, result: 'loss', myResult: -bet } }); }
+  io.to(roomId).emit('game:result', { postMessage: base });
+}
+
 function notifyLudoRoomOver(room, roomId, winnerSlot, reason = 'normal') {
   if (room.status === 'finished') return;
   room.status = 'finished';
@@ -2971,7 +3277,8 @@ function getRoomFinisher(gameName) {
     echecs: notifyEchecsRoomOver,
     ludo: notifyLudoRoomOver,
     gomoku: notifyGomokuRoomOver,
-    tikan: notifyTikanRoomOver
+    tikan: notifyTikanRoomOver,
+    roulette: notifyRouletteRoomOver
   }[gameName] || null;
 }
 
@@ -3069,7 +3376,7 @@ app.get('/health', (req, res) => {
     games: games.size, damesRooms: damesRooms.size,
     tttRooms: tttRooms.size, quoriRooms: quoriRooms.size,
     penaltyRooms: penaltyRooms.size, chifoumiRooms: chifoumiRooms.size,
-    echecsRooms: echecsRooms.size, ludoRooms: ludoRooms.size, tikanRooms: tikanRooms.size,
+    echecsRooms: echecsRooms.size, ludoRooms: ludoRooms.size, tikanRooms: tikanRooms.size, rouletteRooms: rouletteRooms.size,
     ludoConfig: { finish: LUDO_FINISH, starts: { yellow: LUDO_START_OFFSET[1], blue: LUDO_START_OFFSET[2] } },
     spectatorProtocol: { version: 1, event: 'spectator_join', readOnly: true },
     queuedPlayers: [...queue.values()].reduce((total, players) => total + players.length, 0)
@@ -3216,6 +3523,8 @@ app.get(['/quoridor', '/quoridor.html', '/quoridor-online.html', '/quoridor_mult
 app.get(['/quoridor-ai', '/quoridor_ai.html', '/quoridor-solo', '/quoridor-entrainement', '/quoridor-ia'], serveSmart(['quoridor_ai.html', 'quoridor-ai.html']));
 app.get(['/chifoumi', '/chifoumi.html', '/chifoumi-online.html'], serveSmart(['chifoumi-online.html', 'chifoumi.html']));
 app.get(['/chifoumi-ai', '/chifoumi_ai.html', '/chifoumi-solo', '/chifoumi-entrainement', '/chifoumi-ia'], serveSmart(['chifoumi_ai.html', 'chifoumi-ai.html']));
+app.get(['/roulette', '/roulette.html', '/roulette-online.html', '/roulette-royale'], serveSmart(['roulette-online.html']));
+app.get(['/roulette-ai', '/roulette_ai.html', '/roulette-solo', '/roulette-entrainement', '/roulette-ia'], serveSmart(['roulette_ai.html']));
 app.get(['/penalty', '/penalty.html', '/penalty_shootout.html', '/penalty-online.html', '/penalty_online.html'], serveSmart(['penalty_online.html', 'penalty_shootout.html', 'penalty-online.html', 'penalty.html'], true));
 app.get(['/penalty-ai', '/penalty_ai.html', '/penalty-solo', '/penalty-entrainement', '/penalty-ia'], serveSmart(['penalty_ai.html', 'penalty-ai.html'], true));
 app.get(['/echecs', '/echecs.html', '/echecs-online.html', '/echecs_multi.html', '/chess', '/chess.html', '/chess-online.html'], serveSmart(['echecs_multi.html', 'echecs.html', 'echecs-online.html']));
@@ -3253,6 +3562,7 @@ app.get(['/local-pass-and-play', '/ami-offline', '/friend-offline'], (req, res) 
 app.get(['/ttt-local','/tictactoe-local','/ttt-ami','/tictactoe-ami'], serveSmart(['ttt_local.html']));
 app.get(['/quoridor-local','/quoridor-ami'], serveSmart(['quoridor_local.html']));
 app.get(['/chifoumi-local','/chifoumi-ami'], serveSmart(['chifoumi_local.html']));
+app.get(['/roulette-local','/roulette-ami','/roulette_local.html'], serveSmart(['roulette_local.html']));
 app.get(['/penalty-local','/penalty-ami'], serveSmart(['penalty_local.html'], true));
 app.get(['/echecs-local','/chess-local','/echecs-ami','/chess-ami'], serveSmart(['echecs_local.html']));
 app.get(['/gomoku-local','/morpion5-local','/gomoku-ami','/morpion5-ami'], serveSmart(['gomoku_local.html']));
@@ -3335,6 +3645,32 @@ app.get('/chifoumi/:file', (req, res) => {
   res.setHeader('Content-Type', 'image/webp');
   res.setHeader('Cache-Control', 'public, max-age=604800');
   res.sendFile(path.join(PUBLIC, 'chifoumi', req.params.file));
+});
+
+// Roulette Royale : les règles (le même fichier pour le serveur et les trois
+// pages du jeu — en ligne, contre l'IA, entre amis) et le plateau qu'elles
+// partagent (la roue, les six couleurs, les deux choix, le sceau du tirage).
+app.get('/roulette-rules.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(PUBLIC, 'roulette-rules.js'));
+});
+app.get('/roulette-board.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(PUBLIC, 'roulette-board.js'));
+});
+// La mise en page commune aux trois pages, et le moteur des deux pages hors
+// ligne (contre l'IA, entre amis sur le même appareil).
+app.get('/roulette-page.css', (req, res) => {
+  res.setHeader('Content-Type', 'text/css; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(PUBLIC, 'roulette-page.css'));
+});
+app.get('/roulette-offline.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(PUBLIC, 'roulette-offline.js'));
 });
 
 // Pause de tournoi (overlay « Tournoi en pause ») et garde-fou de synchronisation
@@ -4676,6 +5012,103 @@ io.on('connection', (socket) => {
     if (safeReason(data.reason) !== 'normal' && safeReason(data.reason) !== 'draw') return;
   });
 
+  // ══════════════════════════════════════════════════════
+  //  ROULETTE ROYALE MULTIJOUEUR
+  // ══════════════════════════════════════════════════════
+  socket.on('roulette_join', async ({ room, player, supabaseId, name, bet, currency, gameId } = {}) => {
+    if (!validRoom(room) || !validPlayerSlot(player)) return rejectSocket(socket, 'Room ou joueur invalide.');
+    const databaseCheck = await verifyDatabaseGameForJoin(socket, gameId, 'roulette', player, bet, room);
+    if (!databaseCheck.ok) return rejectSocket(socket, databaseCheck.message);
+    let rroom = rouletteRooms.get(room);
+    if (!rroom) {
+      rroom = rouletteNewRoom(room, bet, currency);
+      rouletteRooms.set(room, rroom);
+    }
+    if (!bindDatabaseGame(rroom, gameId)) return rejectSocket(socket, 'Cette room est déjà liée à une autre partie.');
+    if (!joinRoomAsAuthenticatedPlayer(socket, rroom, room, player, supabaseId, name)) return;
+    if (bet && !rroom.betAmount) rroom.betAmount = Number(bet) || 0;
+    persistRoomSoon('roulette', rroom);
+    const opponentName = player === 1 ? (rroom.players[2]?.name || 'Adversaire') : (rroom.players[1]?.name || 'Adversaire');
+
+    if (rroom.status === 'playing' || rroom.status === 'paused') {
+      const p1 = rroom.players[1], p2 = rroom.players[2];
+      const bothBack = p1?.connected && p2?.connected;
+      if (bothBack && rroom.disconnectTimer && !rroom.adminPaused) {
+        clearTimeout(rroom.disconnectTimer); rroom.disconnectTimer = null; rroom.reconnectDeadline = null; rroom.status = 'playing';
+        resumeRouletteRound(rroom, room);
+        io.to(room).emit('roulette_game_resumed', { message: 'Les deux joueurs sont de retour !' });
+      } else if (rroom.disconnectTimer) {
+        followAbsentTurn('roulette', rroom, room);
+        setTimeout(() => socket.emit('game:reconnect_deadline', { game: 'roulette', serverTime: Date.now(), reconnectDeadline: rroom.reconnectDeadline }), 0);
+      } else if (!bothBack && !rroom.adminPaused) {
+        // L'adversaire n'est pas (encore) revenu : 60 s pour lui, et son
+        // temps de choix continue de couler s'il lui reste à choisir.
+        pauseAndWatch({
+          room: rroom, roomId: room, gameName: 'roulette',
+          winFn: (winnerIsP1) => notifyRouletteRoomOver(rroom, room, winnerIsP1 ? 1 : 2, 'forfeit'),
+          onResume: () => resumeRouletteRound(rroom, room)
+        });
+        followAbsentTurn('roulette', rroom, room);
+      }
+      socket.to(room).emit('roulette_player_status', { slot: player, connected: true, name: safeName(name) });
+      socket.to(room).emit('player:reconnected', { message: `${safeName(name)} est de retour !` });
+      socket.emit('roulette_start', {
+        room, yourSlot: player, opponentName, bet: rroom.betAmount, currency: rroom.currency,
+        reconnected: true, paused: rroom.status === 'paused', totalRounds: ROULETTE_TOTAL_ROUNDS,
+        gameState: rouletteReconnectState(rroom, player)
+      });
+      if (rroom.status === 'playing' && rroom.phase === 'choosing') {
+        const now = Date.now();
+        if (rroom.graceStartTime) socket.emit('roulette_turn_sync', { serverTime: now, startTime: rroom.graceStartTime, graceStartTime: rroom.graceStartTime, duration: GRACE_DURATION });
+        else if (rroom.turnStartTime) socket.emit('roulette_turn_sync', { serverTime: now, startTime: rroom.turnStartTime, turnStartTime: rroom.turnStartTime, duration: TURN_DURATION });
+      }
+      return;
+    }
+
+    if (rroom.players[1] && rroom.players[2] && rroom.status === 'waiting') {
+      rroom.status = 'playing';
+      rroom.startedAt = Date.now();
+      persistRoomSoon('roulette', rroom);
+      for (const slot of [1, 2]) {
+        const seat = rroom.players[slot], other = rroom.players[slot === 1 ? 2 : 1];
+        io.to(seat.socketId).emit('roulette_start', { room, yourSlot: slot, opponentName: other.name, bet: rroom.betAmount, currency: rroom.currency, reconnected: false, totalRounds: ROULETTE_TOTAL_ROUNDS });
+      }
+      // Les deux pages annoncent la partie, puis la première manche s'ouvre.
+      setTimeout(() => {
+        if (rroom.status === 'playing' && rroom.round === 1 && !rroom.seal && rroom.history.length === 0) openRouletteRound(rroom, room);
+      }, 2400);
+    } else if (rroom.status === 'waiting') {
+      socket.emit('roulette_waiting', { room });
+    }
+  });
+
+  socket.on('roulette_choice', ({ room, player, color } = {}) => {
+    if (!validRoom(room) || !validPlayerSlot(player)) return;
+    if (!socketAllow(socket.id, 'roulette-choice', 20, 10000)) return;
+    const rroom = rouletteRooms.get(room);
+    if (!rroom || !claimPlayerSocket(socket, rroom, room, player)) return;
+    if (rroom.status !== 'playing' || rroom.phase !== 'choosing' || !rroom.seal) return;
+    const choice = Roulette.toColor(color);
+    if (choice === null || rroom.choices[player] !== undefined) return;
+    if (turnExpiredOnArrival('roulette', rroom, room)) return;
+    rroom.choices[player] = choice;
+    MatchSummary.countMove(rroom, player);
+    persistRoomSoon('roulette', rroom);
+    // Le joueur reçoit sa propre couleur ; l'adversaire et les spectateurs
+    // n'apprennent que « a choisi ».
+    socket.emit('roulette_choice_locked', { round: rroom.round, color: choice });
+    socket.to(room).emit('roulette_opponent_choice', { player, round: rroom.round });
+    if (rroom.choices[1] !== undefined && rroom.choices[2] !== undefined) spinRouletteRound(rroom, room);
+  });
+
+  socket.on('roulette_request_state', ({ room } = {}) => {
+    if (!validRoom(room) || !socketAllow(socket.id, 'roulette-state', 12, 10000)) return;
+    const rroom = rouletteRooms.get(room);
+    if (!rroom || !socketIsPlayer(rroom, socket.id)) return;
+    const slot = rroom.players[1]?.socketId === socket.id ? 1 : 2;
+    socket.emit('roulette_state', { room, totalRounds: ROULETTE_TOTAL_ROUNDS, status: rroom.status, gameState: rouletteReconnectState(rroom, slot) });
+  });
+
   socket.on('quoridor_request_state', ({ room }) => {
     if (!validRoom(room)) return;
     const qroom = quoriRooms.get(room);
@@ -4858,7 +5291,8 @@ io.on('connection', (socket) => {
       echecs: [echecsRooms, notifyEchecsRoomOver],
       ludo: [ludoRooms, notifyLudoRoomOver],
       gomoku: [gomokuRooms, notifyGomokuRoomOver],
-      tikan: [tikanRooms, notifyTikanRoomOver]
+      tikan: [tikanRooms, notifyTikanRoomOver],
+      roulette: [rouletteRooms, notifyRouletteRoomOver]
     };
     const entry = entries[game];
     if (!entry) return;
@@ -5047,6 +5481,28 @@ io.on('connection', (socket) => {
         onResume: () => resumeChifoumiRound(croom, roomId)
       });
       followAbsentTurn('chifoumi', croom, roomId);
+      break;
+    }
+
+    // Roulette Royale Multijoueur
+    for (const [roomId, rroom] of rouletteRooms.entries()) {
+      if (rroom.status !== 'playing' && rroom.status !== 'paused') continue;
+      let disconnectedSlot = null;
+      for (const [slot, p] of Object.entries(rroom.players)) { if (p.socketId === socket.id) { disconnectedSlot = parseInt(slot); break; } }
+      if (disconnectedSlot === null) continue;
+      rroom.players[disconnectedSlot].connected = false;
+      const dcName = rroom.players[disconnectedSlot]?.name || `Joueur ${disconnectedSlot}`;
+      socket.to(roomId).emit('roulette_player_status', { slot: disconnectedSlot, connected: false, name: dcName });
+      // Le match est déjà décidé (dernier tour de roue) : il se conclut tel quel.
+      if (rroom.phase === 'spinning' && rroom.next?.over === true) break;
+      socket.to(roomId).emit('roulette_opponent_disconnected', { slot: disconnectedSlot, message: `${dcName} s'est déconnecté.` });
+      clearRouletteTimers(rroom);
+      pauseAndWatch({
+        room: rroom, roomId, gameName: 'roulette',
+        winFn: (winnerIsP1) => notifyRouletteRoomOver(rroom, roomId, winnerIsP1 ? 1 : 2, 'forfeit'),
+        onResume: () => resumeRouletteRound(rroom, roomId)
+      });
+      followAbsentTurn('roulette', rroom, roomId);
       break;
     }
 

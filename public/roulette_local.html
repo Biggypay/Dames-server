@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Roulette Royale · Entre amis | Mindspille</title>
+<link rel="stylesheet" href="/roulette-page.css">
+  <script defer src="/mindspille-i18n.js"></script>
+  <script src="/mindspille-hud.js"></script>
+  <script src="/roulette-rules.js"></script>
+  <script src="/roulette-board.js"></script>
+</head>
+<body data-mode="local">
+
+<canvas id="confetti-canvas"></canvas>
+
+<div id="toast">
+  <div id="toast-emoji"></div>
+  <div id="toast-title"></div>
+  <div id="toast-sub"></div>
+</div>
+
+<div id="curtain" hidden role="dialog" aria-modal="true" aria-labelledby="curtain-title">
+  <div class="rr-curtain-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/><path d="M3 3l18 18"/></svg></div>
+  <div id="curtain-title">Joueur 1, à vous de choisir</div>
+  <div id="curtain-sub"></div>
+  <button type="button" class="rr-lock" id="curtain-btn">Je suis Joueur 1</button>
+</div>
+
+<div id="top">
+  <div class="profile" id="profile-human">
+    <div class="profile-timer-wrap">
+      <svg viewBox="0 0 58 58">
+        <circle class="timer-track" cx="29" cy="29" r="26"/>
+        <circle class="timer-arc" id="timer-arc-human" cx="29" cy="29" r="26" stroke="#ffffff"/>
+      </svg>
+      <div class="profile-avatar" id="avatar-human">👤</div>
+    </div>
+    <div class="profile-name" id="name-human">Joueur 1</div>
+  </div>
+
+  <div class="top-center">
+    <div class="score-row">
+      <span class="snum sw" id="playerScore">0</span>
+      <span class="ssep">vs</span>
+      <span class="snum sr" id="aiScore">0</span>
+    </div>
+    <span class="manche-lbl" id="roundLabel">Manche 1 / 5</span>
+    <div class="rounds-progress" id="roundsProgress">
+      <div class="round-dot"></div>
+      <div class="round-dot"></div>
+      <div class="round-dot"></div>
+      <div class="round-dot"></div>
+      <div class="round-dot"></div>
+    </div>
+    <div class="bet-badge" id="betBadge">Entre amis · sans mise</div>
+  </div>
+
+  <div class="profile" id="profile-ai">
+    <div class="profile-timer-wrap">
+      <svg viewBox="0 0 58 58">
+        <circle class="timer-track" cx="29" cy="29" r="26"/>
+        <circle class="timer-arc" id="timer-arc-ai" cx="29" cy="29" r="26" stroke="#e74c3c"/>
+      </svg>
+      <div class="profile-avatar" id="avatar-ai">👤</div>
+    </div>
+    <div class="profile-name" id="name-ai">Joueur 2</div>
+  </div>
+</div>
+
+<div id="wrap">
+  <div class="rr-board">
+    <div class="rr-col rr-col-a">
+      <div id="wheel" aria-label="Roue des couleurs"></div>
+      <div class="rr-foot">
+        <div id="history"></div>
+        <div class="rr-foot-row">
+          <button type="button" class="rr-link" id="rulesBtn" aria-expanded="false" aria-controls="rulesBox">Règles</button>
+          <button type="button" id="seal"></button>
+        </div>
+        <div id="sealBox"></div>
+        <div class="rr-rules" id="rulesBox" hidden>
+          <ul>
+            <li>Chacun choisit une couleur à son tour, en secret : l’autre ne regarde pas.</li>
+            <li>La couleur gagnante est tirée au hasard avant vos choix, puis scellée.</li>
+            <li>Seul à avoir la couleur tirée : +1 point. Personne, ou tous les deux : manche nulle.</li>
+            <li>5 manches. Le match s’arrête plus tôt si l’écart ne peut plus être comblé.</li>
+            <li>Égalité : manche décisive. La roue ne garde que vos deux couleurs, une chance sur deux. Même couleur : on rechoisit.</li>
+            <li>Celui qui choisit en premier change à chaque manche. Pas de chronomètre entre amis.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <div class="rr-col rr-col-b">
+      <div id="duel"></div>
+      <div class="rr-action" id="action">
+        <div class="status" id="status"></div>
+        <button type="button" class="rr-lock" id="lockBtn" disabled hidden></button>
+      </div>
+      <div id="palette" aria-label="Choisissez votre couleur"></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="gameOverModal">
+  <div class="modal" id="modalContent">
+    <h2 id="modalTitle">Partie terminée !</h2>
+    <div class="final-score" id="finalScore">0 - 0</div>
+    <div class="final-message" id="finalMessage"></div>
+    <div class="modal-history" id="modalHistory">
+      <h4>Historique des manches</h4>
+      <div class="modal-history-list" id="modalHistoryList"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="restart-btn" id="replayBtn" type="button">↻ Rejouer</button>
+      <button class="restart-btn secondary" id="closeBtn" type="button">Fermer</button>
+    </div>
+  </div>
+</div>
+
+<script src="/roulette-offline.js"></script>
+<script src="/mindspille-split.js"></script>
+</body>
+</html>

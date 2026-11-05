@@ -43,9 +43,10 @@ const ONLINE = [
   { key: 'gomoku', route: '/gomoku', type: 'gomoku', slot: 'bar-start', id: '30000000-0000-4000-8000-000000000304' },
   { key: 'quoridor', route: '/quoridor', type: 'quoridor', slot: 'after-move', id: '30000000-0000-4000-8000-000000000305' },
   { key: 'penalty', route: '/penalty', type: 'penalty_shootout', slot: 'floating', id: '30000000-0000-4000-8000-000000000306' },
-  { key: 'chifoumi', route: '/chifoumi', type: 'rock_paper_scissors', slot: 'floating', id: '30000000-0000-4000-8000-000000000307' }
+  { key: 'chifoumi', route: '/chifoumi', type: 'rock_paper_scissors', slot: 'floating', id: '30000000-0000-4000-8000-000000000307' },
+  { key: 'roulette', route: '/roulette', type: 'color_roulette', slot: 'floating', id: '30000000-0000-4000-8000-000000000308' }
 ];
-const OFFLINE = ['dames', 'echecs', 'ttt', 'gomoku', 'quoridor', 'penalty', 'chifoumi'].flatMap(game => [
+const OFFLINE = ['dames', 'echecs', 'ttt', 'gomoku', 'quoridor', 'penalty', 'chifoumi', 'roulette'].flatMap(game => [
   { key: `${game} IA`, route: `/${game}-ai?difficulty=medium&name=Alice` },
   { key: `${game} ami`, route: `/${game}-local?name=Joueur%201&p2Name=Joueur%202` }
 ]);

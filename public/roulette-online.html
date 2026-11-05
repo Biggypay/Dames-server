@@ -1,0 +1,1127 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Roulette Royale | Mindspille</title>
+<link rel="stylesheet" href="/roulette-page.css">
+  <script defer src="/mindspille-i18n.js"></script>
+  <script src="/mindspille-hud.js"></script>
+  <script src="/roulette-rules.js"></script>
+  <script src="/roulette-board.js"></script>
+</head>
+<body>
+
+<div id="loading">
+  <div class="spin"></div>
+  <p>CONNEXION EN COURS…</p>
+</div>
+
+<canvas id="confetti-canvas"></canvas>
+
+<div id="toast">
+  <div id="toast-emoji"></div>
+  <div id="toast-title"></div>
+  <div id="toast-sub"></div>
+</div>
+
+<div id="reconn-bar">📡 RECONNEXION EN COURS…</div>
+<div id="forfeit-bar"></div>
+
+<div id="waiting-overlay">
+  <div class="waiting-spin"></div>
+  <div class="waiting-text">EN ATTENTE DE L'ADVERSAIRE…</div>
+  <div class="waiting-room" id="waiting-room-id"></div>
+</div>
+
+<div id="top">
+  <div class="profile" id="profile-human">
+    <div class="profile-timer-wrap">
+      <svg viewBox="0 0 58 58">
+        <circle class="timer-track" cx="29" cy="29" r="26"/>
+        <circle class="timer-arc" id="timer-arc-human" cx="29" cy="29" r="26" stroke="#ffffff"/>
+      </svg>
+      <div class="profile-avatar" id="avatar-human">👤</div>
+    </div>
+    <div class="profile-name" id="name-human">MOI</div>
+  </div>
+
+  <div class="top-center">
+    <div class="score-row">
+      <span class="snum sw" id="playerScore">0</span>
+      <span class="ssep">vs</span>
+      <span class="snum sr" id="aiScore">0</span>
+    </div>
+    <span class="manche-lbl" id="roundLabel">Manche 1 / 5</span>
+    <div class="rounds-progress" id="roundsProgress">
+      <div class="round-dot"></div>
+      <div class="round-dot"></div>
+      <div class="round-dot"></div>
+      <div class="round-dot"></div>
+      <div class="round-dot"></div>
+    </div>
+    <div class="bet-badge" id="betBadge" style="display:none;"></div>
+  </div>
+
+  <div class="profile" id="profile-ai">
+    <div class="profile-timer-wrap">
+      <svg viewBox="0 0 58 58">
+        <circle class="timer-track" cx="29" cy="29" r="26"/>
+        <circle class="timer-arc" id="timer-arc-ai" cx="29" cy="29" r="26" stroke="#e74c3c"/>
+      </svg>
+      <div class="profile-avatar" id="avatar-ai">👤</div>
+    </div>
+    <div class="profile-name" id="name-ai">ADV</div>
+  </div>
+</div>
+
+<div id="wrap">
+  <div class="rr-board">
+    <div class="rr-col rr-col-a">
+      <div id="wheel" aria-label="Roue des couleurs"></div>
+      <div class="rr-foot">
+        <div id="history"></div>
+        <div class="rr-foot-row">
+          <button type="button" class="rr-link" id="rulesBtn" aria-expanded="false" aria-controls="rulesBox">Règles</button>
+          <button type="button" id="seal"></button>
+        </div>
+        <div id="sealBox"></div>
+        <div class="rr-rules" id="rulesBox" hidden>
+          <ul>
+            <li>Chacun choisit une couleur en secret.</li>
+            <li>La couleur gagnante est tirée au hasard par le serveur avant vos choix, puis scellée.</li>
+            <li>Seul à avoir la couleur tirée : +1 point. Personne, ou tous les deux : manche nulle.</li>
+            <li>5 manches. Le match s’arrête plus tôt si l’écart ne peut plus être comblé.</li>
+            <li>Égalité : manche décisive. La roue ne garde que vos deux couleurs, une chance sur deux. Même couleur : on rechoisit.</li>
+            <li>30 s pour choisir, puis 60 s de grâce. Sans choix, le match est perdu.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <div class="rr-col rr-col-b">
+      <div id="duel"></div>
+      <div class="rr-action" id="action">
+        <div class="status" id="status"></div>
+        <button type="button" class="rr-lock" id="lockBtn" disabled hidden></button>
+      </div>
+      <div id="palette" aria-label="Choisissez votre couleur"></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="gameOverModal">
+  <div class="modal" id="modalContent">
+    <h2 id="modalTitle">Partie terminée !</h2>
+    <div class="final-score" id="finalScore">0 - 0</div>
+    <div class="final-message" id="finalMessage"></div>
+    <div class="prize-line" id="prizeLine" style="display:none;"></div>
+    <div class="modal-history" id="modalHistory">
+      <h4>Historique des manches</h4>
+      <div class="modal-history-list" id="modalHistoryList"></div>
+    </div>
+    <button class="restart-btn" id="closeBtn" ontouchstart="">Fermer</button>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+(function(){
+'use strict';
+
+var R = window.RouletteRules;
+var Board = window.RouletteBoard;
+
+/* ══════════════════════════════════════════
+   PARAMÈTRES
+══════════════════════════════════════════ */
+var P = new URLSearchParams(window.location.search);
+var TOKEN_FRAGMENT = new URLSearchParams(window.location.hash.slice(1));
+var GAME_AUTH_TOKEN = TOKEN_FRAGMENT.get('token') || P.get('token') || '';
+if (TOKEN_FRAGMENT.has('token')) { try { history.replaceState(null, '', location.pathname + location.search); } catch (_) {} }
+/* Replay (?replay=1) : aucune connexion, les positions viennent de l'application. */
+var IS_REPLAY = P.get('replay') === '1';
+var IS_SPECTATOR = P.get('spectate') === '1' || P.get('spectator') === '1' || IS_REPLAY;
+var SPECTATOR_TOKEN = '';
+var spectatorInitReceived = false;
+var ROOM_ID   = P.get('room') || '';
+var MY_SLOT   = IS_SPECTATOR ? 1 : (parseInt(P.get('player') || '1', 10) === 2 ? 2 : 1);
+var P1_ID     = P.get('p1Id') || '';
+var P2_ID     = P.get('p2Id') || '';
+var P1_NAME   = P.get('p1Name') || 'Joueur 1';
+var P2_NAME   = P.get('p2Name') || 'Joueur 2';
+var P1_AVATAR = P.get('p1Avatar') || '';
+var P2_AVATAR = P.get('p2Avatar') || '';
+var BET_AMOUNT = parseFloat(P.get('bet') || '0') || 0;
+var CURRENCY  = P.get('currency') || 'HTG';
+
+if (!ROOM_ID && P1_ID && P2_ID) {
+  var _ids = [P1_ID, P2_ID].sort();
+  ROOM_ID = 'roulette-' + _ids[0].slice(-8) + '-' + _ids[1].slice(-8);
+}
+if (!ROOM_ID) ROOM_ID = P.get('gameId') || P.get('matchId') || '';
+var GAME_ID = P.get('gameId') || P.get('matchId') || '';
+
+var MY_SUPABASE_ID = MY_SLOT === 1 ? P1_ID : P2_ID;
+var OP_SUPABASE_ID = MY_SLOT === 1 ? P2_ID : P1_ID;
+var MY_NAME = MY_SLOT === 1 ? P1_NAME : P2_NAME;
+var OP_NAME = MY_SLOT === 1 ? P2_NAME : P1_NAME;
+if (IS_SPECTATOR) try { document.body.classList.add('spectator'); if (IS_REPLAY) document.body.classList.add('replay'); } catch (_) {}
+
+var parentOrigin = '*';
+try { if (document.referrer) parentOrigin = new URL(document.referrer).origin; } catch (_) {}
+function postToParent(payload) { try { window.parent.postMessage(payload, parentOrigin); } catch (_) {} }
+
+/* ══════════════════════════════════════════
+   ÉTAT
+   Le serveur décide de tout : la couleur tirée (scellée avant les choix), le
+   point, la fin du match. La page montre, dans l'ordre : les choix secrets,
+   la roue qui tourne, puis le point — jamais avant la fin du tour de roue.
+══════════════════════════════════════════ */
+var CIRC_SMALL = 163.4;
+var scores = [0, 0];            /* par place : [joueur 1, joueur 2] */
+var round = 1, totalRounds = R.REGULAR_ROUNDS, decisive = false;
+var history = [];               /* manches publiques (R.publicRound) */
+var phase = 'idle';             /* idle | choosing | spinning | between | over */
+var sealHash = null, sealRound = 0; /* empreinte publiée au début de la manche, et sa manche */
+var selected = null;            /* couleur touchée, pas encore verrouillée */
+var myChoice = null;            /* couleur verrouillée (confirmée par le serveur) */
+var lockPending = false, lockTimer = null;
+var chosen = { 1: false, 2: false };
+var currentSpin = null, spinToken = 0, resultShownFor = 0;
+var gameReady = false, gameOver = false, endShown = false, pendingEnd = null;
+var clockOffset = 0;            /* heure du serveur − heure du téléphone */
+var turn = null, turnRAF = null, lastHubKey = '';
+var forfeitTimer = null, forfeitCountdown = 0;
+var socket = null;
+
+function serverNow() { return Date.now() + clockOffset; }
+function noteServerTime(t) { var n = Number(t); if (n > 0) clockOffset = n - Date.now(); }
+function num(v) { var n = Number(v); return isFinite(n) && n > 0 ? Math.floor(n) : 0; }
+
+/* La perspective : à gauche le joueur de cette page (le joueur 1 pour un spectateur). */
+function leftSlot() { return IS_SPECTATOR ? 1 : MY_SLOT; }
+function rightSlot() { return leftSlot() === 1 ? 2 : 1; }
+function choiceOf(entry, slot) { return entry ? R.toColor(slot === 1 ? entry.choice1 : entry.choice2) : null; }
+function resultOf(winnerSlot) { return winnerSlot === leftSlot() ? 'win' : (winnerSlot === 1 || winnerSlot === 2) ? 'lose' : 'draw'; }
+function leftName() { return IS_SPECTATOR ? P1_NAME : 'Vous'; }
+function rightName() { return IS_SPECTATOR ? P2_NAME : OP_NAME; }
+function slotName(slot) { return slot === 1 ? P1_NAME : P2_NAME; }
+
+/* ══════════════════════════════════════════
+   ÉLÉMENTS
+══════════════════════════════════════════ */
+function $(id) { return document.getElementById(id); }
+var lockBtn = $('lockBtn'), actionEl = $('action'), rulesBtn = $('rulesBtn'), rulesBox = $('rulesBox');
+var roundLabelEl = $('roundLabel'), roundsProgress = $('roundsProgress');
+var profileHuman = $('profile-human'), profileAi = $('profile-ai');
+var timerArcHuman = $('timer-arc-human'), timerArcAi = $('timer-arc-ai');
+var gameOverModal = $('gameOverModal'), modalContent = $('modalContent'), modalTitle = $('modalTitle');
+var finalScore = $('finalScore'), finalMessage = $('finalMessage'), prizeLine = $('prizeLine'), modalHistoryList = $('modalHistoryList');
+var waitingOverlay = $('waiting-overlay'), reconBar = $('reconn-bar'), forfeitBar = $('forfeit-bar');
+
+var board = Board.mount({
+  stage: $('wheel'), palette: $('palette'), duel: $('duel'), history: $('history'),
+  seal: $('seal'), sealBox: $('sealBox'), status: $('status'), onPick: pickColor
+});
+var wheelFit = Board.fitWheel({
+  wrap: $('wrap'), board: document.querySelector('.rr-board'), stage: $('wheel'),
+  stack: [$('duel'), $('action'), $('palette'), document.querySelector('.rr-foot')],
+  under: document.querySelector('.rr-foot'), min: 120, max: 400
+});
+
+if (BET_AMOUNT > 0) {
+  $('betBadge').textContent = 'Mise : ' + BET_AMOUNT + ' ' + CURRENCY;
+  $('betBadge').style.display = 'block';
+}
+
+rulesBtn.addEventListener('click', function (e) {
+  e.preventDefault();
+  rulesBox.hidden = !rulesBox.hidden;
+  rulesBtn.setAttribute('aria-expanded', rulesBox.hidden ? 'false' : 'true');
+});
+
+/* ══════════════════════════════════════════
+   CONFETTIS, MESSAGES, CHARGEMENT
+══════════════════════════════════════════ */
+var confettiCanvas = $('confetti-canvas'), confettiCtx = confettiCanvas.getContext('2d');
+var confettiParts = [], confettiActive = false;
+function resizeConfetti() { confettiCanvas.width = window.innerWidth; confettiCanvas.height = window.innerHeight; }
+window.addEventListener('resize', resizeConfetti);
+resizeConfetti();
+function createConfetti(count) {
+  var colors = R.COLORS.map(function (c) { return c.hex; }).concat(['#fbbf24', '#ffffff']);
+  for (var i = 0; i < (count || 150); i++) {
+    confettiParts.push({
+      x: confettiCanvas.width / 2, y: confettiCanvas.height / 2,
+      vx: (Math.random() - 0.5) * 18, vy: (Math.random() - 0.5) * 18 - 5,
+      color: colors[Math.floor(Math.random() * colors.length)],
+      shape: ['circle', 'square', 'triangle'][Math.floor(Math.random() * 3)],
+      size: Math.random() * 8 + 4, rotation: Math.random() * 360,
+      rotSpeed: (Math.random() - 0.5) * 10, gravity: 0.28, drag: 0.985, life: 1.0
+    });
+  }
+  if (!confettiActive) { confettiActive = true; requestAnimationFrame(updateConfetti); }
+}
+function updateConfetti() {
+  if (!confettiActive) return;
+  confettiCtx.clearRect(0, 0, confettiCanvas.width, confettiCanvas.height);
+  var any = false;
+  for (var i = confettiParts.length - 1; i >= 0; i--) {
+    var p = confettiParts[i];
+    p.x += p.vx; p.y += p.vy; p.vy += p.gravity; p.vx *= p.drag; p.vy *= p.drag;
+    p.rotation += p.rotSpeed; p.life -= 0.004;
+    if (p.life > 0 && p.y < confettiCanvas.height + 60) {
+      any = true;
+      confettiCtx.save();
+      confettiCtx.translate(p.x, p.y);
+      confettiCtx.rotate(p.rotation * Math.PI / 180);
+      confettiCtx.globalAlpha = p.life;
+      confettiCtx.fillStyle = p.color;
+      if (p.shape === 'circle') { confettiCtx.beginPath(); confettiCtx.arc(0, 0, p.size / 2, 0, Math.PI * 2); confettiCtx.fill(); }
+      else if (p.shape === 'square') confettiCtx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
+      else { confettiCtx.beginPath(); confettiCtx.moveTo(0, -p.size / 2); confettiCtx.lineTo(p.size / 2, p.size / 2); confettiCtx.lineTo(-p.size / 2, p.size / 2); confettiCtx.closePath(); confettiCtx.fill(); }
+      confettiCtx.restore();
+    } else confettiParts.splice(i, 1);
+  }
+  if (any) requestAnimationFrame(updateConfetti);
+  else { confettiActive = false; confettiParts = []; confettiCtx.clearRect(0, 0, confettiCanvas.width, confettiCanvas.height); }
+}
+
+var toastTimer = null;
+function showToast(emoji, title, sub, delay, cb) {
+  var el = $('toast');
+  $('toast-emoji').textContent = emoji;
+  $('toast-title').textContent = title;
+  $('toast-sub').textContent = sub || '';
+  if (toastTimer) clearTimeout(toastTimer);
+  el.style.cssText = 'display:block;opacity:0;transform:translate(-50%,-50%) scale(0.8);transition:none;';
+  setTimeout(function () {
+    el.style.transition = 'all 0.35s cubic-bezier(0.175,0.885,0.32,1.275)';
+    el.style.opacity = '1'; el.style.transform = 'translate(-50%,-50%) scale(1)';
+  }, 20);
+  toastTimer = setTimeout(function () {
+    toastTimer = null;
+    el.style.opacity = '0'; el.style.transform = 'translate(-50%,-50%) scale(0.85)';
+    setTimeout(function () { el.style.display = 'none'; if (cb) cb(); }, 300);
+  }, delay || 2000);
+}
+function hideLoading() {
+  var ld = $('loading');
+  if (ld && ld.style.display !== 'none') { ld.style.opacity = '0'; setTimeout(function () { ld.style.display = 'none'; }, 600); }
+}
+
+/* ══════════════════════════════════════════
+   AFFICHAGE
+══════════════════════════════════════════ */
+function renderScores() {
+  $('playerScore').textContent = scores[leftSlot() - 1];
+  $('aiScore').textContent = scores[rightSlot() - 1];
+}
+function renderRoundLabel() {
+  roundLabelEl.textContent = decisive ? 'Manche décisive' : 'Manche ' + Math.min(round, totalRounds) + ' / ' + totalRounds;
+}
+/* Autant de repères que de manches prévues ; les manches décisives sur leur propre rangée. */
+function renderDots() {
+  var dots = roundsProgress.querySelectorAll('.round-dot');
+  for (var i = dots.length; i < totalRounds; i++) { var d = document.createElement('div'); d.className = 'round-dot'; roundsProgress.appendChild(d); }
+  for (var j = dots.length - 1; j >= totalRounds; j--) dots[j].remove();
+  dots = roundsProgress.querySelectorAll('.round-dot');
+  dots.forEach(function (dot) { dot.className = 'round-dot'; });
+  var extra = [];
+  history.forEach(function (h) {
+    if (h.decisive) { if (!h.repick) extra.push(resultOf(h.winnerSlot)); return; }
+    if (dots[h.round - 1]) dots[h.round - 1].classList.add('played', resultOf(h.winnerSlot));
+  });
+  var live = !gameOver && (phase === 'choosing' || phase === 'spinning');
+  if (live && !decisive && dots[round - 1] && !history.some(function (h) { return h.round === round; })) dots[round - 1].classList.add('current');
+  if (window.MindspilleHud) MindspilleHud.decisive(roundsProgress, extra, live && decisive);
+}
+function historyStrip() {
+  return history.map(function (h) {
+    return { round: h.round, drawn: h.drawn, repick: h.repick, result: h.winnerSlot === leftSlot() ? 'me' : h.winnerSlot ? 'op' : '' };
+  });
+}
+function renderAll() {
+  renderScores(); renderRoundLabel(); renderDots();
+  board.setHistory(historyStrip());
+}
+function addHistory(entry) {
+  var e = R.publicRound(entry);
+  if (!e || !e.round) return;
+  history = history.filter(function (h) { return h.round !== e.round; });
+  history.push(e);
+  history.sort(function (a, b) { return a.round - b.round; });
+}
+function cleanHistory(list) {
+  return (Array.isArray(list) ? list : []).map(R.publicRound).filter(function (e) { return e && e.round > 0; });
+}
+
+/* La manche ouverte : les choix secrets, la palette, le bouton doré. */
+function canPick() {
+  return !IS_SPECTATOR && gameReady && !gameOver && phase === 'choosing' && !!sealHash && myChoice === null && !lockPending;
+}
+function hasChosen(slot) {
+  if (!IS_SPECTATOR && slot === MY_SLOT) return myChoice !== null || lockPending;
+  return chosen[slot] === true;
+}
+var LOCK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
+/* Pendant le choix, le bouton doré tient la ligne d'action ; le reste du temps, le statut. */
+function renderLock() {
+  var show = !IS_SPECTATOR && phase === 'choosing' && !gameOver;
+  lockBtn.hidden = !show;
+  actionEl.classList.toggle('rr-locking', show);
+  if (!show) return;
+  lockBtn.classList.remove('rr-done');
+  if (myChoice !== null || lockPending) {
+    lockBtn.disabled = true; lockBtn.classList.add('rr-done');
+    lockBtn.innerHTML = LOCK_ICON + '<span>Couleur verrouillée</span>';
+    return;
+  }
+  if (selected === null) {
+    lockBtn.disabled = true;
+    lockBtn.innerHTML = chosen[rightSlot()] ? '<span>L’adversaire a choisi · à vous</span>' : '<span>Touchez une couleur</span>';
+    return;
+  }
+  var c = R.COLORS[selected];
+  lockBtn.disabled = false;
+  lockBtn.innerHTML = '<span class="rr-lock-dot" style="background:' + c.hex + '"></span><span>Verrouiller</span><span class="rr-lock-name"></span>';
+  lockBtn.querySelector('.rr-lock-name').textContent = c.name;
+}
+function choosingStatus() {
+  if (IS_SPECTATOR) {
+    if (chosen[1] && chosen[2]) return 'Les deux couleurs sont verrouillées';
+    return decisive ? 'Manche décisive · les choix restent secrets' : 'Manche en direct · les choix restent secrets';
+  }
+  var mine = myChoice !== null || lockPending;
+  if (mine && !chosen[rightSlot()]) return 'Couleur verrouillée · l’adversaire choisit…';
+  if (!mine && chosen[rightSlot()]) return 'L’adversaire a choisi · à vous !';
+  if (decisive) return 'Manche décisive · une chance sur deux';
+  if (selected !== null) return 'Verrouillez votre couleur';
+  return 'Choisissez votre couleur en secret';
+}
+function renderChoosing() {
+  var left = leftSlot(), right = rightSlot();
+  if (IS_SPECTATOR) {
+    board.setChip('me', { name: leftName(), kind: chosen[left] ? 'locked' : 'waiting', label: chosen[left] ? 'A choisi' : 'Réfléchit…' });
+  } else if (myChoice !== null) {
+    board.setChip('me', { name: leftName(), kind: 'color', color: myChoice, label: 'Verrouillée' });
+  } else if (selected !== null) {
+    board.setChip('me', { name: leftName(), kind: 'color', color: selected, miss: true, label: lockPending ? 'Envoi…' : 'Non verrouillée' });
+  } else {
+    board.setChip('me', { name: leftName(), kind: 'waiting', label: 'Votre couleur' });
+  }
+  board.setChip('op', { name: rightName(), kind: chosen[right] ? 'locked' : 'waiting', label: chosen[right] ? 'A choisi' : 'Réfléchit…' });
+  board.setPalette({ selected: myChoice !== null ? myChoice : selected, enabled: canPick() });
+  board.setStatus(choosingStatus());
+  renderLock();
+  profileHuman.classList.toggle('active', !hasChosen(left));
+  profileAi.classList.toggle('active', !hasChosen(right));
+  profileHuman.classList.add('human-active'); profileAi.classList.add('ai-active');
+}
+
+/* ══════════════════════════════════════════
+   CHOISIR, PUIS VERROUILLER
+   Toucher une couleur la sélectionne ; « Verrouiller » (ou toucher de
+   nouveau la même) l'envoie. Une couleur verrouillée ne change plus.
+══════════════════════════════════════════ */
+function pickColor(id) {
+  if (!canPick()) return;
+  if (selected === id) { lockChoice(); return; }
+  selected = id;
+  renderChoosing();
+}
+function lockChoice() {
+  if (!canPick() || selected === null) return;
+  if (!socket || !socket.connected) {
+    showToast('📡', 'Connexion perdue', 'Votre couleur partira dès le retour du réseau.', 2200);
+    return;
+  }
+  lockPending = true;
+  socket.emit('roulette_choice', { room: ROOM_ID, player: MY_SLOT, color: selected });
+  renderChoosing();
+  if (lockTimer) clearTimeout(lockTimer);
+  /* Sans confirmation, on redemande l'état : le choix est peut-être passé. */
+  lockTimer = setTimeout(function () {
+    lockTimer = null;
+    if (lockPending && socket && socket.connected) socket.emit('roulette_request_state', { room: ROOM_ID });
+  }, 4000);
+}
+lockBtn.addEventListener('click', function (e) { e.preventDefault(); lockChoice(); });
+
+/* ══════════════════════════════════════════
+   LE TEMPS DE CHOISIR (30 s, puis 60 s de grâce) — l'horloge du serveur
+══════════════════════════════════════════ */
+function setTurn(startTime, duration, grace, serverTime) {
+  noteServerTime(serverTime);
+  turn = { start: Number(startTime) || serverNow(), duration: Number(duration) || (grace ? 60000 : 30000), grace: !!grace };
+  if (!turnRAF) turnRAF = requestAnimationFrame(tickTurn);
+}
+function clearTurn() {
+  turn = null; lastHubKey = '';
+  if (turnRAF) { cancelAnimationFrame(turnRAF); turnRAF = null; }
+  timerArcHuman.style.strokeDashoffset = CIRC_SMALL;
+  timerArcAi.style.strokeDashoffset = CIRC_SMALL;
+  profileHuman.classList.remove('timer-urgent');
+  profileAi.classList.remove('timer-urgent');
+  if (!forfeitTimer) forfeitBar.classList.remove('show');
+}
+function hubLabel() { return decisive ? 'Décisive' : 'Manche ' + Math.min(round, totalRounds); }
+function tickTurn() {
+  turnRAF = null;
+  if (!turn || phase !== 'choosing' || gameOver) return;
+  var remaining = Math.max(0, turn.start + turn.duration - serverNow());
+  var progress = Math.min(1, 1 - remaining / turn.duration);
+  var left = leftSlot(), right = rightSlot();
+  var urgent = turn.grace || progress >= 0.67;
+  /* Figé pour celui qui a choisi. */
+  if (!hasChosen(left)) timerArcHuman.style.strokeDashoffset = CIRC_SMALL * progress;
+  if (!hasChosen(right)) timerArcAi.style.strokeDashoffset = CIRC_SMALL * progress;
+  profileHuman.classList.toggle('timer-urgent', urgent && !hasChosen(left));
+  profileAi.classList.toggle('timer-urgent', urgent && !hasChosen(right));
+  var hubKey = hubLabel() + '|' + Math.ceil(remaining / 1000) + '|' + urgent;
+  if (hubKey !== lastHubKey) { lastHubKey = hubKey; board.setHub(hubLabel(), Math.ceil(remaining / 1000), urgent ? 'urgent' : null, null); }
+  if (turn.grace && !forfeitTimer && !IS_REPLAY) {
+    var secs = Math.ceil(remaining / 1000);
+    var meLate = !hasChosen(left), opLate = !hasChosen(right);
+    forfeitBar.classList.add('show');
+    if (IS_SPECTATOR) { forfeitBar.dataset.tone = 'wait'; forfeitBar.textContent = 'Temps de grâce · ' + secs + ' s'; }
+    else if (meLate && opLate) { forfeitBar.dataset.tone = 'urgent'; forfeitBar.textContent = 'Jouez maintenant · annulation dans ' + secs + ' s'; }
+    else if (meLate) { forfeitBar.dataset.tone = 'urgent'; forfeitBar.textContent = 'Jouez maintenant · défaite dans ' + secs + ' s'; }
+    else { forfeitBar.dataset.tone = 'wait'; forfeitBar.textContent = 'L’adversaire doit jouer · ' + secs + ' s'; }
+  }
+  /* Une couleur touchée mais pas verrouillée part d'elle-même juste avant la
+     fin : le joueur a choisi, il ne perd pas sur un oubli de bouton. */
+  if (turn.grace && remaining <= 2500 && selected !== null && myChoice === null && !lockPending) lockChoice();
+  if (remaining > 0) turnRAF = requestAnimationFrame(tickTurn);
+}
+
+function startForfeitCountdown(seconds) {
+  stopForfeitCountdown();
+  forfeitCountdown = Math.max(0, Math.round(seconds));
+  forfeitBar.classList.add('show');
+  (function tick() {
+    forfeitBar.dataset.tone = 'wait';
+    forfeitBar.textContent = 'Adversaire absent · victoire dans ' + forfeitCountdown + ' s';
+    if (forfeitCountdown <= 0) { stopForfeitCountdown(); return; }
+    forfeitCountdown--;
+    forfeitTimer = setTimeout(tick, 1000);
+  })();
+}
+function stopForfeitCountdown() {
+  if (forfeitTimer) { clearTimeout(forfeitTimer); forfeitTimer = null; }
+  forfeitBar.classList.remove('show');
+  forfeitCountdown = 0;
+}
+
+/* ══════════════════════════════════════════
+   LES MANCHES
+══════════════════════════════════════════ */
+function resetMatch() {
+  scores = [0, 0]; round = 1; decisive = false; history = []; phase = 'idle';
+  sealHash = null; selected = null; myChoice = null; lockPending = false; chosen = { 1: false, 2: false };
+  currentSpin = null; spinToken++; resultShownFor = 0; gameOver = false; endShown = false; pendingEnd = null;
+  gameOverModal.classList.remove('show');
+  board.resetWheel(); board.setSeal(null);
+  board.setHub('Roulette', '', null, null);
+  renderAll();
+}
+
+function openRound(d) {
+  if (gameOver || !d) return;
+  var r = num(d.round);
+  if (r && phase === 'choosing' && r === round) {
+    /* La même manche, annoncée de nouveau : on garde ce qui est déjà fait. */
+    if (d.chosen) { chosen[1] = chosen[1] || d.chosen[1] === true; chosen[2] = chosen[2] || d.chosen[2] === true; }
+    renderChoosing();
+    return;
+  }
+  if (r) round = r;
+  if (num(d.totalRounds)) totalRounds = num(d.totalRounds);
+  decisive = d.decisive === true;
+  if (Array.isArray(d.scores)) scores = [num(d.scores[0]), num(d.scores[1])];
+  sealHash = typeof d.seal === 'string' && d.seal ? d.seal : null;
+  sealRound = sealHash ? round : 0;
+  phase = 'choosing';
+  selected = null; myChoice = null; lockPending = false; currentSpin = null; spinToken++;
+  chosen = { 1: !!(d.chosen && d.chosen[1] === true), 2: !!(d.chosen && d.chosen[2] === true) };
+  board.resetWheel();
+  lastHubKey = '';
+  board.setHub(hubLabel(), '', null, null);
+  board.setSeal(sealHash ? { hash: sealHash, state: 'sealed' } : null);
+  renderAll();
+  renderChoosing();
+}
+
+/* La roue tourne : les deux couleurs sont montrées, le point viendra à l'arrêt. */
+function handleSpin(sp) {
+  if (!sp || typeof sp !== 'object') return;
+  var r = num(sp.round);
+  if (currentSpin && currentSpin.round === r && phase === 'spinning') return;
+  noteServerTime(sp.serverTime);
+  if (lockTimer) { clearTimeout(lockTimer); lockTimer = null; }
+  var token = ++spinToken;
+  phase = 'spinning';
+  clearTurn();
+  currentSpin = sp;
+  round = r || round;
+  decisive = sp.decisive === true;
+  lockPending = false;
+  chosen = { 1: true, 2: true };
+  if (!IS_SPECTATOR) myChoice = choiceOf(sp, MY_SLOT);
+  var lc = choiceOf(sp, leftSlot()), rc = choiceOf(sp, rightSlot());
+  board.setChip('me', { name: leftName(), kind: 'color', color: lc, reveal: true });
+  board.setChip('op', { name: rightName(), kind: 'color', color: rc, reveal: true });
+  board.setPalette({ selected: IS_SPECTATOR ? null : lc, enabled: false });
+  renderLock();
+  renderRoundLabel(); renderDots();
+  profileHuman.classList.add('active'); profileAi.classList.add('active');
+  var drawn = R.toColor(sp.drawn);
+  if (sp.repick || drawn === null) { finishSpin(sp, token); return; }
+  var wheel = Array.isArray(sp.wheel) && sp.wheel.length >= 2 && sp.wheel.every(R.isColor) ? sp.wheel : R.wheelFor(decisive, sp.choice1, sp.choice2);
+  var landing = sp.landing && wheel[sp.landing.segment] === drawn ? sp.landing : R.landingFor(wheel, drawn, sp.seal && sp.seal.salt);
+  board.setStatus(decisive ? 'Une chance sur deux…' : 'La roue tourne…');
+  board.setHub(decisive ? 'Décisive' : 'Tirage', '', null, null);
+  var remaining = Number(sp.startTime) + Number(sp.duration) - serverNow();
+  board.spinTo(wheel, landing, remaining > 250 ? Math.min(remaining, 8000) : 0).then(function () {
+    if (token === spinToken) finishSpin(sp, token);
+  });
+}
+
+function finishSpin(sp, token) {
+  if (token !== spinToken) return;
+  var r = num(sp.round);
+  if (resultShownFor === r) return;
+  resultShownFor = r;
+  if (Array.isArray(sp.scores)) scores = [num(sp.scores[0]), num(sp.scores[1])];
+  addHistory(sp);
+  renderAll();
+  var ws = Number(sp.winnerSlot) || 0;
+  var lc = choiceOf(sp, leftSlot()), rc = choiceOf(sp, rightSlot());
+  var drawn = R.toColor(sp.drawn);
+  if (sp.repick || drawn === null) {
+    board.setChip('me', { name: leftName(), kind: 'color', color: lc });
+    board.setChip('op', { name: rightName(), kind: 'color', color: rc });
+    board.setHub('Décisive', '=', null, null);
+    board.setStatus('🎨 Même couleur · on rechoisit', 'draw');
+    showToast('🎨', 'Même couleur !', 'Vous avez choisi la même couleur : chacun rechoisit.', 2200);
+  } else {
+    board.setChip('me', { name: leftName(), kind: 'color', color: lc, winner: ws === leftSlot(), miss: lc !== drawn });
+    board.setChip('op', { name: rightName(), kind: 'color', color: rc, winner: ws === rightSlot(), miss: rc !== drawn });
+    board.setHub('Tirée', '', null, drawn);
+    var name = R.colorName(drawn);
+    if (IS_SPECTATOR) {
+      if (ws) board.setStatus('🎯 ' + slotName(ws) + ' marque · ' + name, 'win');
+      else if (lc === drawn && rc === drawn) board.setStatus('🤝 Tous les deux sur ' + name, 'draw');
+      else board.setStatus('➖ Personne n’avait ' + name, 'draw');
+    } else if (ws === MY_SLOT) {
+      board.setStatus('🎉 Manche gagnée · ' + name, 'win');
+      if (!sp.final) createConfetti(60);
+    } else if (ws) board.setStatus('💀 Manche perdue · ' + name, 'lose');
+    else if (lc === drawn && rc === drawn) board.setStatus('🤝 Tous les deux sur ' + name, 'draw');
+    else board.setStatus('➖ Personne n’avait ' + name, 'draw');
+  }
+  verifySeal(sp);
+  phase = sp.final ? 'over' : 'between';
+  renderDots();
+  if (!sp.final && !sp.decisive) {
+    var played = history.filter(function (h) { return !h.decisive; }).length;
+    var next = R.matchDecision({ scores: scores, roundsPlayed: played, totalRounds: totalRounds, decisive: false, lastWinner: ws });
+    if (!next.over && next.decisive) setTimeout(announceDecisive, 900);
+  }
+  if (pendingEnd) {
+    var d = pendingEnd; pendingEnd = null;
+    setTimeout(function () { showEnd(d); }, 700);
+  }
+}
+
+/* Le sceau publié avant les choix correspond-il au tirage révélé ? Chacun le vérifie. */
+function verifySeal(sp) {
+  if (!sp || !sp.seal || !sp.seal.hash) return;
+  var published = sealRound === num(sp.round) ? sealHash : null;
+  board.setSeal({ hash: sp.seal.hash, state: 'sealed' });
+  Board.verifySpin(sp.room || ROOM_ID, sp, published).then(function (res) {
+    if (currentSpin !== sp && resultShownFor !== num(sp.round)) return;
+    board.setSeal({ hash: sp.seal.hash, state: res.ok === true ? 'verified' : res.ok === false ? 'failed' : 'sealed', revealed: res.text });
+  });
+}
+
+/* Une manche finie sans son tour de roue (page revenue entre deux manches). */
+function showRoundStatic(entry) {
+  if (!entry) return;
+  var drawn = R.toColor(entry.drawn);
+  var lc = choiceOf(entry, leftSlot()), rc = choiceOf(entry, rightSlot());
+  var ws = Number(entry.winnerSlot) || 0;
+  spinToken++;
+  board.setChip('me', { name: leftName(), kind: 'color', color: lc, winner: drawn !== null && ws === leftSlot(), miss: drawn !== null && lc !== drawn });
+  board.setChip('op', { name: rightName(), kind: 'color', color: rc, winner: drawn !== null && ws === rightSlot(), miss: drawn !== null && rc !== drawn });
+  board.setPalette({ selected: null, enabled: false });
+  if (drawn !== null) {
+    var wheel = R.wheelFor(entry.decisive, entry.choice1, entry.choice2);
+    board.landNow(wheel, R.landingFor(wheel, drawn, ''));
+    board.setHub('Tirée', '', null, drawn);
+    var res = resultOf(ws);
+    board.setStatus(ws ? (IS_SPECTATOR ? '🎯 ' + slotName(ws) + ' marque · ' + R.colorName(drawn) : (res === 'win' ? '🎉 Manche gagnée · ' : '💀 Manche perdue · ') + R.colorName(drawn)) : '➖ Manche nulle · ' + R.colorName(drawn), res);
+  } else {
+    board.setHub('Décisive', '=', null, null);
+    board.setStatus('🎨 Même couleur · on rechoisit', 'draw');
+  }
+  resultShownFor = entry.round;
+  renderLock();
+}
+
+function onRoundResult(d) {
+  if (gameOver || !d) return;
+  var r = num(d.round);
+  /* La roue de cette manche tourne encore ici : elle finit son tour, le point vient à l'arrêt. */
+  if (phase === 'spinning' && currentSpin && num(currentSpin.round) === r) return;
+  if (resultShownFor !== r) {
+    /* Le tour de roue n'a pas été vu ici : la manche s'affiche telle quelle. */
+    if (Array.isArray(d.scores)) scores = [num(d.scores[0]), num(d.scores[1])];
+    addHistory(d);
+    phase = 'between';
+    renderAll();
+    showRoundStatic(R.publicRound(d));
+    if (d.next === 'decisive' && d.decisive !== true) announceDecisive();
+  }
+  phase = 'between';
+  renderDots();
+}
+function announceDecisive() {
+  showToast('⚖️', 'Égalité !', 'Manche décisive : la roue ne gardera que vos deux couleurs.', 2600);
+}
+
+/* L'état complet, au retour d'un joueur (ou d'un spectateur) : rien n'est rejoué deux fois. */
+function applyState(gs, opts) {
+  if (!gs || typeof gs !== 'object') return;
+  var o = opts || {};
+  gameReady = true;
+  if (num(gs.totalRounds)) totalRounds = num(gs.totalRounds);
+  var spin = gs.phase === 'spinning' && gs.spin && typeof gs.spin === 'object' ? gs.spin : null;
+  if (spin && currentSpin && phase === 'spinning' && currentSpin.round === num(spin.round)) return;
+  var list = cleanHistory(gs.history);
+  if (gs.phase === 'choosing' && phase === 'choosing' && num(gs.round) === round && !o.force) {
+    /* La même manche : seuls les choix bougent. */
+    if (!IS_SPECTATOR) {
+      var mine = R.toColor(gs.myChoice);
+      if (mine !== null) { myChoice = mine; selected = mine; }
+      lockPending = false;
+      chosen[rightSlot()] = gs.opponentHasChosen === true;
+    } else if (gs.chosen) chosen = { 1: gs.chosen[1] === true, 2: gs.chosen[2] === true };
+    renderChoosing();
+    return;
+  }
+  round = num(gs.round) || round;
+  decisive = gs.decisive === true;
+  scores = Array.isArray(gs.scores) ? [num(gs.scores[0]), num(gs.scores[1])] : scores;
+  if (spin) {
+    /* Pendant le tour de roue, le point n'est montré qu'à l'arrêt. */
+    var ws = Number(spin.winnerSlot) || 0;
+    if (ws === 1 || ws === 2) scores[ws - 1] = Math.max(0, scores[ws - 1] - 1);
+    history = list.filter(function (h) { return h.round !== num(spin.round); });
+    currentSpin = null; resultShownFor = 0;
+    if (sealRound !== num(spin.round)) { sealHash = null; sealRound = 0; }
+    renderAll();
+    handleSpin(spin);
+    return;
+  }
+  history = list;
+  if (gs.phase === 'between') {
+    phase = 'between';
+    renderAll();
+    var last = history[history.length - 1];
+    if (last && resultShownFor !== last.round) showRoundStatic(last);
+    return;
+  }
+  /* La manche en cours, choix secrets. */
+  phase = 'choosing';
+  sealHash = typeof gs.seal === 'string' && gs.seal ? gs.seal : null;
+  sealRound = sealHash ? round : 0;
+  myChoice = IS_SPECTATOR ? null : R.toColor(gs.myChoice);
+  selected = myChoice; lockPending = false; currentSpin = null; spinToken++;
+  if (IS_SPECTATOR) chosen = { 1: !!(gs.chosen && gs.chosen[1] === true), 2: !!(gs.chosen && gs.chosen[2] === true) };
+  else { chosen = { 1: false, 2: false }; chosen[rightSlot()] = gs.opponentHasChosen === true; }
+  board.resetWheel();
+  lastHubKey = '';
+  board.setHub(hubLabel(), '', null, null);
+  board.setSeal(sealHash ? { hash: sealHash, state: 'sealed' } : null);
+  renderAll();
+  renderChoosing();
+}
+
+/* ══════════════════════════════════════════
+   FIN DU MATCH
+══════════════════════════════════════════ */
+function outcomeOf(d) {
+  if (d.result === 'cancel') return 'cancel';
+  var ws = Number(d.winnerSlot);
+  if (d.result === 'draw' || d.winner === 'draw' || ((ws !== 1 && ws !== 2) && d.winner !== 'player1' && d.winner !== 'player2')) return 'draw';
+  if (ws !== 1 && ws !== 2) ws = d.winner === 'player1' ? 1 : 2;
+  if (IS_SPECTATOR) return ws === 1 ? 'p1' : 'p2';
+  if (d.result === 'win') return 'win';
+  if (d.result === 'loss' || d.result === 'lose') return 'lose';
+  if (d.winnerSupabaseId && MY_SUPABASE_ID) return d.winnerSupabaseId === MY_SUPABASE_ID ? 'win' : 'lose';
+  return ws === MY_SLOT ? 'win' : 'lose';
+}
+function onGameEnd(d) {
+  if (endShown || !d || typeof d !== 'object') return;
+  /* Le dernier tour de roue s'achève d'abord : le résultat se lit sur la roue. */
+  if (phase === 'spinning' && currentSpin && resultShownFor !== num(currentSpin.round)) { pendingEnd = d; return; }
+  showEnd(d);
+}
+function miniChip(color) {
+  if (!R.isColor(color)) return '<span class="rr-mini rr-none"></span>';
+  return '<span class="rr-mini" style="background:' + R.COLORS[color].hex + '">' + Board.colorIcon(color) + '</span>';
+}
+function renderModalHistory() {
+  modalHistoryList.innerHTML = '';
+  for (var i = history.length - 1; i >= 0; i--) {
+    var h = history[i];
+    var res = h.repick ? 'draw' : resultOf(h.winnerSlot);
+    var item = document.createElement('div');
+    item.className = 'modal-history-item ' + res;
+    var label = document.createElement('span');
+    label.textContent = h.decisive ? 'Décisive' : 'Manche ' + h.round;
+    item.appendChild(label);
+    var pair = document.createElement('span');
+    pair.className = 'rr-pair';
+    pair.innerHTML = miniChip(choiceOf(h, leftSlot())) + '<span class="rr-arrow">vs</span>' + miniChip(choiceOf(h, rightSlot()));
+    item.appendChild(pair);
+    var drawn = document.createElement('span');
+    drawn.className = 'rr-pair';
+    drawn.innerHTML = '<span class="rr-arrow">→</span>' + miniChip(h.drawn);
+    item.appendChild(drawn);
+    var mark = document.createElement('span');
+    mark.textContent = h.repick ? '🎨' : res === 'win' ? '✅' : res === 'lose' ? '❌' : '➖';
+    item.appendChild(mark);
+    modalHistoryList.appendChild(item);
+  }
+}
+function showEnd(d) {
+  if (endShown) return;
+  endShown = true; gameOver = true; phase = 'over'; pendingEnd = null;
+  clearTurn(); stopForfeitCountdown();
+  if (lockTimer) { clearTimeout(lockTimer); lockTimer = null; }
+  hideLoading(); waitingOverlay.classList.remove('show');
+  if (Array.isArray(d.scores)) scores = [num(d.scores[0]), num(d.scores[1])];
+  if (Array.isArray(d.history) && d.history.length) cleanHistory(d.history).forEach(addHistory);
+  renderAll();
+  board.setPalette({ selected: myChoice, enabled: false });
+  renderLock();
+  var outcome = outcomeOf(d), reason = d.reason || 'normal';
+  var title, message, cls;
+  if (outcome === 'cancel') {
+    title = '⚠️ PARTIE ANNULÉE'; cls = 'draw-modal';
+    message = 'Les deux joueurs étaient absents.';
+  } else if (outcome === 'draw') {
+    title = '🤝 ÉGALITÉ'; cls = 'draw-modal';
+    message = reason === 'mutual_quit' ? 'Partie arrêtée d’un commun accord.' : 'Les deux joueurs terminent à égalité.';
+  } else if (outcome === 'p1' || outcome === 'p2') {
+    title = '🏆 PARTIE TERMINÉE'; cls = 'win-modal';
+    message = (outcome === 'p1' ? P1_NAME : P2_NAME) + ' remporte la Roulette Royale.';
+  } else if (outcome === 'win') {
+    title = '🏆 VICTOIRE !'; cls = 'win-modal';
+    message = reason === 'timeout' ? 'L’adversaire n’a pas choisi à temps.'
+      : reason === 'forfeit' ? 'L’adversaire ne s’est pas reconnecté à temps.'
+      : 'Vous remportez la Roulette Royale !';
+    createConfetti(); createConfetti();
+  } else {
+    title = '💀 DÉFAITE'; cls = 'lose-modal';
+    message = reason === 'timeout' ? 'Temps écoulé : vous n’avez pas choisi.'
+      : reason === 'forfeit' ? 'Vous avez été absent trop longtemps.'
+      : OP_NAME + ' remporte la Roulette Royale.';
+  }
+  modalTitle.textContent = title;
+  finalScore.textContent = scores[leftSlot() - 1] + ' - ' + scores[rightSlot() - 1];
+  finalMessage.textContent = message;
+  modalContent.className = 'modal ' + cls;
+  prizeLine.style.display = 'none';
+  if (!IS_SPECTATOR && BET_AMOUNT > 0 && (outcome === 'win' || outcome === 'lose')) {
+    var net = Number(d.netGain);
+    var gain = isFinite(net) && net > 0 ? net : BET_AMOUNT * 2 * 0.9;
+    prizeLine.textContent = outcome === 'win' ? '🤑 +' + Math.round(gain) + ' ' + CURRENCY + ' (net)' : '😓 -' + BET_AMOUNT + ' ' + CURRENCY;
+    prizeLine.style.display = 'block';
+  }
+  renderModalHistory();
+  gameOverModal.classList.add('show');
+}
+
+$('closeBtn').addEventListener('click', function () { postToParent({ type: 'close_game' }); gameOverModal.classList.remove('show'); });
+
+/* ══════════════════════════════════════════
+   CONNEXION
+══════════════════════════════════════════ */
+function initSocket() {
+  if (IS_REPLAY || socket) return;
+  if (IS_SPECTATOR && !spectatorInitReceived) return;
+  var lt = document.querySelector('#loading p');
+  if (lt) lt.textContent = IS_SPECTATOR ? 'CONNEXION AU DIRECT…' : 'CONNEXION EN COURS…';
+  socket = io({ transports: ['websocket', 'polling'], reconnection: true, auth: { token: IS_SPECTATOR ? SPECTATOR_TOKEN : GAME_AUTH_TOKEN } });
+  /* Pour l'overlay de pause de tournoi (tournament-pause-client.js). */
+  window.mindspilleSocket = socket;
+  try { window.dispatchEvent(new Event('mindspille:socket')); } catch (_) {}
+
+  /* Un direct de tournoi peut exister avant que les deux joueurs n'ouvrent la room. */
+  var spectRetryTimer = null, spectRetryTries = 0;
+  function spectatorRetryable(code) {
+    if (code === 'room_not_live') return true;
+    if (code === 'verification_failed' || code === 'not_live') return spectRetryTries < 10;
+    return false;
+  }
+  function scheduleSpectatorRejoin() {
+    if (spectRetryTimer) return;
+    spectRetryTries++;
+    spectRetryTimer = setTimeout(function () {
+      spectRetryTimer = null;
+      if (socket && socket.connected) socket.emit('spectator_join', { gameId: GAME_ID });
+    }, Math.min(6000, 1200 * spectRetryTries));
+  }
+
+  socket.on('connect', function () {
+    reconBar.classList.remove('show');
+    if (IS_SPECTATOR) { socket.emit('spectator_join', { gameId: GAME_ID }); return; }
+    socket.emit('roulette_join', { room: ROOM_ID, gameId: GAME_ID, player: MY_SLOT, supabaseId: MY_SUPABASE_ID, name: MY_NAME, bet: BET_AMOUNT, currency: CURRENCY });
+  });
+  socket.on('disconnect', function () {
+    if (!gameOver) reconBar.classList.add('show');
+    if (IS_SPECTATOR) postToParent({ type: 'spectator:reconnecting', game: 'roulette', gameId: GAME_ID });
+  });
+  socket.on('connect_error', function (error) {
+    if (IS_SPECTATOR) postToParent({ type: 'spectator:error', game: 'roulette', gameId: GAME_ID, message: (error && error.message) || 'Connexion au direct impossible.' });
+  });
+
+  /* ── Spectateurs ── */
+  socket.on('spectator:joined', function () {
+    if (!IS_SPECTATOR) return;
+    if (spectRetryTimer) { clearTimeout(spectRetryTimer); spectRetryTimer = null; }
+    spectRetryTries = 0;
+    hideLoading(); waitingOverlay.classList.remove('show');
+    gameReady = true;
+    postToParent({ type: 'spectator:connected', game: 'roulette', gameId: GAME_ID });
+  });
+  socket.on('spectator_state', function (snap) {
+    if (!IS_SPECTATOR || !snap || !snap.state) return;
+    hideLoading(); waitingOverlay.classList.remove('show');
+    noteServerTime(snap.serverTime);
+    if (snap.room && !ROOM_ID) ROOM_ID = snap.room;
+    if (snap.players) {
+      if (snap.players[1] && snap.players[1].name) P1_NAME = snap.players[1].name;
+      if (snap.players[2] && snap.players[2].name) P2_NAME = snap.players[2].name;
+      MY_NAME = P1_NAME; OP_NAME = P2_NAME; updUI();
+    }
+    BET_AMOUNT = Number(snap.betAmount || 0); CURRENCY = snap.currency || CURRENCY;
+    var st = snap.state;
+    applyState(st, { force: true });
+    if (st.phase === 'choosing') {
+      if (st.graceStartTime) setTurn(st.graceStartTime, st.graceDuration || 60000, true);
+      else if (st.turnStartTime) setTurn(st.turnStartTime, st.turnDuration || 30000, false);
+    }
+  });
+  socket.on('spectator:error', function (data) {
+    if (!IS_SPECTATOR) return;
+    var code = data && data.code ? data.code : '';
+    var message = data && data.message ? data.message : 'Ce direct n’est plus disponible.';
+    var text = document.querySelector('#loading p'); if (text) text.textContent = message;
+    if (spectatorRetryable(code)) scheduleSpectatorRejoin();
+    postToParent({ type: 'spectator:error', game: 'roulette', gameId: GAME_ID, message: message });
+  });
+
+  /* ── La partie ── */
+  socket.on('roulette_start', function (data) {
+    if (IS_SPECTATOR || !data) return;
+    if (num(data.totalRounds)) totalRounds = num(data.totalRounds);
+    if (typeof data.opponentName === 'string' && data.opponentName.trim() && /^Joueur [12]$/.test(OP_NAME)) { OP_NAME = data.opponentName.trim().slice(0, 40); updUI(); }
+    hideLoading(); waitingOverlay.classList.remove('show');
+    if (data.reconnected && data.gameState) {
+      endShown = false; gameOver = false;
+      applyState(data.gameState, { force: true });
+      showToast('📶', 'Partie restaurée', 'Reprise là où vous étiez !', 2200);
+      return;
+    }
+    if (data.reconnected) { showToast('📶', 'Connexion rétablie', 'La partie reprend !', 2000); return; }
+    resetMatch();
+    gameReady = true;
+    showToast('🎡', 'Roulette Royale', BET_AMOUNT > 0 ? 'Mise : ' + BET_AMOUNT + ' ' + CURRENCY : totalRounds + ' manches · six couleurs', 2000);
+  });
+  socket.on('roulette_waiting', function () {
+    hideLoading(); waitingOverlay.classList.add('show');
+    $('waiting-room-id').textContent = 'Salle : ' + ROOM_ID;
+  });
+  socket.on('roulette_state', function (data) {
+    if (!data || !data.gameState) return;
+    applyState(data.gameState, {});
+  });
+  socket.on('roulette_round_ready', function (data) { gameReady = true; openRound(data); });
+
+  socket.on('roulette_turn_start', function (d) { if (d && phase === 'choosing') setTurn(d.startTime, d.duration, false, d.serverTime); });
+  socket.on('roulette_turn_warning', function (d) { if (d && phase === 'choosing') setTurn(d.startTime, d.duration, true, d.serverTime); });
+  socket.on('roulette_turn_sync', function (d) {
+    if (!d || phase !== 'choosing') return;
+    if (d.graceStartTime) setTurn(d.graceStartTime, d.duration, true, d.serverTime);
+    else if (d.turnStartTime) setTurn(d.turnStartTime, d.duration, false, d.serverTime);
+  });
+
+  socket.on('roulette_choice_locked', function (d) {
+    if (IS_SPECTATOR || !d || phase !== 'choosing' || num(d.round) !== round) return;
+    var color = R.toColor(d.color);
+    if (color === null) return;
+    if (lockTimer) { clearTimeout(lockTimer); lockTimer = null; }
+    myChoice = color; selected = color; lockPending = false;
+    renderChoosing();
+  });
+  socket.on('roulette_opponent_choice', function (d) {
+    if (!d || phase !== 'choosing' || (num(d.round) && num(d.round) !== round)) return;
+    var slot = Number(d.player) === 2 ? 2 : 1;
+    if (!IS_SPECTATOR && slot === MY_SLOT) return;
+    chosen[slot] = true;
+    renderChoosing();
+  });
+  socket.on('roulette_spin', function (sp) { if (!gameOver) handleSpin(sp); });
+  socket.on('roulette_round_result', onRoundResult);
+
+  /* ── Absences ── */
+  socket.on('game:reconnect_deadline', function (d) {
+    if (gameOver || !d || !d.reconnectDeadline || !d.serverTime) return;
+    startForfeitCountdown(Math.max(0, Math.ceil((d.reconnectDeadline - d.serverTime) / 1000)));
+  });
+  socket.on('roulette_opponent_disconnected', function () { if (!gameOver && !IS_SPECTATOR) startForfeitCountdown(60); });
+  socket.on('roulette_player_status', function (d) {
+    if (!d || IS_SPECTATOR || d.slot === MY_SLOT) return;
+    profileAi.style.opacity = d.connected ? '' : '0.45';
+  });
+  socket.on('roulette_game_resumed', function () {
+    stopForfeitCountdown(); profileAi.style.opacity = '';
+    showToast('▶️', 'Partie reprise', 'Les deux joueurs sont de retour !', 2000);
+  });
+  socket.on('player:reconnected', function () { stopForfeitCountdown(); profileAi.style.opacity = ''; });
+
+  /* ── Fin ── */
+  socket.on('game:over', function (d) { onGameEnd(d); });
+  socket.on('game:result', function (d) { if (d && d.postMessage) onGameEnd(d.postMessage); });
+}
+
+/* Revenu au premier plan : on redemande l'état (les minuteries dormaient). */
+document.addEventListener('visibilitychange', function () {
+  if (document.visibilityState !== 'visible' || IS_SPECTATOR || gameOver) return;
+  if (socket && socket.connected && gameReady) socket.emit('roulette_request_state', { room: ROOM_ID });
+});
+
+/* ══════════════════════════════════════════
+   APPLICATION : spectateurs, abandon d'un commun accord
+══════════════════════════════════════════ */
+window.addEventListener('message', function (e) {
+  if (e.source !== window.parent) return;
+  if (parentOrigin && parentOrigin !== '*' && e.origin !== parentOrigin) return;
+  var data = e.data;
+  if (!data || typeof data !== 'object') return;
+  if (IS_SPECTATOR && !IS_REPLAY && data.type === 'spectator:init') {
+    if (data.gameId && GAME_ID && data.gameId !== GAME_ID) return;
+    SPECTATOR_TOKEN = typeof data.token === 'string' ? data.token : '';
+    if (typeof data.player1Name === 'string' && data.player1Name.trim()) P1_NAME = data.player1Name.trim().slice(0, 40);
+    if (typeof data.player2Name === 'string' && data.player2Name.trim()) P2_NAME = data.player2Name.trim().slice(0, 40);
+    if (typeof data.player1Avatar === 'string') P1_AVATAR = data.player1Avatar;
+    if (typeof data.player2Avatar === 'string') P2_AVATAR = data.player2Avatar;
+    MY_NAME = P1_NAME; OP_NAME = P2_NAME;
+    spectatorInitReceived = true;
+    updUI();
+    initSocket();
+    return;
+  }
+  if (!IS_SPECTATOR && data.type === 'client:mutual_quit' && socket && socket.connected) {
+    socket.emit('game_mutual_quit', { room: ROOM_ID, game: 'roulette', player: MY_SLOT });
+  }
+});
+
+/* Le portrait du joueur : sa photo, sinon son initiale (mindspille-hud.js). */
+function updUI() {
+  $('name-human').textContent = MY_NAME;
+  $('name-ai').textContent = OP_NAME;
+  if (window.MindspilleHud) {
+    MindspilleHud.paint('avatar-human', MY_SLOT === 1 ? P1_AVATAR : P2_AVATAR);
+    MindspilleHud.paint('avatar-ai', MY_SLOT === 1 ? P2_AVATAR : P1_AVATAR);
+  }
+  board.setChip('me', { name: leftName() });
+  board.setChip('op', { name: rightName() });
+}
+
+/* ══════════════════════════════════════════
+   REPLAY : positions envoyées par l'application
+   replay:init     { player1Name, player2Name }
+   replay:position { phase:'start'|'locked'|'result', round, total, scores:[s1,s2],
+                     choice1, choice2, drawn, winnerSlot, decisive, repick,
+                     history:[{round, c1, c2, drawn, winnerSlot, decisive, repick}] }
+   Rien ne part vers le serveur.
+══════════════════════════════════════════ */
+window.addEventListener('message', function (e) {
+  if (!IS_REPLAY || !e.data || e.source !== window.parent) return;
+  var d = e.data;
+  if (d.type === 'replay:init') {
+    if (typeof d.player1Name === 'string' && d.player1Name.trim()) P1_NAME = d.player1Name.trim().slice(0, 24);
+    if (typeof d.player2Name === 'string' && d.player2Name.trim()) P2_NAME = d.player2Name.trim().slice(0, 24);
+    MY_NAME = P1_NAME; OP_NAME = P2_NAME; updUI();
+    return;
+  }
+  if (d.type !== 'replay:position') return;
+  hideLoading(); waitingOverlay.classList.remove('show');
+  gameReady = true; gameOver = false; endShown = false;
+  gameOverModal.classList.remove('show');
+  if (num(d.total) && num(d.total) < 50) totalRounds = num(d.total);
+  round = Math.max(1, num(d.round) || 1);
+  decisive = d.decisive === true;
+  var sc = Array.isArray(d.scores) ? d.scores : [0, 0];
+  scores = [num(sc[0]), num(sc[1])];
+  history = (Array.isArray(d.history) ? d.history : []).map(function (h) {
+    return R.publicRound({ round: h.round, choice1: h.c1, choice2: h.c2, drawn: h.drawn, winnerSlot: h.winnerSlot, decisive: h.decisive, repick: h.repick });
+  }).filter(function (h) { return h && h.round > 0; });
+  if (d.phase === 'result') {
+    var entry = R.publicRound({ round: round, choice1: d.choice1, choice2: d.choice2, drawn: d.drawn, winnerSlot: d.winnerSlot, decisive: decisive, repick: d.repick });
+    history = history.filter(function (h) { return h.round !== round; });
+    phase = 'spinning';
+    renderAll();
+    var drawn = R.toColor(entry.drawn);
+    var token = ++spinToken;
+    board.setChip('me', { name: leftName(), kind: 'color', color: entry.choice1, reveal: true });
+    board.setChip('op', { name: rightName(), kind: 'color', color: entry.choice2, reveal: true });
+    board.setPalette({ selected: null, enabled: false });
+    var done = function () {
+      if (token !== spinToken) return;
+      addHistory(entry); phase = 'between'; renderAll();
+      resultShownFor = 0; showRoundStatic(entry);
+    };
+    if (drawn === null) { done(); return; }
+    var wheel = R.wheelFor(entry.decisive, entry.choice1, entry.choice2);
+    board.setStatus(decisive ? 'Une chance sur deux…' : 'La roue tourne…');
+    board.spinTo(wheel, R.landingFor(wheel, drawn, ''), 1400).then(done);
+    return;
+  }
+  phase = 'choosing';
+  spinToken++;
+  sealHash = null; selected = null; myChoice = null;
+  chosen = { 1: d.phase === 'locked', 2: d.phase === 'locked' };
+  board.resetWheel();
+  board.setHub(hubLabel(), '', null, null);
+  board.setSeal(null);
+  renderAll();
+  renderChoosing();
+  board.setStatus(d.phase === 'locked' ? 'Les deux couleurs sont verrouillées' : '🎬 Replay · manche ' + round);
+});
+
+updUI();
+renderAll();
+board.setHub('Roulette', '', null, null);
+board.setPalette({ selected: null, enabled: false });
+if (IS_SPECTATOR) board.setStatus(IS_REPLAY ? '🎬 Replay' : 'Connexion au direct…');
+
+if (IS_REPLAY) { try { window.parent.postMessage({ type: 'replay:ready', game: 'roulette' }, '*'); } catch (_) {} }
+else if (IS_SPECTATOR) postToParent({ type: 'spectator:ready', game: 'roulette', gameId: GAME_ID });
+if (document.readyState === 'complete' || document.readyState === 'interactive') initSocket();
+else document.addEventListener('DOMContentLoaded', initSocket);
+
+})();
+</script>
+<script src="/tournament-pause-client.js"></script>
+<script src="/mindspille-banners.js"></script>
+<script src="/mindspille-proof.js"></script>
+<script src="/mindspille-split.js"></script>
+<script src="/mindspille-chat.js"></script>
+</body>
+</html>
