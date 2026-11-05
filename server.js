@@ -2283,8 +2283,10 @@ function scheduleChifoumiReveal(croom, roomId) {
 // les deux soient verrouillés : seulement « a choisi ». Le match décidé, il se
 // règle à la fin du tour de roue, quoi qu'il arrive aux connexions entre-temps.
 const ROULETTE_TOTAL_ROUNDS = Roulette.REGULAR_ROUNDS;
-const ROULETTE_SPIN_MS = testDurationMs('ROULETTE_SPIN_MS', 4800);
-/* Même couleur en manche décisive : rien ne tourne, on rechoisit. */
+// Un tour de casino : l'élan, l'accélération, la pleine vitesse, puis une
+// longue fin au ralenti (public/roulette-board.js) — 7,2 s (4,8 s jusqu'au 2026-11-05).
+const ROULETTE_SPIN_MS = testDurationMs('ROULETTE_SPIN_MS', 7200);
+/* Même couleur pour les deux (toute manche) : rien ne tourne, on rechoisit. */
 const ROULETTE_REPICK_MS = testDurationMs('ROULETTE_REPICK_MS', 2600);
 /* Le dernier tour de roue reste à l'écran un instant avant la fin du match. */
 const ROULETTE_FINAL_HOLD_MS = testDurationMs('ROULETTE_FINAL_HOLD_MS', 1500);
@@ -2426,7 +2428,7 @@ function spinRouletteRound(rroom, roomId) {
   rroom.next = { over: next.over === true, winnerSlot: next.over ? next.winnerSlot : 0, decisive: next.over ? rroom.decisive : next.decisive === true };
   rroom.spin = {
     round: rroom.round, choice1: c1, choice2: c2, drawn, winnerSlot, decisive: rroom.decisive, repick,
-    wheel, landing: drawn === null ? null : Roulette.landingFor(wheel, drawn, seal.salt),
+    wheel, landing: drawn === null ? null : Roulette.landingFor(wheel, drawn, seal.salt, c1, c2),
     seal: { kind: seal.kind, value: seal.value, salt: seal.salt, hash: seal.hash },
     scores: [...rroom.scores], startTime, duration,
     final: rroom.next.over, matchWinnerSlot: rroom.next.over ? rroom.next.winnerSlot : 0

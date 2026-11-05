@@ -2,10 +2,19 @@
  * Roulette Royale — le plateau, commun aux trois pages (en ligne, contre
  * l'IA, entre amis).
  *
- * Repris du Casino Royal : la roue cerclée d'or et son moyeu, le pointeur, la
- * rotation de cinq tours qui ralentit (5 s, `cubic-bezier(0.12,0.8,0.08,1)`),
- * le résultat qui s'allume. Le reste du Casino Royal (blackjack, mises, jetons,
+ * Repris du Casino Royal : la roue cerclée d'or et son moyeu, le pointeur, le
+ * résultat qui s'allume. Le reste du Casino Royal (blackjack, mises, jetons,
  * roulette à 37 numéros) a disparu : ici, six couleurs et deux joueurs.
+ *
+ * Le tour de roue est celui d'un casino (owner, 2026-11-05 : « ralentie au
+ * début, elle prend de la vitesse pour aller s'arrêter comme dans les grands
+ * jeux de roulette… du suspens ») : un léger élan en arrière, l'accélération,
+ * la pleine vitesse, puis une longue décélération où la roue franchit les
+ * dernières lignes au ralenti ; le pointeur claque sur chaque taquet. Le
+ * point d'arrêt — la case tirée, et l'endroit dans la case, parfois juste
+ * après la ligne ou juste avant la suivante — vient du serveur (le sel du
+ * tirage scellé) : le spectacle est le même sur tous les écrans et ne change
+ * jamais la couleur tirée.
  *
  * Chaque couleur porte sa forme (cercle, triangle, étoile, carré, losange,
  * hexagone) : on la reconnaît aussi sans distinguer les couleurs.
@@ -20,7 +29,7 @@
 
   var CSS = [
     '.rr-stage{position:relative;width:var(--rr-size,min(76vw,300px));aspect-ratio:1/1;flex:0 0 auto;margin:6px auto 0;-webkit-user-select:none;user-select:none;container-type:inline-size}',
-    '.rr-pointer{position:absolute;top:-7px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:13px solid transparent;border-right:13px solid transparent;border-top:25px solid #fbbf24;filter:drop-shadow(0 3px 4px rgba(0,0,0,.6));z-index:4}',
+    '.rr-pointer{position:absolute;top:-7px;left:50%;transform:translateX(-50%);transform-origin:50% 0;width:0;height:0;border-left:13px solid transparent;border-right:13px solid transparent;border-top:25px solid #fbbf24;filter:drop-shadow(0 3px 4px rgba(0,0,0,.6));z-index:4}',
     '.rr-pointer::after{content:"";position:absolute;left:-5px;top:-22px;width:10px;height:10px;border-radius:50%;background:#fde68a;box-shadow:0 0 6px rgba(253,230,138,.8)}',
     /* La roue tourne dans un cadre rond qui, lui, ne tourne pas : la boîte carrée
        de la roue, une fois tournée, ne déborde jamais de la page. */
@@ -79,7 +88,8 @@
     /* Les derniers tirages et le sceau. */
     '.rr-foot{display:flex;flex-direction:column;align-items:center;gap:7px;width:100%;max-width:360px}',
     '.rr-history{display:flex;align-items:center;gap:6px;min-height:22px;flex-wrap:nowrap;max-width:100%;overflow:hidden}',
-    '.rr-history[hidden]{display:none}',
+    /* Vide, la bande garde sa place (invisible) : la roue ne rétrécit pas au premier résultat. */
+    '.rr-history.rr-empty{visibility:hidden}',
     '.rr-history-lbl{font:600 9px/1 Inter,system-ui,sans-serif;letter-spacing:1px;text-transform:uppercase;color:rgba(255,255,255,.38);white-space:nowrap;margin-right:2px}',
     '.rr-hist{position:relative;width:20px;height:20px;border-radius:50%;flex:0 0 20px;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,.4)}',
     '.rr-hist svg{width:60%;height:60%}',
@@ -182,6 +192,41 @@
     return out.join('');
   }
 
+  /*
+   * Le mouvement d'un tour de roue, en temps normalisé u ∈ [0, 1] :
+   *   0 → 0,07   l'élan : la roue recule un peu, puis repart (vitesse nulle aux deux bouts) ;
+   *   → 0,27     l'accélération (lente au début, de plus en plus vite) ;
+   *   → 0,42     la pleine vitesse ;
+   *   → 1        le freinage, (1 − s)^2,6 : une longue fin au ralenti, où les
+   *              dernières lignes passent une à une sous le pointeur.
+   * `progress(u)` : la part du chemin vers l'avant parcourue (table intégrée une fois).
+   */
+  var MOTION = (function () {
+    var WIND_END = 0.07, ACC_END = 0.27, CRUISE_END = 0.42, K = 2.6, N = 720;
+    function velocity(u) {
+      if (u < WIND_END) return 0;
+      if (u < ACC_END) { var x = (u - WIND_END) / (ACC_END - WIND_END); return x * x; }
+      if (u < CRUISE_END) return 1;
+      return Math.pow(Math.max(0, 1 - (u - CRUISE_END) / (1 - CRUISE_END)), K);
+    }
+    var table = new Float64Array(N + 1), sum = 0;
+    for (var i = 1; i <= N; i++) { sum += (velocity((i - 1) / N) + velocity(i / N)) / (2 * N); table[i] = sum; }
+    for (var j = 0; j <= N; j++) table[j] /= sum;
+    return {
+      progress: function (u) {
+        if (u <= 0) return 0;
+        if (u >= 1) return 1;
+        var x = u * N, k = Math.floor(x);
+        return table[k] + (table[Math.min(N, k + 1)] - table[k]) * (x - k);
+      },
+      /** L'élan en arrière (degrés, ≤ 0) : 0 au départ et au bout de l'élan, sans à-coup. */
+      windup: function (u, depth) {
+        if (u <= 0 || u >= WIND_END) return 0;
+        return -depth * (1 - Math.cos(2 * Math.PI * u / WIND_END)) / 2;
+      }
+    };
+  })();
+
   function mount(opts) {
     var els = opts || {};
     var stage = els.stage;
@@ -189,12 +234,15 @@
     stage.innerHTML = '<div class="rr-glow"></div><div class="rr-pointer"></div><div class="rr-rotor-clip"><div class="rr-rotor"></div></div>'
       + '<div class="rr-hub"><span class="rr-hub-top"></span><span class="rr-hub-main"></span></div>';
     var rotor = stage.querySelector('.rr-rotor');
+    var pointer = stage.querySelector('.rr-pointer');
     var hub = stage.querySelector('.rr-hub');
     var hubTop = stage.querySelector('.rr-hub-top');
     var hubMain = stage.querySelector('.rr-hub-main');
     var rotation = 0;
     var currentWheel = null;
     var spinTimer = null;
+    var spinFrame = 0;
+    var finishSpin = null;
     var reduced = false;
     try { reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (_) {}
 
@@ -216,34 +264,78 @@
       rotor.classList.add('rr-dim');
     }
 
-    /* Cinq tours, puis l'arrêt sur la case : depuis l'angle actuel, toujours en avant. */
+    function setPointer(deg) {
+      pointer.style.transform = deg ? 'translateX(-50%) rotate(' + deg.toFixed(2) + 'deg)' : '';
+    }
+    /* Un tour en cours s'arrête net (nouveau tour, remise à zéro) : la promesse se tient quand même. */
+    function stopSpin() {
+      if (spinFrame) { cancelAnimationFrame(spinFrame); spinFrame = 0; }
+      if (spinTimer) { clearTimeout(spinTimer); spinTimer = null; }
+      if (finishSpin) { var done = finishSpin; finishSpin = null; done(false); }
+    }
+
+    /*
+     * Le tour de roue jusqu'à la case `landing` : depuis l'angle actuel,
+     * toujours en avant, six tours (quatre pour un tour court), avec l'élan,
+     * l'accélération et la longue fin au ralenti de MOTION. Chaque ligne qui
+     * passe sous le pointeur le fait claquer, d'autant plus visiblement que la
+     * roue ralentit. Un minuteur de secours conclut le tour si l'onglet, caché,
+     * ne dessine plus (le résultat n'attend jamais l'image suivante).
+     */
     function spinTo(wheel, landing, durationMs) {
+      stopSpin();
       setWheel(wheel);
       clearHit();
-      if (spinTimer) { clearTimeout(spinTimer); spinTimer = null; }
       var target = R.landingAngle(wheel.length, landing);
       var duration = Math.max(0, Number(durationMs) || 0);
-      var turns = duration > 1200 ? 5 : duration > 300 ? 2 : 0;
+      var turns = duration >= 4000 ? 6 : duration > 1200 ? 4 : duration > 300 ? 2 : 0;
+      var from = rotation;
       rotation += turns * 360 + ((target - (rotation % 360) + 360) % 360);
+      var to = rotation;
+      rotor.style.transition = 'none';
       if (reduced || duration < 120) {
-        rotor.style.transition = 'none';
-        rotor.style.transform = 'rotate(' + rotation + 'deg)';
+        rotor.style.transform = 'rotate(' + to + 'deg)';
+        setPointer(0);
         markHit(landing.segment);
         return Promise.resolve();
       }
       stage.classList.add('rr-spinning');
-      // Une nouvelle durée, puis l'angle : la transition part bien de l'angle courant.
-      rotor.style.transition = 'none';
-      void rotor.offsetWidth;
-      rotor.style.transition = 'transform ' + duration + 'ms cubic-bezier(0.12, 0.8, 0.08, 1)';
-      rotor.style.transform = 'rotate(' + rotation + 'deg)';
+      var seg = 360 / wheel.length;
+      var depth = Math.min(9, seg * 0.15);
+      /* Le temps part de l'appel (comme le minuteur de secours), pas de la première image. */
+      var started = window.performance && performance.now ? performance.now() : null;
+      var lastLine = Math.floor(from / seg), kick = 0, lastFrame = started || 0;
       return new Promise(function (resolve) {
-        spinTimer = setTimeout(function () {
-          spinTimer = null;
+        finishSpin = function (landed) {
+          if (spinFrame) { cancelAnimationFrame(spinFrame); spinFrame = 0; }
+          if (spinTimer) { clearTimeout(spinTimer); spinTimer = null; }
+          finishSpin = null;
           stage.classList.remove('rr-spinning');
-          markHit(landing.segment);
+          setPointer(0);
+          if (landed !== false) {
+            rotor.style.transform = 'rotate(' + to + 'deg)';
+            markHit(landing.segment);
+          }
           resolve();
-        }, duration + 40);
+        };
+        function frame(now) {
+          spinFrame = 0;
+          if (started === null) { started = now; lastFrame = now; }
+          var u = Math.max(0, Math.min(1, (now - started) / duration));
+          var angle = from + MOTION.windup(u, depth) + (to - from) * MOTION.progress(u);
+          rotor.style.transform = 'rotate(' + angle.toFixed(3) + 'deg)';
+          /* Le pointeur : chaque taquet qui passe le pousse (la roue tourne vers la droite en haut). */
+          var line = Math.floor(angle / seg);
+          var dt = Math.max(0, now - lastFrame);
+          lastFrame = now;
+          kick *= Math.exp(-dt / 75);
+          if (line !== lastLine) { kick = -16; lastLine = line; }
+          setPointer(Math.abs(kick) < 0.2 ? 0 : kick);
+          if (u >= 1) { if (finishSpin) finishSpin(true); return; }
+          spinFrame = requestAnimationFrame(frame);
+        }
+        spinFrame = requestAnimationFrame(frame);
+        spinTimer = setTimeout(function () { spinTimer = null; if (finishSpin) finishSpin(true); }, duration + 250);
       });
     }
 
@@ -266,7 +358,7 @@
     }
 
     function resetWheel() {
-      if (spinTimer) { clearTimeout(spinTimer); spinTimer = null; }
+      stopSpin();
       stage.classList.remove('rr-spinning');
       clearHit();
       setWheel(R.wheelFor(false));
@@ -367,8 +459,13 @@
       var list = (entries || []).slice(-8);
       history.className = 'rr-history';
       history.innerHTML = '';
-      if (!list.length) { history.hidden = true; return; }
       history.hidden = false;
+      if (!list.length) {
+        history.classList.add('rr-empty');
+        history.setAttribute('aria-hidden', 'true');
+        return;
+      }
+      history.removeAttribute('aria-hidden');
       var lbl = document.createElement('span');
       lbl.className = 'rr-history-lbl';
       lbl.textContent = 'Tirages';
@@ -390,6 +487,8 @@
         history.appendChild(dot);
       });
     }
+
+    setHistory([]);
 
     // ── Le sceau du tirage ──
     var seal = els.seal;

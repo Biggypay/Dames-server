@@ -25,7 +25,7 @@
   var DIFFICULTY = String(P.get('difficulty') || P.get('level') || 'medium').toLowerCase();
   /* ?fast=1 : des manches accélérées, pour les tests de la page. */
   var FAST = P.get('fast') === '1';
-  var SPIN_MS = FAST ? 500 : 4800;
+  var SPIN_MS = FAST ? 500 : 7200;
   var BETWEEN_MS = FAST ? 300 : 2600;
   var REPICK_MS = FAST ? 300 : 2200;
   var FINAL_HOLD_MS = FAST ? 200 : 1300;
@@ -392,7 +392,7 @@
     var wheel = R.wheelFor(decisive, c1, c2);
     board.setStatus(decisive ? 'Une chance sur deux…' : 'La roue tourne…');
     board.setHub(decisive ? 'Décisive' : 'Tirage', '', null, null);
-    board.spinTo(wheel, R.landingFor(wheel, drawn, seal.salt), SPIN_MS).then(function () {
+    board.spinTo(wheel, R.landingFor(wheel, drawn, seal.salt, c1, c2), SPIN_MS).then(function () {
       if (token === matchToken) finish(entry, token);
     });
   }

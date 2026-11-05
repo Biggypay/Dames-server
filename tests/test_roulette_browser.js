@@ -24,7 +24,11 @@
  *   • une page rechargée retrouve sa propre couleur verrouillée ;
  *   • la page tient sans défiler du 320×568 au paysage et à l'écran partagé ;
  *   • contre l'IA et entre amis : un match complet, `practice_over`, et entre
- *     amis la couleur du premier n'est jamais montrée au second.
+ *     amis la couleur du premier n'est jamais montrée au second ;
+ *   • le tour de roue de casino, à vitesse réelle (7,2 s) : un léger élan en
+ *     arrière, un départ lent, la pleine vitesse au milieu, une longue fin au
+ *     ralenti, le pointeur qui claque jusque dans le freinage, l'arrêt sur la
+ *     couleur tirée.
  */
 const { spawn } = require('child_process');
 const http = require('http');
@@ -445,6 +449,72 @@ async function offline(browser, mode) {
   await page.context().close();
 }
 
+/*
+ * Le tour de roue de casino (owner, 2026-11-05 : « ralentie au début… prend de
+ * la vitesse… s'arrêter comme dans les grands jeux de roulette »), à la vitesse
+ * réelle de la page contre l'IA (sans ?fast=1). Le moteur écrit l'angle absolu
+ * dans le style du rotor à chaque image : on le relève image par image.
+ */
+async function casinoSpin(browser) {
+  console.log('Roulette Royale : le tour de roue de casino (vitesse réelle)');
+  const errors = [];
+  const page = await newPage(browser, 'casino', errors);
+  await page.goto(GAME_URL + '/roulette-ai?name=Ritchy&difficulty=hard');
+  const ready = await waitFor(() => page.evaluate(() => !!window.RouletteOffline
+    && window.RouletteOffline.state().phase === 'choosing' && !!document.querySelector('.rr-swatch:not(.rr-off)')), 15000);
+  check('la page contre l’IA est prête', !!ready);
+  const samplesP = page.evaluate(() => new Promise(resolve => {
+    const rotor = document.querySelector('.rr-rotor'), pointer = document.querySelector('.rr-pointer');
+    const rot = el => { const m = /rotate\((-?[\d.]+)deg\)/.exec(el.style.transform || ''); return m ? Number(m[1]) : 0; };
+    const out = [];
+    let t0 = null;
+    const tick = now => {
+      const phase = window.RouletteOffline.state().phase;
+      if (t0 === null) {
+        if (phase !== 'spinning') { requestAnimationFrame(tick); return; }
+        t0 = now;
+      }
+      out.push({ t: now - t0, angle: rot(rotor), pointer: rot(pointer) });
+      if (phase !== 'spinning' || now - t0 > 12000) { resolve(out); return; }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }));
+  await page.click('.rr-swatch[data-color="2"]');
+  await page.click('#lockBtn');
+  const samples = await samplesP;
+  const at = t => { let best = samples[0]; for (const x of samples) if (x.t <= t) best = x; return best.angle; };
+  const end = samples[samples.length - 1].t;
+  const start = samples[0].angle;
+  const speeds = [];
+  for (let t = 0; t + 250 <= end; t += 50) speeds.push({ t, v: (at(t + 250) - at(t)) / 0.25 });
+  const peak = speeds.reduce((a, b) => (b.v > a.v ? b : a), { t: 0, v: 0 });
+  const early = (at(1000) - at(0)) / 1;
+  const late = (at(end) - at(end - 1500)) / 1.5;
+  const dip = start - Math.min(...samples.filter(x => x.t < 700).map(x => x.angle));
+  const kicks = samples.filter(x => Math.abs(x.pointer) > 0.5);
+  const lastKick = kicks.length ? kicks[kicks.length - 1].t : 0;
+  const detail = { end: Math.round(end), peak: Math.round(peak.v), peakAt: Math.round(peak.t), early: Math.round(early), late: Math.round(late), dip: Math.round(dip * 10) / 10, turns: Math.round((at(end) - start) / 36) / 10, kicks: kicks.length, lastKick: Math.round(lastKick), frames: samples.length };
+  check(`un tour de 7 s environ (${detail.end} ms, ${detail.frames} images)`, end > 6400 && end < 9500, detail);
+  check(`un léger élan en arrière d’abord (${detail.dip}°)`, dip >= 3 && dip <= 12, detail);
+  check(`un départ lent : la première seconde à moins d’un quart de la pleine vitesse (${detail.early} contre ${detail.peak} °/s)`, early < peak.v * 0.25, detail);
+  check(`la pleine vitesse au milieu du tour (${detail.peakAt} ms)`, peak.t > 1000 && peak.t < 4200 && peak.v > 400, detail);
+  check(`une longue fin au ralenti : la dernière seconde et demie à moins de 12 % (${detail.late} °/s)`, late < peak.v * 0.12, detail);
+  check(`au moins cinq tours (${detail.turns})`, (at(end) - start) >= 1800, detail);
+  check(`le pointeur claque sur les taquets, jusque dans le freinage (dernier à ${detail.lastKick} ms)`, kicks.length >= 10 && lastKick > 4000, detail);
+  check('le pointeur revient droit à l’arrêt', Math.abs(samples[samples.length - 1].pointer) < 0.5 || (await page.evaluate(() => !document.querySelector('.rr-pointer').style.transform)), detail);
+  const final = await page.evaluate(() => {
+    const st = window.RouletteOffline.state();
+    const last = st.history[st.history.length - 1];
+    const m = /rotate\((-?[\d.]+)deg\)/.exec(document.querySelector('.rr-rotor').style.transform || '');
+    return { drawn: last ? last.drawn : null, repick: !!(last && last.repick), angle: m ? Number(m[1]) : null };
+  });
+  const under = final.angle === null ? null : Math.floor((((360 - (final.angle % 360)) % 360) + 360) % 360 / 60);
+  check('la roue s’arrête sur la couleur tirée', final.repick || under === final.drawn, final);
+  check('aucune erreur JavaScript', errors.length === 0, errors);
+  await page.context().close();
+}
+
 async function main() {
   const db = mockDatabase();
   await new Promise(resolve => db.listen(DB_PORT, '127.0.0.1', resolve));
@@ -476,6 +546,7 @@ async function main() {
     await reloadKeepsChoice(browser);
     await offline(browser, 'ai');
     await offline(browser, 'local');
+    await casinoSpin(browser);
   } catch (error) {
     failures++;
     console.error('  FAIL exception', error && error.stack ? error.stack : error);

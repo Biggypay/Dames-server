@@ -165,18 +165,50 @@
   }
 
   /**
-   * Où la roue s'arrête : la case (parmi celles de la couleur tirée) et un
-   * léger décalage dans la case, tirés du sel — le même arrêt sur tous les
-   * écrans, joueurs et spectateurs.
+   * Où la roue s'arrête : la case (parmi celles de la couleur tirée) et
+   * l'endroit dans la case, tirés du sel — le même arrêt sur tous les écrans,
+   * joueurs et spectateurs. Pour le suspens (owner, 2026-11-05 : « parfois ça
+   * s'arrête sur la couleur à la dernière ligne »), selon le sel (les parts
+   * sans couleur choisie voisine) :
+   *   'last-line'  (35 %) la roue franchit la ligne au tout dernier moment :
+   *                elle s'arrête juste entrée dans la case (offset +0,78 à +0,88,
+   *                du côté de la case qui vient de passer sous le pointeur) ;
+   *   'near-next'  (20 %) elle s'arrête juste avant la ligne suivante
+   *                (offset −0,78 à −0,88) ;
+   *   'middle'     sinon, vers le milieu de la case.
+   * Le presque-arrêt va vers une couleur choisie (owner : « des fois ça va
+   * tomber sur une couleur que l'un a choisi mais ça n'arrive pas ») : quand
+   * une seule des deux cases voisines est une couleur choisie, le côté
+   * passe de ce côté-là — la roue traîne sur elle puis franchit la ligne
+   * ('last-line'), ou s'arrête juste avant de l'atteindre ('near-next').
+   * Le sel décide toujours SI la manche a du suspens (55 %) ; les choix,
+   * publics au moment du tour, n'en décident que le côté.
+   * Toujours franchement dans la case (au moins 6 % de sa largeur depuis une
+   * ligne). Pure mise en scène : la couleur tirée est scellée avant les
+   * choix, l'arrêt ne la change jamais et ne change pas le point. À égale
+   * distance (personne ne marque), toujours au milieu : un arrêt près d'une
+   * ligne laisserait croire que l'un était plus près. Sans sel (un replay),
+   * au milieu.
    */
-  function landingFor(wheel, drawn, salt) {
+  function landingFor(wheel, drawn, salt, choice1, choice2) {
     var slots = [];
     for (var i = 0; i < wheel.length; i++) if (wheel[i] === drawn) slots.push(i);
-    if (!slots.length) return { segment: 0, offset: 0 };
+    if (!slots.length) return { segment: 0, offset: 0, style: 'middle' };
     var pick = slots[Math.min(slots.length - 1, Math.floor(saltFraction(salt, 0) * slots.length))];
-    /* Jamais sur un bord : au plus 30 % d'une demi-case du centre. */
-    var offset = (saltFraction(salt, 2) - 0.5) * 0.6;
-    return { segment: pick, offset: Math.round(offset * 1000) / 1000 };
+    if (!salt) return { segment: pick, offset: 0, style: 'middle' };
+    var tie = isColor(choice1) && isColor(choice2) && choice1 !== choice2 && roundWinner(choice1, choice2, drawn) === 0;
+    var roll = saltFraction(salt, 4), f = saltFraction(salt, 2);
+    var style = tie ? 'middle' : roll < 0.35 ? 'last-line' : roll < 0.55 ? 'near-next' : 'middle';
+    if (style !== 'middle') {
+      // Le sens de rotation fait passer la case pick + 1 avant, puis pick − 1.
+      var n = wheel.length;
+      var passed = wheel[(pick + 1) % n], coming = wheel[(pick - 1 + n) % n];
+      var chosen = function (c) { return c !== drawn && (c === choice1 || c === choice2); };
+      if (chosen(passed) && !chosen(coming)) style = 'last-line';
+      else if (chosen(coming) && !chosen(passed)) style = 'near-next';
+    }
+    var offset = style === 'last-line' ? 0.78 + 0.1 * f : style === 'near-next' ? -(0.78 + 0.1 * f) : (f - 0.5) * 0.9;
+    return { segment: pick, offset: Math.round(offset * 1000) / 1000, style: style };
   }
 
   /** L'angle (degrés) qui amène la case `segment` sous le pointeur du haut. */

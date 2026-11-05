@@ -603,7 +603,7 @@ function handleSpin(sp) {
   var drawn = R.toColor(sp.drawn);
   if (sp.repick || drawn === null) { finishSpin(sp, token); return; }
   var wheel = Array.isArray(sp.wheel) && sp.wheel.length >= 2 && sp.wheel.every(R.isColor) ? sp.wheel : R.wheelFor(decisive, sp.choice1, sp.choice2);
-  var landing = sp.landing && wheel[sp.landing.segment] === drawn ? sp.landing : R.landingFor(wheel, drawn, sp.seal && sp.seal.salt);
+  var landing = sp.landing && wheel[sp.landing.segment] === drawn ? sp.landing : R.landingFor(wheel, drawn, sp.seal && sp.seal.salt, sp.choice1, sp.choice2);
   board.setStatus(decisive ? 'Une chance sur deux…' : 'La roue tourne…');
   board.setHub(decisive ? 'Décisive' : 'Tirage', '', null, null);
   var remaining = Number(sp.startTime) + Number(sp.duration) - serverNow();
