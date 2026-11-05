@@ -27,7 +27,7 @@
         <circle class="timer-track" cx="29" cy="29" r="26"/>
         <circle class="timer-arc" id="timer-arc-human" cx="29" cy="29" r="26" stroke="#ffffff"/>
       </svg>
-      <div class="profile-avatar" id="avatar-human">👤</div>
+      <div class="profile-avatar" id="avatar-human"><svg class="rr-avatar-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8.2" r="4.2"/><path d="M4.2 21a7.8 7.8 0 0 1 15.6 0"/></svg></div>
     </div>
     <div class="profile-name" id="name-human">MOI</div>
   </div>
@@ -38,7 +38,7 @@
       <span class="ssep">vs</span>
       <span class="snum sr" id="aiScore">0</span>
     </div>
-    <span class="manche-lbl" id="roundLabel">Manche 1 / 5</span>
+    <span class="manche-lbl" id="roundLabel">Manche 1 / 6</span>
     <div class="rounds-progress" id="roundsProgress">
       <div class="round-dot"></div>
       <div class="round-dot"></div>
@@ -66,25 +66,22 @@
   <div class="rr-board">
     <div class="rr-col rr-col-a">
       <div id="wheel" aria-label="Roue des couleurs"></div>
+      <!-- En bas, seulement les règles (owner, 2026-11-05) ; la vérification du tirage est dedans. -->
       <div class="rr-foot">
-        <div id="history"></div>
-        <div class="rr-foot-row">
-          <button type="button" class="rr-link" id="rulesBtn" aria-expanded="false" aria-controls="rulesBox">Règles</button>
-          <button type="button" id="seal"></button>
-        </div>
-        <div id="sealBox"></div>
+        <button type="button" class="rr-link" id="rulesBtn" aria-expanded="false" aria-controls="rulesBox">Règles</button>
         <div class="rr-rules" id="rulesBox" hidden>
           <ul>
             <li>Vous et l’IA choisissez chacun une couleur.</li>
-            <li>La couleur gagnante est tirée au hasard avant vos choix, puis scellée.</li>
-            <li>La couleur la plus proche de celle tirée sur la roue marque 1 point. Pile dessus, c’est forcément vous. À égale distance : manche nulle.</li>
+            <li>Avant vos choix, l’issue de la manche est tirée au sort, puis scellée : chacun a 4 chances sur 10 de marquer ; 2 fois sur 10, personne ne marque.</li>
+            <li>Seule la couleur exacte compte : l’aiguille s’arrête pile sur la couleur de celui qui marque, sinon sur une couleur que personne n’a choisie. La couleur choisie ne change rien aux chances.</li>
             <li>Même couleur pour les deux : rien ne tourne, on rechoisit.</li>
             <li>6 manches. Le match s’arrête plus tôt si l’écart ne peut plus être comblé.</li>
             <li>Égalité après 6 manches : on continue, 7e et 8e manches, puis 9e et 10e… jusqu’à ce qu’un joueur gagne. La roue garde ses six couleurs.</li>
             <li>Les deux manches d’une paire se jouent toujours : même si l’un gagne la première, l’autre joue la seconde. Un point d’avance au bout de la paire, et c’est gagné.</li>
-            <li>L’IA choisit au hasard : elle ne connaît jamais le tirage.</li>
+            <li>L’IA choisit au hasard : elle ne connaît jamais l’issue.</li>
             <li>30 s pour choisir ; ensuite, la couleur touchée part d’elle-même (sinon une au hasard).</li>
           </ul>
+          <div class="rr-rules-seal"><button type="button" id="seal"></button><div id="sealBox"></div></div>
         </div>
       </div>
     </div>
@@ -109,7 +106,7 @@
       <div class="modal-history-list" id="modalHistoryList"></div>
     </div>
     <div class="modal-actions">
-      <button class="restart-btn" id="replayBtn" type="button">↻ Rejouer</button>
+      <button class="restart-btn" id="replayBtn" type="button"><svg class="rr-btn-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 12a8.5 8.5 0 1 1-2.5-6"/><path d="M20.5 3.8V9h-5.2"/></svg><span>Rejouer</span></button>
       <button class="restart-btn secondary" id="closeBtn" type="button">Fermer</button>
     </div>
   </div>

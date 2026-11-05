@@ -2272,9 +2272,10 @@ function scheduleChifoumiReveal(croom, roomId) {
 // ══════════════════════════════════════════════════════════
 // Les règles sont dans lib/color-roulette.js (le même fichier que les pages :
 // public/roulette-rules.js). Ici, le déroulé d'une partie, manche après manche :
-//   choosing — la manche est ouverte, son tirage déjà fait et scellé (seule
-//              l'empreinte est publiée) ; chacun choisit en secret, avec le
-//              chronomètre de tous les jeux (30 s, puis 60 s de grâce) ;
+//   choosing — la manche est ouverte, son issue déjà tirée et scellée (seule
+//              l'empreinte est publiée : le joueur 1, le joueur 2 ou personne
+//              marquera) ; chacun choisit en secret, avec le chronomètre de
+//              tous les jeux (30 s, puis 60 s de grâce) ;
 //   spinning — les deux ont choisi : la couleur est connue de tous, la roue
 //              tourne sur tous les écrans, le point est déjà compté ;
 //   between  — la preuve reste à l'écran (ROUND_PROOF_MS), puis la manche
@@ -2295,8 +2296,9 @@ const ROULETTE_REPICK_MS = testDurationMs('ROULETTE_REPICK_MS', 2600);
 const ROULETTE_FINAL_HOLD_MS = testDurationMs('ROULETTE_FINAL_HOLD_MS', 1500);
 const ROULETTE_PHASES = new Set(['choosing', 'spinning', 'between']);
 
-// Tests d'exécution seulement (NODE_ENV=test) : une suite de tirages imposée
-// par room, en JSON — {"room-a":[0,1,2]} — pour jouer un match connu d'avance.
+// Tests d'exécution seulement (NODE_ENV=test) : une suite d'issues imposée
+// par room, en JSON — {"room-a":[0,8,16]} (0–7 : le joueur 1 marque, 8–15 : le
+// joueur 2, 16–19 : personne) — pour jouer un match connu d'avance.
 // Hors tests, le tirage vient toujours de crypto.randomInt.
 const ROULETTE_TEST_DRAWS = (() => {
   if (process.env.NODE_ENV !== 'test' || !process.env.ROULETTE_TEST_DRAWS) return null;
@@ -2410,7 +2412,8 @@ function spinRouletteRound(rroom, roomId) {
   // Même couleur pour les deux, manche décisive ou non : rien ne tourne, on rechoisit.
   const repick = Roulette.isRepick(c1, c2);
   const drawn = repick ? null : Roulette.drawnColor(seal, c1, c2);
-  // La couleur la plus proche de la couleur tirée marque ; à égale distance, personne.
+  // Seule la couleur EXACTE marque : l'issue scellée avant les choix désigne le
+  // joueur 1, le joueur 2, ou personne (une couleur que personne n'a choisie).
   const winnerSlot = Roulette.roundWinner(c1, c2, drawn);
   if (winnerSlot) rroom.scores[winnerSlot - 1] += 1;
   rroom.history.push({ round: rroom.round, choice1: c1, choice2: c2, drawn, winnerSlot, decisive: rroom.decisive, repick });

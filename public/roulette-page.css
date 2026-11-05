@@ -110,7 +110,9 @@ body{
   max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:0;transition:opacity 0.3s;
 }
 .status.visible{opacity:1}
-.status.result{font-family:'Cinzel',serif;font-weight:700;font-size:clamp(12px,calc(4.4vw - 1px),17px);text-shadow:0 0 14px currentColor}
+/* Le résultat : la lueur tient dans la boîte (une boîte qui coupe une lueur dessine un rectangle). */
+.status.result{font-family:'Cinzel',serif;font-weight:700;font-size:clamp(12px,calc(4.4vw - 1px),17px);padding:9px 14px;line-height:22px;
+  text-shadow:0 0 9px color-mix(in srgb,currentColor 55%,transparent),0 1px 2px rgba(0,0,0,0.45)}
 .status.win{color:#4ade80}
 .status.lose{color:#f87171}
 .status.draw{color:#fbbf24}
@@ -144,6 +146,9 @@ body{
 .rr-rules[hidden]{display:none}
 .rr-rules li{margin-left:16px}
 .rr-rules li + li{margin-top:3px}
+/* Dans les règles : la vérification du tirage de la manche (empreinte publiée avant les choix). */
+.rr-rules-seal{display:flex;flex-direction:column;align-items:center;gap:7px;margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.08)}
+.rr-rules-seal #seal[hidden]{display:none}
 body.spectator .rr-lock,body.replay .rr-lock{display:none!important}
 body.replay #forfeit-bar{display:none!important}
 
@@ -153,6 +158,8 @@ body.replay #forfeit-bar{display:none!important}
   font-family:'Cinzel',serif;font-size:11px;letter-spacing:1.5px;text-align:center;padding:8px;display:none;
 }
 #reconn-bar.show{display:block}
+#reconn-bar .rr-bar-ico{width:14px;height:14px;vertical-align:-2px;margin-right:7px}
+.rr-avatar-ico{width:56%;height:56%;color:rgba(255,255,255,0.7)}
 #forfeit-bar{
   position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:rgba(30,27,75,0.95);
   border:1px solid rgba(251,191,36,0.5);border-radius:99px;padding:8px 20px;font-family:'Cinzel',serif;
@@ -182,6 +189,8 @@ body.replay #forfeit-bar{display:none!important}
   max-height:90vh;overflow-y:auto;
 }
 .modal h2{font-family:'Cinzel',serif;font-size:28px;margin-bottom:15px;font-weight:700}
+.modal h2 .rr-title-ico{width:0.92em;height:0.92em;margin-right:0.32em;vertical-align:-0.1em}
+.modal .prize-line .rr-ico{width:1.05em;height:1.05em;margin-right:0.4em;vertical-align:-0.16em}
 .modal .final-score{font-family:'Cinzel',serif;font-size:56px;font-weight:700;margin-bottom:8px}
 .modal .final-message{font-size:14px;color:rgba(255,255,255,0.6);margin-bottom:10px;line-height:1.5}
 .modal .prize-line{font-size:18px;font-weight:700;color:#fbbf24;margin-bottom:20px}
@@ -210,6 +219,16 @@ body.replay #forfeit-bar{display:none!important}
 .rr-mini svg{width:62%;height:62%}
 .rr-mini.rr-none{background:transparent;border:1.5px dashed rgba(255,255,255,0.4)}
 .rr-arrow{opacity:0.45;font-size:11px}
+.rr-ico.rr-arrow{width:12px;height:12px}
+/* La marque d'une manche, à droite de l'historique : gagnée, perdue, personne, rechoix. */
+.rr-mark{display:inline-flex;flex:0 0 auto}
+.rr-mark .rr-ico{width:18px;height:18px}
+.rr-mark-win{color:#4ade80}
+.rr-mark-lose{color:#f87171}
+.rr-mark-draw{color:rgba(255,255,255,0.45)}
+.rr-mark-repick{color:#fbbf24}
+.rr-mark-num{min-width:20px;height:20px;padding:0 4px;border-radius:999px;font:700 11px/20px 'Inter',sans-serif;text-align:center;background:rgba(34,197,94,0.18);color:#86efac}
+.rr-mark-num.rr-p2{background:rgba(96,165,250,0.18);color:#93c5fd}
 
 #confetti-canvas{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:100}
 #toast{
@@ -218,7 +237,8 @@ body.replay #forfeit-bar{display:none!important}
   border-radius:20px;padding:28px 32px;text-align:center;pointer-events:none;z-index:50;display:none;
   box-shadow:0 15px 50px rgba(0,0,0,0.6);min-width:220px;
 }
-#toast-emoji{font-size:48px;margin-bottom:10px}
+#toast-emoji{display:flex;justify-content:center;color:#fbbf24;margin-bottom:12px}
+#toast-emoji .rr-ico{width:44px;height:44px;filter:drop-shadow(0 0 10px rgba(251,191,36,0.35))}
 #toast-title{font-family:'Cinzel',serif;color:#fbbf24;font-size:20px;font-weight:700;margin-bottom:6px}
 #toast-sub{font-size:12px;color:rgba(255,255,255,0.6);letter-spacing:1px;white-space:pre-line}
 #loading{
@@ -291,4 +311,5 @@ body.replay #forfeit-bar{display:none!important}
 /* Fin de partie hors ligne : rejouer, ou fermer. */
 .modal-actions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
 .modal-actions .restart-btn{padding:12px 24px;font-size:15px}
+.restart-btn .rr-btn-ico{width:16px;height:16px;vertical-align:-3px;margin-right:7px}
 .modal .restart-btn.secondary{background:rgba(255,255,255,0.08);box-shadow:inset 0 0 0 1px rgba(255,255,255,0.22)}

@@ -8,14 +8,23 @@
  *
  * Le tour de roue est celui d'un casino (owner, 2026-11-05 : « ralentie au
  * début, elle prend de la vitesse pour aller s'arrêter comme dans les grands
- * jeux de roulette… du suspens ») : un léger élan en arrière, l'accélération,
- * la pleine vitesse, puis une longue décélération où la roue franchit les
- * dernières lignes au ralenti ; le pointeur claque sur chaque taquet. Le
- * point d'arrêt — la case tirée, et l'endroit dans la case, parfois juste
- * après la ligne ou juste avant la suivante — vient du serveur (le sel du
- * tirage scellé) : le spectacle est le même sur tous les écrans et ne change
- * jamais la couleur tirée. En manche décisive (7e, 8e…), le tour dure plus
- * longtemps et le halo de la roue bat comme un cœur, de plus en plus vite.
+ * jeux de roulette… du suspens », puis « ça doit être accéléré un peu plus.
+ * La vitesse doit être visible et le ralenti également. Ça doit être très
+ * fluide ») : un léger élan en arrière, une accélération franche jusqu'à
+ * près de quatre tours par seconde — les couleurs se fondent alors en un
+ * disque flou, comme une vraie roue lancée —, puis une longue décélération où
+ * la roue franchit les dernières lignes au ralenti ; le pointeur claque sur
+ * chaque taquet. Le point d'arrêt — la case tirée, et l'endroit dans la case,
+ * parfois juste après la ligne ou juste avant la suivante — vient du serveur
+ * (le sel du tirage scellé) : le spectacle est le même sur tous les écrans et
+ * ne change jamais la couleur tirée. Un instant après l'arrêt, la roue se
+ * recentre en douceur : l'aiguille finit au milieu de la couleur tirée
+ * (owner : « l'aiguille doit recentrer dans la couleur… pour que ça soit
+ * réaliste »). En manche décisive (7e, 8e…), le tour dure plus longtemps et le
+ * halo de la roue bat comme un cœur, de plus en plus vite.
+ *
+ * Aucun émoji : les icônes sont des SVG dessinés ici (RouletteBoard.icon),
+ * pour les messages, les annonces et la fin de partie des trois pages.
  *
  * Chaque couleur porte sa forme (cercle, triangle, étoile, carré, losange,
  * hexagone) : on la reconnaît aussi sans distinguer les couleurs.
@@ -37,6 +46,11 @@
     '.rr-rotor-clip{position:absolute;inset:0;border-radius:50%;overflow:hidden}',
     '.rr-rotor{position:absolute;inset:0;border-radius:50%;will-change:transform;transform:rotate(0deg)}',
     '.rr-rotor svg{display:block;width:100%;height:100%;overflow:visible}',
+    /* Le flou de vitesse : les couleurs fondues, au-dessus des cases, visible à pleine vitesse seulement. */
+    '.rr-blur{position:absolute;left:3.846%;top:3.846%;width:92.308%;height:92.308%;border-radius:50%;pointer-events:none;opacity:0;will-change:opacity}',
+    /* Le reflet du vernis : il ne tourne pas, la roue tourne dessous. */
+    '.rr-gloss{position:absolute;inset:3.846%;border-radius:50%;pointer-events:none;z-index:2;',
+    'background:radial-gradient(115% 80% at 30% 14%,rgba(255,255,255,.2),rgba(255,255,255,.05) 34%,rgba(255,255,255,0) 52%),radial-gradient(85% 85% at 72% 96%,rgba(0,0,0,.2),rgba(0,0,0,0) 58%)}',
     '.rr-glow{position:absolute;inset:-6%;border-radius:50%;background:radial-gradient(circle,rgba(251,191,36,.28),transparent 62%);pointer-events:none;z-index:0}',
     '.rr-stage.rr-spinning .rr-glow{animation:rr-pulse 1.2s ease-in-out infinite alternate}',
     /* Manche décisive : le halo bat comme un cœur (piloté image par image dans spinTo). */
@@ -119,6 +133,13 @@
     '.rr-swatch .rr-dot{flex-basis:22px;width:22px;height:22px}',
     '.rr-chip{width:42px;height:42px}',
     '}',
+    /* Les icônes (SVG au trait) : statut, annonces, fin de partie. */
+    '.rr-ico{display:inline-block;width:1em;height:1em;flex:0 0 auto;vertical-align:-0.14em}',
+    '.rr-ico svg{display:block;width:100%;height:100%;overflow:visible}',
+    '.rr-status-ico{display:inline-block;width:1.15em;height:1.15em;margin-right:.42em;vertical-align:-0.2em;filter:drop-shadow(0 0 4px color-mix(in srgb,currentColor 50%,transparent))}',
+    '.rr-status-ico svg{display:block;width:100%;height:100%}',
+    '.rr-seal-ico{display:inline-flex;width:13px;height:13px}',
+    '.rr-seal-ico svg{width:100%;height:100%}',
     '@media (prefers-reduced-motion:reduce){.rr-chip.rr-waiting,.rr-stage.rr-spinning .rr-glow{animation:none}}'
   ].join('');
 
@@ -132,6 +153,40 @@
   injectStyle();
 
   var NS = 'http://www.w3.org/2000/svg';
+
+  /*
+   * Les icônes, au trait (24 × 24, couleur du texte) : jamais d'émoji. Chaque
+   * nom sert une seule idée — gagné, perdu, personne, même couleur, égalité…
+   */
+  var ICONS = {
+    win: '<circle cx="12" cy="12" r="9.5"/><path d="m7.8 12.3 2.8 2.8 5.6-5.8"/>',
+    lose: '<circle cx="12" cy="12" r="9.5"/><path d="m9 9 6 6m0-6-6 6"/>',
+    none: '<circle cx="12" cy="12" r="9.5"/><path d="M8 12h8"/>',
+    target: '<circle cx="12" cy="12" r="9.5"/><circle cx="12" cy="12" r="5.5"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/>',
+    repeat: '<path d="M19.5 10.5A7.6 7.6 0 0 0 6 7.2L4.5 9"/><path d="M4.5 4.8V9h4.2"/><path d="M4.5 13.5A7.6 7.6 0 0 0 18 16.8l1.5-1.8"/><path d="M19.5 19.2V15h-4.2"/>',
+    scale: '<path d="M12 3.5v16.5"/><path d="M7.5 20h9"/><path d="M4 7.2h16"/><path d="M12 3.5 9.8 7.2"/><path d="M12 3.5l2.2 3.7"/><path d="m6.5 7.2-3 6.3a3 3 0 0 0 6 0z"/><path d="m17.5 7.2-3 6.3a3 3 0 0 0 6 0z"/>',
+    trophy: '<path d="M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M7 6H4.5a2.5 2.5 0 0 0 2.6 3.3"/><path d="M17 6h2.5a2.5 2.5 0 0 1-2.6 3.3"/><path d="M12 14v3.5"/><path d="M8.5 20.5h7l-1-3h-5z"/>',
+    wheel: '<circle cx="12" cy="12" r="9.5"/><circle cx="12" cy="12" r="2.6"/><path d="M12 2.5v7M12 14.6v6.9M2.5 12h7M14.6 12h6.9M5.3 5.3l4.9 4.9M13.8 13.8l4.9 4.9M18.7 5.3l-4.9 4.9M10.2 13.8l-4.9 4.9"/>',
+    wifi: '<path d="M2.6 8.8a14.6 14.6 0 0 1 18.8 0"/><path d="M5.6 12.4a9.8 9.8 0 0 1 12.8 0"/><path d="M8.7 15.9a5 5 0 0 1 6.6 0"/><circle cx="12" cy="19.4" r="1.3" fill="currentColor" stroke="none"/>',
+    'wifi-off': '<path d="M3 3l18 18"/><path d="M8.7 15.9a5 5 0 0 1 6.6 0"/><path d="M5.6 12.4a9.8 9.8 0 0 1 4.6-2.2"/><path d="M14.6 10.6a9.8 9.8 0 0 1 3.8 1.8"/><path d="M2.6 8.8a14.6 14.6 0 0 1 3.7-2.3"/><path d="M10.4 5.4a14.6 14.6 0 0 1 11 3.4"/><circle cx="12" cy="19.4" r="1.3" fill="currentColor" stroke="none"/>',
+    play: '<path d="M8 5.2v13.6L19 12z" fill="currentColor"/>',
+    clock: '<circle cx="12" cy="12" r="9.5"/><path d="M12 6.8V12l3.4 2.2"/>',
+    alert: '<path d="M10.3 3.9 1.9 18.3A2 2 0 0 0 3.6 21.3h16.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9.2v4.4"/><circle cx="12" cy="17.2" r="1.15" fill="currentColor" stroke="none"/>',
+    coins: '<ellipse cx="12" cy="6" rx="7" ry="2.8"/><path d="M5 6v5.6c0 1.6 3.1 2.8 7 2.8s7-1.2 7-2.8V6"/><path d="M5 11.6v5.6c0 1.6 3.1 2.8 7 2.8s7-1.2 7-2.8v-5.6"/>',
+    'trend-down': '<path d="m2.5 7 6.6 6.6 4-4 7.4 7.4"/><path d="M20.5 11.2V17h-5.8"/>',
+    'shield-check': '<path d="M12 21.3s7.6-3.4 7.6-9.6V5.6L12 2.7 4.4 5.6v6.1c0 6.2 7.6 9.6 7.6 9.6z"/><path d="m8.8 12.1 2.3 2.3 4.3-4.6"/>',
+    'shield-x': '<path d="M12 21.3s7.6-3.4 7.6-9.6V5.6L12 2.7 4.4 5.6v6.1c0 6.2 7.6 9.6 7.6 9.6z"/><path d="m9.6 9.6 4.8 4.8m0-4.8-4.8 4.8"/>',
+    lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+    user: '<circle cx="12" cy="8.2" r="4.2"/><path d="M4.2 21a7.8 7.8 0 0 1 15.6 0"/>',
+    'arrow-right': '<path d="M4.5 12h14.5"/><path d="m13.5 6.5 5.5 5.5-5.5 5.5"/>',
+    refresh: '<path d="M20.5 12a8.5 8.5 0 1 1-2.5-6"/><path d="M20.5 3.8V9h-5.2"/>'
+  };
+  /** Une icône SVG (chaîne HTML), à la couleur du texte. `cls` : la classe de l'enveloppe. */
+  function icon(name, cls) {
+    var body = ICONS[name];
+    if (!body) return '';
+    return '<span class="' + (cls || 'rr-ico') + '" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false">' + body + '</svg></span>';
+  }
 
   /** La forme d'une couleur, en SVG, centrée sur (x, y). */
   function shapeMarkup(shape, x, y, size, fill, stroke) {
@@ -197,19 +252,22 @@
   }
 
   /*
-   * Le mouvement d'un tour de roue, en temps normalisé u ∈ [0, 1] :
-   *   0 → 0,07   l'élan : la roue recule un peu, puis repart (vitesse nulle aux deux bouts) ;
-   *   → 0,27     l'accélération (lente au début, de plus en plus vite) ;
-   *   → 0,42     la pleine vitesse ;
-   *   → 1        le freinage, (1 − s)^2,6 : une longue fin au ralenti, où les
-   *              dernières lignes passent une à une sous le pointeur.
+   * Le mouvement d'un tour de roue, en temps normalisé u ∈ [0, 1] (owner,
+   * 2026-11-05 : « ça doit être accéléré un peu plus… la vitesse doit être
+   * visible et le ralenti également ») :
+   *   0 → 0,06   l'élan : la roue recule un peu, puis repart (vitesse nulle aux deux bouts) ;
+   *   → 0,21     l'accélération, x^2,4 : lente au départ, puis la roue s'emballe ;
+   *   → 0,35     la pleine vitesse (près de quatre tours par seconde : 9 tours en 7,2 s) ;
+   *   → 1        le freinage, (1 − s)^2,8 : la vitesse tombe vite, puis une
+   *              longue fin au ralenti où les dernières lignes passent une à une.
    * `progress(u)` : la part du chemin vers l'avant parcourue (table intégrée une fois).
+   * `speed(u)` : la vitesse relative (1 à pleine vitesse), pour le flou.
    */
   var MOTION = (function () {
-    var WIND_END = 0.07, ACC_END = 0.27, CRUISE_END = 0.42, K = 2.6, N = 720;
+    var WIND_END = 0.06, ACC_END = 0.21, CRUISE_END = 0.35, ACC_POW = 2.4, K = 2.8, N = 900;
     function velocity(u) {
       if (u < WIND_END) return 0;
-      if (u < ACC_END) { var x = (u - WIND_END) / (ACC_END - WIND_END); return x * x; }
+      if (u < ACC_END) return Math.pow((u - WIND_END) / (ACC_END - WIND_END), ACC_POW);
       if (u < CRUISE_END) return 1;
       return Math.pow(Math.max(0, 1 - (u - CRUISE_END) / (1 - CRUISE_END)), K);
     }
@@ -223,6 +281,7 @@
         var x = u * N, k = Math.floor(x);
         return table[k] + (table[Math.min(N, k + 1)] - table[k]) * (x - k);
       },
+      speed: velocity,
       /** L'élan en arrière (degrés, ≤ 0) : 0 au départ et au bout de l'élan, sans à-coup. */
       windup: function (u, depth) {
         if (u <= 0 || u >= WIND_END) return 0;
@@ -230,6 +289,32 @@
       }
     };
   })();
+
+  /* Après l'arrêt : l'instant où la roue reste où elle s'est arrêtée, puis le recentrage. */
+  var SETTLE_HOLD_MS = 1000, SETTLE_GLIDE_MS = 800;
+  function easeInOutCubic(x) { return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2; }
+
+  /* Les couleurs fondues de la roue lancée : un dégradé conique, chaque ligne adoucie de part et d'autre. */
+  function hexRgb(hex) {
+    var n = parseInt(String(hex).slice(1), 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+  function mixHex(a, b) {
+    var x = hexRgb(a), y = hexRgb(b);
+    return 'rgb(' + Math.round((x[0] + y[0]) / 2) + ',' + Math.round((x[1] + y[1]) / 2) + ',' + Math.round((x[2] + y[2]) / 2) + ')';
+  }
+  function blurBackground(wheel) {
+    var n = wheel.length, seg = 360 / n, soft = seg * 0.32, stops = [];
+    var first = R.COLORS[wheel[0]].hex, last = R.COLORS[wheel[n - 1]].hex;
+    stops.push(mixHex(last, first) + ' 0deg');
+    for (var i = 0; i < n; i++) {
+      var c = R.COLORS[wheel[i]].hex;
+      stops.push(c + ' ' + (i * seg + soft).toFixed(1) + 'deg');
+      stops.push(c + ' ' + ((i + 1) * seg - soft).toFixed(1) + 'deg');
+    }
+    stops.push(mixHex(last, first) + ' 360deg');
+    return 'radial-gradient(circle,rgba(0,0,0,0) 30%,rgba(0,0,0,.05) 70%,rgba(0,0,0,.28) 100%),conic-gradient(from 0deg,' + stops.join(',') + ')';
+  }
 
   /*
    * Le cœur d'une manche décisive : la cadence monte de 76 à 150 battements par
@@ -253,18 +338,21 @@
     var stage = els.stage;
     stage.classList.add('rr-stage');
     stage.innerHTML = '<div class="rr-glow"></div><div class="rr-pointer"></div><div class="rr-rotor-clip"><div class="rr-rotor"></div></div>'
-      + '<div class="rr-hub"><span class="rr-hub-top"></span><span class="rr-hub-main"></span></div>';
+      + '<div class="rr-gloss"></div><div class="rr-hub"><span class="rr-hub-top"></span><span class="rr-hub-main"></span></div>';
     var rotor = stage.querySelector('.rr-rotor');
+    var blur = null;
     var pointer = stage.querySelector('.rr-pointer');
     var glow = stage.querySelector('.rr-glow');
     var hub = stage.querySelector('.rr-hub');
     var hubTop = stage.querySelector('.rr-hub-top');
     var hubMain = stage.querySelector('.rr-hub-main');
+    /* L'angle affiché de la roue (degrés, dans le sens des aiguilles d'une montre). */
     var rotation = 0;
     var currentWheel = null;
     var spinTimer = null;
     var spinFrame = 0;
     var finishSpin = null;
+    var settleTimer = null, settleFrame = 0;
     var reduced = false;
     try { reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (_) {}
 
@@ -272,7 +360,16 @@
       var key = JSON.stringify(wheel);
       if (key === currentWheel) return;
       currentWheel = key;
-      rotor.innerHTML = wheelMarkup(wheel);
+      rotor.innerHTML = wheelMarkup(wheel) + '<div class="rr-blur"></div>';
+      blur = rotor.querySelector('.rr-blur');
+      blur.style.background = blurBackground(wheel);
+    }
+    function setAngle(angle) {
+      rotation = angle;
+      rotor.style.transform = 'rotate(' + angle.toFixed(3) + 'deg)';
+    }
+    function setBlur(amount) {
+      if (blur) blur.style.opacity = amount > 0.005 ? amount.toFixed(3) : '0';
     }
     setWheel(R.wheelFor(false));
 
@@ -296,20 +393,53 @@
       glow.style.opacity = (0.3 + 0.7 * pulse).toFixed(3);
       glow.style.transform = 'scale(' + (1 + 0.05 * pulse).toFixed(4) + ')';
     }
+    /* Le recentrage en attente ou en cours s'arrête : la roue reste où elle est. */
+    function stopSettle() {
+      if (settleTimer) { clearTimeout(settleTimer); settleTimer = null; }
+      if (settleFrame) { cancelAnimationFrame(settleFrame); settleFrame = 0; }
+    }
+    /*
+     * Le recentrage (owner : « à la fin du tour, l'aiguille doit recentrer
+     * dans la couleur… même si c'était jusqu'à la fin ») : la roue reste un
+     * instant où elle s'est arrêtée — juste après la ligne, juste avant la
+     * suivante —, puis glisse en douceur jusqu'à ce que l'aiguille soit au
+     * milieu de la couleur tirée. Rien ne change : ni la couleur, ni le point.
+     */
+    function settleTo(target) {
+      stopSettle();
+      if (Math.abs(target - rotation) < 0.05) return;
+      settleTimer = setTimeout(function () {
+        settleTimer = null;
+        var from = rotation, started = null;
+        function glide(now) {
+          settleFrame = 0;
+          if (started === null) started = now;
+          var x = Math.min(1, (now - started) / SETTLE_GLIDE_MS);
+          setAngle(from + (target - from) * easeInOutCubic(x));
+          if (x < 1) settleFrame = requestAnimationFrame(glide);
+        }
+        settleFrame = requestAnimationFrame(glide);
+      }, SETTLE_HOLD_MS);
+    }
     /* Un tour en cours s'arrête net (nouveau tour, remise à zéro) : la promesse se tient quand même. */
     function stopSpin() {
+      stopSettle();
       if (spinFrame) { cancelAnimationFrame(spinFrame); spinFrame = 0; }
       if (spinTimer) { clearTimeout(spinTimer); spinTimer = null; }
       if (finishSpin) { var done = finishSpin; finishSpin = null; done(false); }
+      setBlur(0);
     }
 
     /*
      * Le tour de roue jusqu'à la case `landing` : depuis l'angle actuel,
-     * toujours en avant, six tours (quatre pour un tour court), avec l'élan,
-     * l'accélération et la longue fin au ralenti de MOTION. Chaque ligne qui
-     * passe sous le pointeur le fait claquer, d'autant plus visiblement que la
-     * roue ralentit. Un minuteur de secours conclut le tour si l'onglet, caché,
-     * ne dessine plus (le résultat n'attend jamais l'image suivante).
+     * toujours en avant, neuf tours (dix en manche décisive, cinq pour un tour
+     * court), avec l'élan, l'accélération franche et la longue fin au ralenti
+     * de MOTION. À pleine vitesse, le flou fond les couleurs ; il s'efface à
+     * mesure que la roue ralentit. Chaque ligne qui passe sous le pointeur le
+     * fait claquer, d'autant plus visiblement que la roue ralentit. Un
+     * minuteur de secours conclut le tour si l'onglet, caché, ne dessine plus
+     * (le résultat n'attend jamais l'image suivante). La promesse se tient à
+     * l'arrêt ; un instant après, la roue se recentre (settleTo).
      * `options.tension` (manche décisive) : le halo de la roue bat comme un
      * cœur — 76 battements par minute au départ, 150 quand la roue rampe vers
      * la dernière ligne (owner : « ça doit faire battre vite les cœurs »).
@@ -318,24 +448,27 @@
       stopSpin();
       setWheel(wheel);
       clearHit();
+      var seg = 360 / wheel.length;
       var target = R.landingAngle(wheel.length, landing);
+      /* Le milieu de la couleur tirée : là où l'aiguille finit, une fois recentrée. */
+      var glide = (Number(landing.offset) || 0) * seg / 2;
       var duration = Math.max(0, Number(durationMs) || 0);
-      var turns = duration >= 4000 ? 6 : duration > 1200 ? 4 : duration > 300 ? 2 : 0;
+      var tense = !!(options && options.tension);
+      var turns = duration >= 4000 ? (tense ? 10 : 9) : duration > 1200 ? 5 : duration > 300 ? 2 : 0;
       var from = rotation;
-      rotation += turns * 360 + ((target - (rotation % 360) + 360) % 360);
-      var to = rotation;
+      var to = from + turns * 360 + ((target - (from % 360) + 720) % 360);
       rotor.style.transition = 'none';
       if (reduced || duration < 120) {
-        rotor.style.transform = 'rotate(' + to + 'deg)';
+        /* Sans animation : directement au milieu de la couleur tirée. */
+        setAngle(to + glide);
         setPointer(0);
+        setBlur(0);
         markHit(landing.segment);
         return Promise.resolve();
       }
       stage.classList.add('rr-spinning');
-      var seg = 360 / wheel.length;
       var depth = Math.min(9, seg * 0.15);
-      var tense = !!(options && options.tension);
-      var beat = 0;
+      var beat = 0, blurLevel = 0;
       stage.classList.toggle('rr-tense', tense);
       /* Le temps part de l'appel (comme le minuteur de secours), pas de la première image. */
       var started = window.performance && performance.now ? performance.now() : null;
@@ -349,9 +482,11 @@
           stage.classList.remove('rr-tense');
           setGlow(0, false);
           setPointer(0);
+          setBlur(0);
           if (landed !== false) {
-            rotor.style.transform = 'rotate(' + to + 'deg)';
+            setAngle(to);
             markHit(landing.segment);
+            settleTo(to + glide);
           }
           resolve();
         };
@@ -359,15 +494,19 @@
           spinFrame = 0;
           if (started === null) { started = now; lastFrame = now; }
           var u = Math.max(0, Math.min(1, (now - started) / duration));
-          var angle = from + MOTION.windup(u, depth) + (to - from) * MOTION.progress(u);
-          rotor.style.transform = 'rotate(' + angle.toFixed(3) + 'deg)';
+          setAngle(from + MOTION.windup(u, depth) + (to - from) * MOTION.progress(u));
           /* Le pointeur : chaque taquet qui passe le pousse (la roue tourne vers la droite en haut). */
-          var line = Math.floor(angle / seg);
+          var line = Math.floor(rotation / seg);
           var dt = Math.max(0, now - lastFrame);
           lastFrame = now;
           kick *= Math.exp(-dt / 75);
           if (line !== lastLine) { kick = -16; lastLine = line; }
           setPointer(Math.abs(kick) < 0.2 ? 0 : kick);
+          /* Le flou suit la vitesse (lissé : une image en retard ne le fait pas clignoter). */
+          var sp = MOTION.speed(u);
+          var want = sp <= 0.3 ? 0 : 0.78 * Math.min(1, (sp - 0.3) / 0.45);
+          blurLevel += (want - blurLevel) * Math.min(1, dt / 70);
+          setBlur(blurLevel);
           if (tense) {
             beat += dt * HEART.bpm(u) / 60000;
             setGlow(HEART.pulse(beat % 1), true);
@@ -555,28 +694,35 @@
       seal.hidden = false;
       seal.setAttribute('data-state', s.state || 'sealed');
       var text = s.state === 'verified' ? 'Tirage vérifié' : s.state === 'failed' ? 'Vérification impossible' : 'Tirage scellé';
-      seal.innerHTML = '<span aria-hidden="true">' + (s.state === 'verified' ? '✓' : '🔒') + '</span><span class="rr-seal-txt"></span><span class="rr-hash"></span>';
+      seal.innerHTML = icon(s.state === 'verified' ? 'shield-check' : s.state === 'failed' ? 'shield-x' : 'lock', 'rr-seal-ico') + '<span class="rr-seal-txt"></span><span class="rr-hash"></span>';
       seal.querySelector('.rr-seal-txt').textContent = text;
       seal.querySelector('.rr-hash').textContent = shortHash(s.hash);
       if (!sealBox) return;
       sealBox.innerHTML = '';
       var intro = document.createElement('div');
       intro.textContent = s.revealed
-        ? 'Le tirage a été fait avant vos choix. Empreinte SHA-256 du texte révélé :'
-        : 'La couleur de cette manche est déjà tirée et scellée. Son empreinte SHA-256 :';
+        ? 'L’issue a été tirée avant vos choix. Empreinte SHA-256 du texte révélé :'
+        : 'L’issue de cette manche est déjà tirée et scellée. Son empreinte SHA-256 :';
       sealBox.appendChild(intro);
       var code = document.createElement('code'); code.textContent = s.hash; sealBox.appendChild(code);
       if (s.revealed) {
         var label = document.createElement('div'); label.textContent = 'Texte révélé :'; label.style.marginTop = '6px'; sealBox.appendChild(label);
         var raw = document.createElement('code'); raw.textContent = s.revealed; sealBox.appendChild(raw);
+        var key = document.createElement('div'); key.style.marginTop = '6px';
+        key.textContent = 'Issue 0 à 7 : le joueur 1 marque ; 8 à 15 : le joueur 2 ; 16 à 19 : personne (une couleur libre).';
+        sealBox.appendChild(key);
       }
       sealDetail = s.hash;
     }
 
     var status = els.status;
-    function setStatus(text, tone) {
+    /* Le statut : une ligne, et son icône (jamais d'émoji) — le texte dans son propre nœud, pour la traduction. */
+    function setStatus(text, tone, iconName) {
       if (!status) return;
-      status.textContent = text || '';
+      if (iconName && ICONS[iconName] && text) {
+        status.innerHTML = icon(iconName, 'rr-status-ico') + '<span class="rr-status-txt"></span>';
+        status.querySelector('.rr-status-txt').textContent = text;
+      } else status.textContent = text || '';
       status.className = 'status' + (text ? ' visible' : '') + (tone ? ' result ' + tone : '');
     }
 
@@ -680,15 +826,15 @@
     for (var i = 0; i < 16; i++) { var b = randomInt(256); hex += (b < 16 ? '0' : '') + b.toString(16); }
     return hex;
   }
-  /** Un tirage scellé local (IA, entre amis) : même forme que celui du serveur — une couleur, toute manche. */
+  /** Un tirage scellé local (IA, entre amis) : même forme que celui du serveur — une issue de 0 à 19, toute manche. */
   function localSeal(roomId, round, decisive) {
-    var kind = 'color';
-    var value = randomInt(R.COLOR_COUNT);
+    var kind = 'outcome';
+    var value = randomInt(R.OUTCOME_SPACE);
     var salt = randomSalt();
     return sha256Hex(R.sealText(roomId, round, kind, value, salt)).then(function (hash) {
       return { kind: kind, value: value, salt: salt, hash: hash || '' };
     });
   }
 
-  window.RouletteBoard = { mount: mount, fitWheel: fitWheel, colorIcon: colorIcon, verifySpin: verifySpin, sha256Hex: sha256Hex, randomInt: randomInt, localSeal: localSeal };
+  window.RouletteBoard = { mount: mount, fitWheel: fitWheel, colorIcon: colorIcon, icon: icon, verifySpin: verifySpin, sha256Hex: sha256Hex, randomInt: randomInt, localSeal: localSeal, MOTION: MOTION, SETTLE_HOLD_MS: SETTLE_HOLD_MS, SETTLE_GLIDE_MS: SETTLE_GLIDE_MS };
 })();

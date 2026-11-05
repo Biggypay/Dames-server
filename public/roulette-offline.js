@@ -3,9 +3,10 @@
  * appareil (`<body data-mode="ai" | "local">`).
  *
  * Les mêmes règles que le serveur (roulette-rules.js) et le même plateau
- * (roulette-board.js). Comme en ligne, la couleur de la manche est tirée et
- * scellée AVANT les choix ; l'IA choisit au hasard, sans jamais connaître le
- * tirage — dans un jeu de hasard, aucun niveau ne « joue mieux ».
+ * (roulette-board.js). Comme en ligne, l'issue de la manche (le joueur 1, le
+ * joueur 2 ou personne) est tirée et scellée AVANT les choix, et seule la
+ * couleur exacte marque ; l'IA choisit au hasard, sans jamais connaître
+ * l'issue — dans un jeu de hasard, aucun niveau ne « joue mieux ».
  *
  * Entre amis, chacun choisit à son tour derrière un rideau : la couleur du
  * premier n'est jamais montrée au second avant le tour de roue. Celui qui
@@ -52,7 +53,7 @@
   var curtain = $('curtain');
 
   var board = Board.mount({
-    stage: $('wheel'), palette: $('palette'), duel: $('duel'), history: $('history'),
+    stage: $('wheel'), palette: $('palette'), duel: $('duel'),
     seal: $('seal'), sealBox: $('sealBox'), status: $('status'), onPick: onPick
   });
   Board.fitWheel({
@@ -87,9 +88,10 @@
 
   /* ══ Messages, confettis ══ */
   var toastTimer = null;
-  function showToast(emoji, title, sub, delay) {
+  /* Une annonce au centre : une icône SVG (RouletteBoard.icon, jamais d'émoji), un titre, une ligne. */
+  function showToast(iconName, title, sub, delay) {
     var el = $('toast');
-    $('toast-emoji').textContent = emoji;
+    $('toast-emoji').innerHTML = Board.icon(iconName) || '';
     $('toast-title').textContent = title;
     $('toast-sub').textContent = sub || '';
     if (toastTimer) clearTimeout(toastTimer);
@@ -172,9 +174,6 @@
     var live = phase === 'choosing' || phase === 'sealing' || phase === 'spinning';
     if (live && !decisive && dots[k]) dots[k].classList.add('current');
     if (window.MindspilleHud) MindspilleHud.decisive(roundsProgress, extra, live && decisive);
-    board.setHistory(history.map(function (h) {
-      return { round: h.round, drawn: h.drawn, repick: h.repick, result: h.winnerSlot === 1 ? 'me' : h.winnerSlot === 2 ? 'op' : '' };
-    }));
   }
   function hubLabel() { return decisive ? 'Décisive' : 'Manche ' + roundNumber(); }
   /* Pendant le choix d'une manche décisive : la réponse, dans une paire. */
@@ -277,7 +276,7 @@
       if (auto) selected = Board.randomInt(R.COLOR_COUNT);
       var color = selected;
       lockChoice();
-      if (auto) showToast('⏱️', 'Choix automatique', R.colorName(color), 1600);
+      if (auto) showToast('clock', 'Choix automatique', R.colorName(color), 1600);
       return;
     }
     turnRAF = requestAnimationFrame(tickTurn);
@@ -409,22 +408,24 @@
       board.setChip('me', { name: leftName(), kind: 'color', color: c1 });
       board.setChip('op', { name: rightName(), kind: 'color', color: c2 });
       board.setHub(hubLabel(), '=', null, null);
-      board.setStatus('🎨 Même couleur · on rechoisit', 'draw');
-      showToast('🎨', 'Même couleur !', 'Vous avez choisi la même couleur : chacun rechoisit.', 2000);
+      board.setStatus('Même couleur · on rechoisit', 'draw', 'repeat');
+      showToast('repeat', 'Même couleur !', 'Vous avez choisi la même couleur : chacun rechoisit.', 2000);
     } else {
-      /* Chaque puce dit sa distance à la couleur tirée ; la plus proche s'éclaire
-         (manches décisives comprises : la roue garde ses six couleurs). */
-      var label = function (color, slot) {
-        var d = R.colorDistance(color, drawn);
-        return d === 0 ? 'Pile !' : d === 1 ? '1 case' : d + ' cases';
+      /* Seule la couleur exacte marque : la puce touchée s'éclaire (« Pile ! »),
+         l'autre — ou les deux, sur une couleur libre — s'efface. */
+      var chip = function (color) {
+        var hit = color === drawn;
+        return { kind: 'color', color: color, winner: hit, miss: !hit, label: hit ? 'Pile !' : R.colorName(color) };
       };
-      board.setChip('me', { name: leftName(), kind: 'color', color: c1, winner: ws === 1, miss: ws !== 1, label: label(c1, 1) });
-      board.setChip('op', { name: rightName(), kind: 'color', color: c2, winner: ws === 2, miss: ws !== 2, label: label(c2, 2) });
+      var me = chip(c1), op = chip(c2);
+      me.name = leftName(); op.name = rightName();
+      board.setChip('me', me);
+      board.setChip('op', op);
       board.setHub('Tirée', '', null, drawn);
       var name = R.colorName(drawn);
-      if (!ws) board.setStatus('➖ À égale distance · ' + name, 'draw');
-      else if (MODE === 'ai') board.setStatus(ws === 1 ? '🎉 Manche gagnée · ' + name : '💀 Manche perdue · ' + name, ws === 1 ? 'win' : 'lose');
-      else board.setStatus('🎯 ' + NAMES[ws] + ' marque · ' + name, 'win');
+      if (!ws) board.setStatus('Personne ne marque · ' + name, 'draw', 'none');
+      else if (MODE === 'ai') board.setStatus(ws === 1 ? 'Manche gagnée · ' + name : 'Manche perdue · ' + name, ws === 1 ? 'win' : 'lose', ws === 1 ? 'win' : 'lose');
+      else board.setStatus(NAMES[ws] + ' marque · ' + name, 'win', 'target');
       if (ws === 1 || (MODE === 'local' && ws)) createConfetti(50);
     }
     Board.verifySpin(ROOM, { round: entry.round, seal: seal }, seal && seal.hash).then(function (res) {
@@ -446,19 +447,19 @@
     /* La prochaine manche comptée (7, 8, 9…), pour les annonces. */
     var upcoming = R.countedPlayed(history) + 1;
     if (next.decisive && !entry.decisive) setTimeout(function () {
-      if (token === matchToken) showToast('⚖️', 'Égalité !', `On continue : manches ${upcoming} et ${upcoming + 1}, les deux se jouent.`, 2600);
+      if (token === matchToken) showToast('scale', 'Égalité !', `On continue : manches ${upcoming} et ${upcoming + 1}, les deux se jouent.`, 2600);
     }, 700);
     else if (entry.decisive && !entry.repick) setTimeout(function () {
       if (token !== matchToken) return;
       /* La première de la paire : l'autre joueur répond toujours. 1-1 ou deux nulles : une nouvelle paire. */
       if (R.decisivePlayed(history) % 2 === 1) {
-        if (!ws) showToast('⚖️', 'Toujours à égalité', `La manche ${upcoming} peut tout décider.`, 2200);
-        else if (MODE === 'ai') showToast('⚖️', ws === 1 ? 'Vous menez' : 'À vous de répondre', ws === 1 ? 'L’IA joue la seconde manche décisive.' : 'Gagnez la seconde manche décisive pour égaliser.', 2200);
-        else showToast('⚖️', NAMES[ws] + ' mène', NAMES[ws === 1 ? 2 : 1] + ' joue la seconde manche décisive.', 2200);
+        if (!ws) showToast('scale', 'Toujours à égalité', `La manche ${upcoming} peut tout décider.`, 2200);
+        else if (MODE === 'ai') showToast('scale', ws === 1 ? 'Vous menez' : 'À vous de répondre', ws === 1 ? 'L’IA joue la seconde manche décisive.' : 'Gagnez la seconde manche décisive pour égaliser.', 2200);
+        else showToast('scale', NAMES[ws] + ' mène', NAMES[ws === 1 ? 2 : 1] + ' joue la seconde manche décisive.', 2200);
       } else {
         var pair = history.filter(function (h) { return h.decisive && !h.repick; }).slice(-2);
         var bothScored = pair.length === 2 && pair[0].winnerSlot && pair[1].winnerSlot;
-        showToast('⚖️', bothScored ? '1 partout !' : 'Toujours à égalité !', `Nouvelle paire : manches ${upcoming} et ${upcoming + 1}.`, 2200);
+        showToast('scale', bothScored ? '1 partout !' : 'Toujours à égalité !', `Nouvelle paire : manches ${upcoming} et ${upcoming + 1}.`, 2200);
       }
     }, 700);
     nextTimer = setTimeout(function () {
@@ -478,10 +479,11 @@
   function showEnd(winnerSlot) {
     phase = 'over';
     stopTurnTimer();
-    var title, message, cls;
+    var title, message, cls, titleIcon = 'trophy';
     if (MODE === 'ai') {
       var won = winnerSlot === 1;
-      title = won ? '🏆 VICTOIRE !' : '💀 DÉFAITE';
+      title = won ? 'VICTOIRE !' : 'DÉFAITE';
+      titleIcon = won ? 'trophy' : 'lose';
       message = won ? 'Vous battez l’IA à la Roulette Royale !' : 'L’IA remporte la Roulette Royale.';
       cls = won ? 'win-modal' : 'lose-modal';
       if (won) { createConfetti(); createConfetti(); }
@@ -492,12 +494,15 @@
         }, '*');
       } catch (_) {}
     } else {
-      title = '🏆 ' + NAMES[winnerSlot] + ' gagne !';
+      title = NAMES[winnerSlot] + ' gagne !';
       message = 'Une revanche ?';
       cls = 'win-modal';
       createConfetti(); createConfetti();
     }
-    $('modalTitle').textContent = title;
+    /* Le titre : une icône SVG et le texte, dans son propre nœud (traduction). */
+    var titleEl = $('modalTitle');
+    titleEl.innerHTML = Board.icon(titleIcon, 'rr-ico rr-title-ico') + '<span class="rr-title-txt"></span>';
+    titleEl.querySelector('.rr-title-txt').textContent = title;
     $('finalScore').textContent = scores[0] + ' - ' + scores[1];
     $('finalMessage').textContent = message;
     modalContent.className = 'modal ' + cls;
@@ -520,10 +525,17 @@
       item.appendChild(pair);
       var drawnEl = document.createElement('span');
       drawnEl.className = 'rr-pair';
-      drawnEl.innerHTML = '<span class="rr-arrow">→</span>' + miniChip(h.drawn);
+      drawnEl.innerHTML = Board.icon('arrow-right', 'rr-ico rr-arrow') + miniChip(h.drawn);
       item.appendChild(drawnEl);
       var mark = document.createElement('span');
-      mark.textContent = h.repick ? '🎨' : res === 'win' ? (MODE === 'ai' ? '✅' : '①') : res === 'lose' ? (MODE === 'ai' ? '❌' : '②') : '➖';
+      if (MODE === 'local' && !h.repick && (res === 'win' || res === 'lose')) {
+        /* Entre amis : qui a marqué, joueur 1 ou joueur 2. */
+        mark.className = 'rr-mark-num' + (res === 'lose' ? ' rr-p2' : '');
+        mark.textContent = res === 'win' ? '1' : '2';
+      } else {
+        mark.className = 'rr-mark rr-mark-' + (h.repick ? 'repick' : res);
+        mark.innerHTML = Board.icon(h.repick ? 'repeat' : res === 'win' ? 'win' : res === 'lose' ? 'lose' : 'none');
+      }
       item.appendChild(mark);
       list.appendChild(item);
     }
@@ -547,7 +559,7 @@
     renderAll();
     renderChoosing();
     var token = matchToken;
-    showToast('🎡', 'Roulette Royale', R.REGULAR_ROUNDS + ' manches · six couleurs', FAST ? 400 : 1600);
+    showToast('wheel', 'Roulette Royale', R.REGULAR_ROUNDS + ' manches · six couleurs', FAST ? 400 : 1600);
     setTimeout(function () { if (token === matchToken) openRound(); }, FAST ? 100 : 1100);
   }
 
