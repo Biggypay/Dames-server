@@ -211,7 +211,7 @@ const graphics = page => page.evaluate(() => {
     console.log('\n5. Baisser la définition n\'éteint pas l\'image');
     {
       /* Un téléphone (densité 3) qui n'arrive plus à suivre : chaque image
-         paraît prendre 40 ms de plus, la définition baisse d'un palier.
+         paraît durer 60 ms, la définition baisse d'un palier.
          Redimensionner le canevas efface l'image qui vient d'être dessinée :
          sans un nouveau rendu aussitôt, le navigateur montrait une image
          NOIRE — un « éclairage qui s'éteint » aux échecs (owner, 2026-10-29). */
@@ -221,12 +221,24 @@ const graphics = page => page.evaluate(() => {
       if (process.env.THREE_RUNTIME_FILE) {
         await page.route('**/vendor/three-r128.min.js', r => r.fulfill({ path: process.env.THREE_RUNTIME_FILE, contentType: 'application/javascript' }));
       }
+      /* Une horloge simulée : 60 ms de plus à chaque image réelle, quelle que
+         soit la vitesse de la machine. Ajouter 40 ms à l'heure réelle ne
+         suffisait pas : sur la machine de la CI (3D sans carte graphique), une
+         image réelle dépasse déjà 250 ms, écart que le module prend pour un
+         onglet caché et ne compte pas — la définition ne baissait jamais et ce
+         test était rouge sur main depuis le 2026-10-29. Les rappels d'une même
+         image reçoivent la même heure (une image = un pas, pas un rappel). */
       await page.addInitScript(() => {
-        const realNow = performance.now.bind(performance);
-        let ticks = 0;
+        const FRAME_MS = 60;
         const raf = window.requestAnimationFrame.bind(window);
-        window.requestAnimationFrame = cb => raf(t => { ticks++; cb(t + ticks * 40); });
-        performance.now = () => realNow() + ticks * 40;
+        let frame = 0;
+        let lastReal = -1;
+        const now = () => 1000 + frame * FRAME_MS;
+        window.requestAnimationFrame = cb => raf(t => {
+          if (t !== lastReal) { lastReal = t; frame++; }
+          cb(now());
+        });
+        performance.now = now;
       });
       await page.goto(URL + '/echecs-local', { waitUntil: 'load' });
       await page.waitForFunction(() => window.MS3D && window.MS3D.last && window.MS3D.stats.frames > 5, null, { timeout: 20000 });
