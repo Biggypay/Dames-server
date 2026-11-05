@@ -2351,8 +2351,9 @@ function clearRouletteTimers(rroom) {
   if (rroom.nextRoundTimer) { clearTimeout(rroom.nextRoundTimer); rroom.nextRoundTimer = null; }
 }
 
+/** Les manches réglementaires jouées : ni les rechoix (même couleur), ni les manches décisives. */
 function rouletteRegularRoundsPlayed(rroom) {
-  return rroom.history.filter(entry => !entry.decisive).length;
+  return Roulette.regularPlayed(rroom.history);
 }
 
 /** Ce que tout le monde peut savoir de la manche en cours. */
@@ -2363,6 +2364,10 @@ function rouletteRoundPayload(rroom, roomId) {
     scores: [...rroom.scores],
     totalRounds: ROULETTE_TOTAL_ROUNDS,
     decisive: rroom.decisive === true,
+    // Manches réglementaires déjà jouées (le libellé « Manche 3 / 5 ») et, en
+    // manches décisives, la place dans la paire (1 : la première, 2 : la réponse).
+    played: Roulette.regularPlayed(rroom.history),
+    decisiveStep: rroom.decisive ? Roulette.decisiveStep(rroom.history) : 0,
     seal: rroom.phase === 'choosing' && rroom.seal ? rroom.seal.hash : null,
     chosen: { 1: rroom.choices[1] !== undefined, 2: rroom.choices[2] !== undefined }
   };
@@ -2395,8 +2400,10 @@ function spinRouletteRound(rroom, roomId) {
   if (c1 === undefined || c2 === undefined || !rroom.seal) return;
   clearRouletteTimers(rroom);
   const seal = rroom.seal;
-  const drawn = Roulette.drawnColor(seal, c1, c2);
-  const repick = rroom.decisive && drawn === null;
+  // Même couleur pour les deux, manche décisive ou non : rien ne tourne, on rechoisit.
+  const repick = Roulette.isRepick(c1, c2);
+  const drawn = repick ? null : Roulette.drawnColor(seal, c1, c2);
+  // La couleur la plus proche de la couleur tirée marque ; à égale distance, personne.
   const winnerSlot = Roulette.roundWinner(c1, c2, drawn);
   if (winnerSlot) rroom.scores[winnerSlot - 1] += 1;
   rroom.history.push({ round: rroom.round, choice1: c1, choice2: c2, drawn, winnerSlot, decisive: rroom.decisive, repick });
@@ -2409,7 +2416,8 @@ function spinRouletteRound(rroom, roomId) {
     roundsPlayed: rouletteRegularRoundsPlayed(rroom),
     totalRounds: ROULETTE_TOTAL_ROUNDS,
     decisive: rroom.decisive,
-    lastWinner: winnerSlot
+    // Manches décisives deux par deux : le match ne se décide qu'au bout d'une paire.
+    decisivePlayed: Roulette.decisivePlayed(rroom.history)
   });
   const wheel = Roulette.wheelFor(rroom.decisive, c1, c2);
   const startTime = Date.now();
@@ -2499,6 +2507,8 @@ function rouletteReconnectState(rroom, slot) {
     scores: [...rroom.scores],
     round: rroom.round,
     decisive: rroom.decisive === true,
+    played: Roulette.regularPlayed(rroom.history),
+    decisiveStep: rroom.decisive ? Roulette.decisiveStep(rroom.history) : 0,
     history: rroom.history.map(Roulette.publicRound),
     phase: rroom.phase,
     seal: rroom.phase === 'choosing' && rroom.seal ? rroom.seal.hash : null,
@@ -2514,6 +2524,8 @@ function rouletteSpectatorState(rroom) {
     round: rroom.round,
     totalRounds: ROULETTE_TOTAL_ROUNDS,
     decisive: rroom.decisive === true,
+    played: Roulette.regularPlayed(rroom.history),
+    decisiveStep: rroom.decisive ? Roulette.decisiveStep(rroom.history) : 0,
     history: rroom.history.map(Roulette.publicRound),
     phase: rroom.phase,
     seal: rroom.phase === 'choosing' && rroom.seal ? rroom.seal.hash : null,

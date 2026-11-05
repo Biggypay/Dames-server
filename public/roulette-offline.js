@@ -136,25 +136,54 @@
   }
 
   /* ══ Affichage ══ */
+  /* Les manches se comptent sans les rechoix (même couleur : rien ne tourne). */
+  function lastEntry() { return history.length ? history[history.length - 1] : null; }
+  function regularIndex() {
+    var played = R.regularPlayed(history), last = lastEntry();
+    if ((phase === 'between' || phase === 'over') && last && !last.decisive && !last.repick) return Math.max(1, Math.min(R.REGULAR_ROUNDS, played));
+    return Math.min(R.REGULAR_ROUNDS, played + 1);
+  }
+  /* Les manches décisives vont par deux : 1 (la première), 2 (la réponse). */
+  function decisiveIndex() {
+    var played = R.decisivePlayed(history), last = lastEntry();
+    if ((phase === 'between' || phase === 'over') && last && last.decisive && !last.repick) return ((played - 1) % 2) + 1;
+    return (played % 2) + 1;
+  }
+  /* Qui a gagné la première manche décisive de la paire en cours (0 : aucune encore). */
+  function pairLeader() {
+    if (R.decisivePlayed(history) % 2 !== 1) return 0;
+    for (var i = history.length - 1; i >= 0; i--) if (history[i].decisive && !history[i].repick) return history[i].winnerSlot || 0;
+    return 0;
+  }
   function renderAll() {
     $('playerScore').textContent = scores[0];
     $('aiScore').textContent = scores[1];
-    roundLabelEl.textContent = decisive ? 'Manche décisive' : 'Manche ' + Math.min(round, R.REGULAR_ROUNDS) + ' / ' + R.REGULAR_ROUNDS;
+    roundLabelEl.textContent = decisive ? 'Décisive ' + decisiveIndex() + '/2' : 'Manche ' + regularIndex() + ' / ' + R.REGULAR_ROUNDS;
     var dots = roundsProgress.querySelectorAll('.round-dot');
     dots.forEach(function (dot) { dot.className = 'round-dot'; });
-    var extra = [];
+    var extra = [], k = 0;
     history.forEach(function (h) {
-      if (h.decisive) { if (!h.repick) extra.push(resultOf(h.winnerSlot)); return; }
-      if (dots[h.round - 1]) dots[h.round - 1].classList.add('played', resultOf(h.winnerSlot));
+      if (h.repick) return;
+      if (h.decisive) { extra.push(resultOf(h.winnerSlot)); return; }
+      if (dots[k]) dots[k].classList.add('played', resultOf(h.winnerSlot));
+      k++;
     });
     var live = phase === 'choosing' || phase === 'sealing' || phase === 'spinning';
-    if (live && !decisive && dots[round - 1] && !history.some(function (h) { return h.round === round; })) dots[round - 1].classList.add('current');
+    if (live && !decisive && dots[k]) dots[k].classList.add('current');
     if (window.MindspilleHud) MindspilleHud.decisive(roundsProgress, extra, live && decisive);
     board.setHistory(history.map(function (h) {
       return { round: h.round, drawn: h.drawn, repick: h.repick, result: h.winnerSlot === 1 ? 'me' : h.winnerSlot === 2 ? 'op' : '' };
     }));
   }
-  function hubLabel() { return decisive ? 'Décisive' : 'Manche ' + Math.min(round, R.REGULAR_ROUNDS); }
+  function hubLabel() { return decisive ? 'Décisive' : 'Manche ' + regularIndex(); }
+  /* Pendant le choix d'une manche décisive : la réponse, dans une paire. */
+  function pairStatus() {
+    if (!decisive) return '';
+    var lead = pairLeader();
+    if (!lead) return 'Manche décisive · une chance sur deux';
+    if (MODE === 'ai') return lead === 1 ? 'Vous menez · l’IA répond' : 'À vous de répondre · une chance sur deux';
+    return NAMES[lead] + ' mène · ' + NAMES[lead === 1 ? 2 : 1] + ' répond';
+  }
 
   var LOCK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
   function canPick() {
@@ -212,7 +241,7 @@
     }
     if (MODE === 'local' && phase === 'choosing') {
       var hubKey = 'local|' + round + '|' + decisive;
-      if (hubKey !== lastHubKey) { lastHubKey = hubKey; board.setHub(decisive ? 'Décisive' : 'Manche', decisive ? '⚖' : String(round), null, null); }
+      if (hubKey !== lastHubKey) { lastHubKey = hubKey; board.setHub(decisive ? 'Décisive' : 'Manche', decisive ? '⚖' : String(regularIndex()), null, null); }
     }
   }
 
@@ -325,7 +354,7 @@
     board.resetWheel();
     board.setHub(hubLabel(), '', null, null);
     board.setSeal(null);
-    board.setStatus('');
+    board.setStatus(pairStatus());
     renderAll();
     renderChoosing();
     /* Le tirage est fait et scellé avant les choix, comme sur le serveur. */
@@ -346,10 +375,12 @@
     stopTurnTimer();
     if (aiTimer) { clearTimeout(aiTimer); aiTimer = null; }
     var c1 = picks[1], c2 = picks[2];
-    var drawn = R.drawnColor(seal, c1, c2);
+    /* Même couleur pour les deux, manche décisive ou non : rien ne tourne, on rechoisit. */
+    var repick = R.isRepick(c1, c2);
+    var drawn = repick ? null : R.drawnColor(seal, c1, c2);
     var entry = R.publicRound({
       round: round, choice1: c1, choice2: c2, drawn: drawn,
-      winnerSlot: R.roundWinner(c1, c2, drawn), decisive: decisive, repick: decisive && drawn === null
+      winnerSlot: R.roundWinner(c1, c2, drawn), decisive: decisive, repick: repick
     });
     board.setChip('me', { name: leftName(), kind: 'color', color: c1, reveal: true });
     board.setChip('op', { name: rightName(), kind: 'color', color: c2, reveal: true });
@@ -375,27 +406,34 @@
     if (entry.repick) {
       board.setChip('me', { name: leftName(), kind: 'color', color: c1 });
       board.setChip('op', { name: rightName(), kind: 'color', color: c2 });
-      board.setHub('Décisive', '=', null, null);
+      board.setHub(hubLabel(), '=', null, null);
       board.setStatus('🎨 Même couleur · on rechoisit', 'draw');
       showToast('🎨', 'Même couleur !', 'Vous avez choisi la même couleur : chacun rechoisit.', 2000);
     } else {
-      board.setChip('me', { name: leftName(), kind: 'color', color: c1, winner: ws === 1, miss: c1 !== drawn });
-      board.setChip('op', { name: rightName(), kind: 'color', color: c2, winner: ws === 2, miss: c2 !== drawn });
+      /* Chaque puce dit sa distance à la couleur tirée ; la plus proche s'éclaire.
+         En manche décisive, la roue n'a que les deux couleurs choisies. */
+      var label = function (color, slot) {
+        if (entry.decisive) return ws === slot ? 'Pile !' : '';
+        var d = R.colorDistance(color, drawn);
+        return d === 0 ? 'Pile !' : d === 1 ? '1 case' : d + ' cases';
+      };
+      board.setChip('me', { name: leftName(), kind: 'color', color: c1, winner: ws === 1, miss: ws !== 1, label: label(c1, 1) });
+      board.setChip('op', { name: rightName(), kind: 'color', color: c2, winner: ws === 2, miss: ws !== 2, label: label(c2, 2) });
       board.setHub('Tirée', '', null, drawn);
       var name = R.colorName(drawn);
-      if (MODE === 'ai') {
-        if (ws === 1) board.setStatus('🎉 Manche gagnée · ' + name, 'win');
-        else if (ws === 2) board.setStatus('💀 Manche perdue · ' + name, 'lose');
-      } else if (ws) board.setStatus('🎯 ' + NAMES[ws] + ' marque · ' + name, 'win');
-      if (!ws) board.setStatus(c1 === drawn && c2 === drawn ? '🤝 Tous les deux sur ' + name : '➖ Personne n’avait ' + name, 'draw');
+      if (!ws) board.setStatus('➖ À égale distance · ' + name, 'draw');
+      else if (MODE === 'ai') board.setStatus(ws === 1 ? '🎉 Manche gagnée · ' + name : '💀 Manche perdue · ' + name, ws === 1 ? 'win' : 'lose');
+      else board.setStatus('🎯 ' + NAMES[ws] + ' marque · ' + name, 'win');
       if (ws === 1 || (MODE === 'local' && ws)) createConfetti(50);
     }
     Board.verifySpin(ROOM, { round: entry.round, seal: seal }, seal && seal.hash).then(function (res) {
       if (token !== matchToken || !seal || !seal.hash) return;
       board.setSeal({ hash: seal.hash, state: res.ok === true ? 'verified' : res.ok === false ? 'failed' : 'sealed', revealed: res.text });
     });
-    var played = history.filter(function (h) { return !h.decisive; }).length;
-    var next = R.matchDecision({ scores: scores, roundsPlayed: played, totalRounds: R.REGULAR_ROUNDS, decisive: entry.decisive, lastWinner: ws });
+    var next = R.matchDecision({
+      scores: scores, roundsPlayed: R.regularPlayed(history), totalRounds: R.REGULAR_ROUNDS,
+      decisive: entry.decisive, decisivePlayed: R.decisivePlayed(history)
+    });
     if (next.over) {
       phase = 'over';
       renderAll();
@@ -405,7 +443,15 @@
     phase = 'between';
     renderAll();
     if (next.decisive && !entry.decisive) setTimeout(function () {
-      if (token === matchToken) showToast('⚖️', 'Égalité !', 'Manche décisive : la roue ne gardera que vos deux couleurs.', 2400);
+      if (token === matchToken) showToast('⚖️', 'Égalité !', 'Manches décisives, deux par deux : la roue ne gardera que vos deux couleurs.', 2600);
+    }, 700);
+    else if (entry.decisive && !entry.repick) setTimeout(function () {
+      if (token !== matchToken) return;
+      /* La première de la paire : l'autre joueur répond toujours. 1-1 : une nouvelle paire. */
+      if (R.decisivePlayed(history) % 2 === 1) {
+        if (MODE === 'ai') showToast('⚖️', ws === 1 ? 'Vous menez' : 'À vous de répondre', ws === 1 ? 'L’IA joue la seconde manche décisive.' : 'Gagnez la seconde manche décisive pour égaliser.', 2200);
+        else showToast('⚖️', NAMES[ws] + ' mène', NAMES[ws === 1 ? 2 : 1] + ' joue la seconde manche décisive.', 2200);
+      } else showToast('⚖️', '1 partout !', 'Nouvelle paire de manches décisives.', 2200);
     }, 700);
     nextTimer = setTimeout(function () {
       nextTimer = null;
@@ -449,13 +495,16 @@
     modalContent.className = 'modal ' + cls;
     var list = $('modalHistoryList');
     list.innerHTML = '';
+    /* Le numéro de chaque manche comptée (un rechoix rejoue le même numéro). */
+    var numbers = [], n = 0;
+    history.forEach(function (h, idx) { numbers[idx] = h.decisive ? 0 : (h.repick ? n + 1 : ++n); });
     for (var i = history.length - 1; i >= 0; i--) {
       var h = history[i];
       var res = h.repick ? 'draw' : resultOf(h.winnerSlot);
       var item = document.createElement('div');
       item.className = 'modal-history-item ' + res;
       var label = document.createElement('span');
-      label.textContent = h.decisive ? 'Décisive' : 'Manche ' + h.round;
+      label.textContent = h.decisive ? 'Décisive' : 'Manche ' + Math.min(numbers[i], R.REGULAR_ROUNDS);
       item.appendChild(label);
       var pair = document.createElement('span');
       pair.className = 'rr-pair';

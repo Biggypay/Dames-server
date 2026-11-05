@@ -10,9 +10,12 @@
  *     vérifié » : l'empreinte publiée correspond au tirage révélé ;
  *   • la roue s'arrête, sur les trois écrans, sur la couleur tirée par le
  *     serveur (la case sous le pointeur, calculée depuis la rotation réelle) ;
- *   • le point n'est compté qu'à l'arrêt de la roue ; manche nulle quand
- *     personne, ou les deux, ont la couleur ; manche décisive à deux couleurs ;
- *     même couleur → on rechoisit ;
+ *   • le point n'est compté qu'à l'arrêt de la roue ; la couleur la plus
+ *     proche de la tirée marque, chaque puce dit sa distance ; à égale
+ *     distance, manche nulle ; même couleur → on rechoisit ;
+ *   • les manches décisives vont par deux : après la première, l'autre joueur
+ *     répond (« À vous de répondre », « Vous menez ») ; 1-1, une nouvelle
+ *     paire ; 2-0, la fin ;
  *   • la fiche de fin ne s'ouvre qu'une fois la roue arrêtée, en haut, sans
  *     cacher la roue ;
  *   • temps de grâce : le bandeau dit qui doit jouer ; une couleur touchée
@@ -46,7 +49,9 @@ const GAME = {
 };
 /* Les tirages imposés (NODE_ENV=test) : un match connu d'avance. */
 const DRAWS = {
-  [GAME.match]: [0, 1, 5, 2, 3, 1, 0],
+  // Une valeur par manche ouverte (le rechoix de la manche 4 compris) ; en
+  // manche décisive, 0 = la plus petite des deux couleurs, 1 = la plus grande.
+  [GAME.match]: [0, 0, 1, 5, 3, 5, 0, 0, 1, 1],
   [GAME.grace]: [4, 4, 4, 4, 4],
   [GAME.reload]: [2, 2, 2, 2, 2]
 };
@@ -126,7 +131,10 @@ const text = (page, selector) => page.evaluate(sel => {
 /* Les deux puces : `me` à gauche, `op` à droite. */
 const chips = page => page.evaluate(() => {
   const all = document.querySelectorAll('#duel .rr-chip');
-  const read = chip => chip ? { color: chip.getAttribute('data-color'), locked: chip.classList.contains('rr-locked'), winner: chip.classList.contains('rr-winner') } : null;
+  const read = chip => chip ? {
+    color: chip.getAttribute('data-color'), locked: chip.classList.contains('rr-locked'), winner: chip.classList.contains('rr-winner'),
+    label: (chip.parentElement.querySelector('.rr-pick-label') || {}).textContent || ''
+  } : null;
   return { me: read(all[0]), op: read(all[1]) };
 });
 const scores = page => page.evaluate(() => [document.getElementById('playerScore').textContent, document.getElementById('aiScore').textContent].join('-'));
@@ -149,11 +157,12 @@ async function choose(page, color) {
   await page.click(`.rr-swatch[data-color="${color}"]`);
   await page.click('#lockBtn');
 }
-const RESULT = /gagnée|perdue|Personne|Tous les deux|Même couleur|marque/;
 const waitResult = (page, round) => page.waitForFunction(r => {
   const status = document.getElementById('status').textContent;
-  return /gagnée|perdue|Personne|Tous les deux|Même couleur|marque/.test(status) && document.querySelectorAll('.rr-hist').length >= r;
+  return /gagnée|perdue|égale distance|Même couleur|marque/.test(status) && document.querySelectorAll('.rr-hist').length >= r;
 }, round, { timeout: 15000 });
+/* Le résultat attendu d'une manche, sur cet écran (le statut change entre deux manches). */
+const waitStatus = (page, re) => page.waitForFunction(src => new RegExp(src).test(document.getElementById('status').textContent), re.source, { timeout: 15000 });
 
 async function noOverflow(page) {
   return page.evaluate(() => {
@@ -202,48 +211,85 @@ async function fullMatch(browser) {
   const revealed = await chips(p2);
   check('au tour de roue, les deux couleurs sont montrées', revealed.me.color === '4' && revealed.op.color === '0', revealed);
 
+  // Couleurs : 0 Rouge, 1 Orange, 2 Jaune, 3 Vert, 4 Bleu, 5 Violet. Alice à gauche chez elle, Bob chez lui.
   const plays = [
-    { c: [0, 4], drawn: 0, a: /🎉 Manche gagnée · Rouge/, b: /💀 Manche perdue · Rouge/, v: /Alice marque · Rouge/, s: ['1-0', '0-1'] },
-    { c: [2, 1], drawn: 1, a: /💀 Manche perdue · Orange/, b: /🎉 Manche gagnée · Orange/, v: /Bob marque · Orange/, s: ['1-1', '1-1'] },
-    { c: [3, 4], drawn: 5, a: /Personne n’avait Violet/, b: /Personne n’avait Violet/, v: /Personne n’avait Violet/, s: ['1-1', '1-1'] },
-    { c: [2, 2], drawn: 2, a: /Tous les deux sur Jaune/, b: /Tous les deux sur Jaune/, v: /Tous les deux sur Jaune/, s: ['1-1', '1-1'] },
-    { c: [0, 1], drawn: 3, a: /Personne n’avait Vert/, b: /Personne n’avait Vert/, v: /Personne n’avait Vert/, s: ['1-1', '1-1'] },
-    { c: [4, 4], drawn: null, a: /Même couleur/, b: /Même couleur/, v: /Même couleur/, s: ['1-1', '1-1'] },
-    { c: [5, 2], drawn: 2, a: /💀 Manche perdue · Jaune/, b: /🎉 Manche gagnée · Jaune/, v: /Bob marque · Jaune/, s: ['1-2', '2-1'] }
+    { c: [0, 4], drawn: 0, a: /🎉 Manche gagnée · Rouge/, b: /💀 Manche perdue · Rouge/, v: /Alice marque · Rouge/, s: ['1-0', '0-1'],
+      labels: { a: ['Pile !', '2 cases'], b: ['2 cases', 'Pile !'] }, title: 'Rouge tiré : pile sur Alice' },
+    { c: [2, 1], drawn: 0, a: /💀 Manche perdue · Rouge/, b: /🎉 Manche gagnée · Rouge/, v: /Bob marque · Rouge/, s: ['1-1', '1-1'],
+      labels: { a: ['2 cases', '1 case'], b: ['1 case', '2 cases'] }, title: 'Rouge tiré : l’Orange de Bob, plus proche, marque' },
+    { c: [0, 2], drawn: 1, a: /À égale distance · Orange/, b: /À égale distance · Orange/, v: /À égale distance · Orange/, s: ['1-1', '1-1'],
+      labels: { a: ['1 case', '1 case'] }, title: 'Orange tiré : Rouge et Jaune à égale distance, manche nulle' },
+    { c: [3, 3], drawn: null, a: /Même couleur/, b: /Même couleur/, v: /Même couleur/, s: ['1-1', '1-1'], title: 'même couleur : on rechoisit' },
+    { c: [4, 5], drawn: 3, a: /🎉 Manche gagnée · Vert/, b: /💀 Manche perdue · Vert/, v: /Alice marque · Vert/, s: ['2-1', '1-2'],
+      label: 'Manche 4 / 5', title: 'Vert tiré : le Bleu d’Alice (1 case) bat le Violet (2 cases)' },
+    { c: [1, 0], drawn: 5, a: /💀 Manche perdue · Violet/, b: /🎉 Manche gagnée · Violet/, v: /Bob marque · Violet/, s: ['2-2', '2-2'],
+      title: 'Violet tiré : le Rouge de Bob (1 case) bat l’Orange (2 cases)' },
+    { c: [5, 2], drawn: 2, a: /💀 Manche perdue · Jaune/, b: /🎉 Manche gagnée · Jaune/, v: /Bob marque · Jaune/, s: ['2-3', '3-2'],
+      decisive: true, title: 'décisive 1/2 : Bob gagne la première' },
+    { c: [0, 3], drawn: 0, a: /🎉 Manche gagnée · Rouge/, b: /💀 Manche perdue · Rouge/, v: /Alice marque · Rouge/, s: ['3-3', '3-3'],
+      decisive: true, answer: true, title: 'décisive 2/2 : Alice répond et égalise, 1-1' },
+    { c: [1, 4], drawn: 4, a: /💀 Manche perdue · Bleu/, b: /🎉 Manche gagnée · Bleu/, v: /Bob marque · Bleu/, s: ['3-4', '4-3'],
+      decisive: true, title: 'nouvelle paire, décisive 1/2 : Bob' },
+    { c: [2, 5], drawn: 5, a: /💀 Manche perdue · Violet/, b: /🎉 Manche gagnée · Violet/, v: /Bob marque · Violet/, s: ['3-5', '5-3'],
+      decisive: true, answer: true, title: 'décisive 2/2 : Bob gagne aussi, 2-0, match joué' }
   ];
   for (let i = 0; i < plays.length; i++) {
     const play = plays[i];
+    if (play.answer) {
+      /* Bob a gagné la première de la paire : le match continue, Alice répond. */
+      await Promise.all([p1, p2, viewer].map(p => p.waitForFunction(() => /répond/.test(document.getElementById('status').textContent), null, { timeout: 15000 })));
+      const [ta, tb, tv, label] = await Promise.all([text(p1, '#status'), text(p2, '#status'), text(viewer, '#status'), text(p1, '#roundLabel')]);
+      check(`manche ${i + 1} : chacun joue sa manche décisive — « ${ta} » / « ${tb} » / « ${tv} »`,
+        /À vous de répondre/.test(ta) && /Vous menez/.test(tb) && /Bob mène · Alice répond/.test(tv), [ta, tb, tv]);
+      check(`manche ${i + 1} : « Décisive 2/2 » en haut`, label === 'Décisive 2/2', label);
+      check(`manche ${i + 1} : la fiche de fin n’est pas ouverte (personne n’a encore gagné)`,
+        !(await p1.evaluate(() => document.getElementById('gameOverModal').classList.contains('show'))));
+    }
     if (i > 0) { await choose(p1, play.c[0]); await choose(p2, play.c[1]); }
-    await Promise.all([waitResult(p1, i + 1), waitResult(p2, i + 1), waitResult(viewer, i + 1)]);
+    await Promise.all([waitStatus(p1, play.a), waitStatus(p2, play.b), waitStatus(viewer, play.v)]);
     const [ta, tb, tv] = await Promise.all([text(p1, '#status'), text(p2, '#status'), text(viewer, '#status')]);
-    check(`manche ${i + 1} : chaque écran dit le bon résultat`, play.a.test(ta) && play.b.test(tb) && play.v.test(tv), [ta, tb, tv]);
+    check(`manche ${i + 1} (${play.title}) : chaque écran dit le bon résultat`, play.a.test(ta) && play.b.test(tb) && play.v.test(tv), [ta, tb, tv]);
     if (play.drawn !== null) {
       const where = await Promise.all([p1, p2, viewer].map(underPointer));
       check(`manche ${i + 1} : la roue s'arrête sur la couleur tirée, sur les trois écrans`, where.every(w => w.color === play.drawn && w.hit === play.drawn), where);
-      if (i === 6) check('manche décisive : la roue ne garde que les deux couleurs choisies', where[0].colors === 2, where[0]);
+      if (play.decisive) check(`manche ${i + 1} : décisive, la roue ne garde que les deux couleurs choisies`, where[0].colors === 2, where[0]);
     }
+    if (play.labels) {
+      const [ca, cb] = await Promise.all([chips(p1), chips(p2)]);
+      check(`manche ${i + 1} : chaque puce dit sa distance à la couleur tirée (${play.labels.a.join(' / ')})`,
+        ca.me.label === play.labels.a[0] && ca.op.label === play.labels.a[1] && (!play.labels.b || (cb.me.label === play.labels.b[0] && cb.op.label === play.labels.b[1])),
+        { alice: [ca.me.label, ca.op.label], bob: [cb.me.label, cb.op.label] });
+      if (play.a.source.includes('gagnée')) check(`manche ${i + 1} : la puce gagnante s’éclaire`, ca.me.winner && !ca.op.winner, ca);
+    }
+    if (play.label) check(`manche ${i + 1} : le rechoix ne compte pas (« ${play.label} »)`, (await text(p1, '#roundLabel')) === play.label, await text(p1, '#roundLabel'));
     const [sa, sb] = await Promise.all([scores(p1), scores(p2)]);
     check(`manche ${i + 1} : le score après l'arrêt (${play.s.join(' / ')})`, sa === play.s[0] && sb === play.s[1], [sa, sb]);
-    const verified = await waitFor(async () => (await Promise.all([p1, p2, viewer].map(p => p.getAttribute('#seal', 'data-state')))).every(s => s === 'verified'), 4000);
-    check(`manche ${i + 1} : « Tirage vérifié » sur les trois écrans`, verified === true);
+    if (play.drawn !== null || i === 3) {
+      const verified = await waitFor(async () => (await Promise.all([p1, p2, viewer].map(p => p.getAttribute('#seal', 'data-state')))).every(s => s === 'verified'), 4000);
+      check(`manche ${i + 1} : « Tirage vérifié » sur les trois écrans`, verified === true);
+    }
   }
 
   const decisiveRow = await p1.evaluate(() => {
     const row = document.querySelector('.rounds-decisive');
     return row && !row.hidden ? row.querySelectorAll('.ms-dec-dot').length : 0;
   });
-  check('les manches décisives ont leur rangée (le rechoix n’y compte pas)', decisiveRow >= 1, decisiveRow);
+  check('les manches décisives ont leur rangée : quatre repères (le rechoix n’y compte pas)', decisiveRow === 4, decisiveRow);
+  const regularRow = await p1.evaluate(() => [...document.querySelectorAll('#roundsProgress .round-dot')].map(d => d.className.replace('round-dot', '').trim()));
+  check('les cinq manches comptées ont chacune leur repère (le rechoix non)', regularRow.length === 5 && regularRow.every(c => /played/.test(c)), regularRow);
 
   const ends = await waitFor(async () => {
     const shown = await Promise.all([p1, p2, viewer].map(p => p.evaluate(() => document.getElementById('gameOverModal').classList.contains('show'))));
     return shown.every(Boolean) ? true : null;
   }, 10000);
   check('la fiche de fin s’ouvre chez les deux joueurs et le spectateur', ends === true);
-  check('Alice : défaite 1 - 2', (await text(p1, '#modalTitle')).includes('DÉFAITE') && (await text(p1, '#finalScore')) === '1 - 2');
-  check('Bob : victoire 2 - 1, gain net affiché', (await text(p2, '#modalTitle')).includes('VICTOIRE') && (await text(p2, '#finalScore')) === '2 - 1' && /\+1800 HTG/.test(await text(p2, '#prizeLine')), [await text(p2, '#modalTitle'), await text(p2, '#prizeLine')]);
+  check('Alice : défaite 3 - 5', (await text(p1, '#modalTitle')).includes('DÉFAITE') && (await text(p1, '#finalScore')) === '3 - 5', await text(p1, '#finalScore'));
+  check('Bob : victoire 5 - 3, gain net affiché', (await text(p2, '#modalTitle')).includes('VICTOIRE') && (await text(p2, '#finalScore')) === '5 - 3' && /\+1800 HTG/.test(await text(p2, '#prizeLine')), [await text(p2, '#modalTitle'), await text(p2, '#prizeLine')]);
   check('le spectateur : Bob remporte la Roulette Royale', /Bob remporte la Roulette Royale/.test(await text(viewer, '#finalMessage')));
   const rows = await p2.evaluate(() => document.querySelectorAll('#modalHistoryList .modal-history-item').length);
-  check('l’historique de fin compte les 7 manches', rows === 7, rows);
+  check('l’historique de fin compte les 10 manches ouvertes (le rechoix compris)', rows === 10, rows);
+  const labels = await p2.evaluate(() => [...document.querySelectorAll('#modalHistoryList .modal-history-item > span:first-child')].map(el => el.textContent).reverse());
+  check('l’historique numérote les manches comptées (le rechoix reprend le numéro)', JSON.stringify(labels.slice(0, 6)) === JSON.stringify(['Manche 1', 'Manche 2', 'Manche 3', 'Manche 4', 'Manche 4', 'Manche 5']), labels);
   const proof = await p2.evaluate(() => {
     const card = document.querySelector('#gameOverModal .modal').getBoundingClientRect();
     const close = getComputedStyle(document.getElementById('closeBtn')).display;
@@ -352,7 +398,7 @@ async function offline(browser, mode) {
   await page.addInitScript(() => { window.__msgs = []; window.addEventListener('message', e => window.__msgs.push(e.data)); });
   await page.goto(GAME_URL + (mode === 'ai' ? '/roulette-ai?fast=1&name=Ritchy&difficulty=hard' : '/roulette-local?fast=1&name=Ana&p2Name=Bea'));
   let secretKept = true, curtains = 0;
-  for (let guard = 0; guard < 200; guard++) {
+  for (let guard = 0; guard < 400; guard++) {
     if (await page.evaluate(() => document.getElementById('gameOverModal').classList.contains('show'))) break;
     const st = await page.evaluate(() => window.RouletteOffline.state());
     if (st.phase !== 'choosing') { await sleep(60); continue; }
