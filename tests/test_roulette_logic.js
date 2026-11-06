@@ -210,6 +210,22 @@ for (let i = 0; i < 20000; i++) {
 }
 check(`la même couleur sort ~80 % du temps : 1 point chacun (${(100 * bothScored / 20000).toFixed(1)} %)`, Math.abs(bothScored / 20000 - 0.8) < 0.015, bothScored);
 
+// Owner, 2026-11-06 : « un joueur a décidé de jouer avec une seule couleur… c'est lui seulement qui
+// gagne ». Une couleur toujours la même, contre un adversaire qui change : les mêmes chances que lui.
+{
+  const out = { mine: 0, theirs: 0, both: 0, none: 0 };
+  const N = 60000;
+  for (let i = 0; i < N; i++) {
+    const other = crypto.randomInt(0, 6);
+    const seal = R.sealDraw('one-colour', i, false);
+    const p = R.roundPoints(0, other, R.drawnColor(seal, 0, other));
+    if (p[0] && p[1]) out.both++; else if (p[0]) out.mine++; else if (p[1]) out.theirs++; else out.none++;
+  }
+  const mine = (out.mine + out.both) / N, theirs = (out.theirs + out.both) / N;
+  check(`toujours la même couleur n’avantage pas : ${(100 * mine).toFixed(1)} % de points contre ${(100 * theirs).toFixed(1)} % pour l’adversaire`,
+    Math.abs(mine - theirs) < 0.012 && Math.abs(out.mine / N - out.theirs / N) < 0.012, out);
+}
+
 console.log('Arrêt de la roue');
 // Owner, 2026-11-06 : « l'aiguille arrive toujours dans cet espace-là… ça doit être de manière
 // aléatoire, au milieu jusqu'à la fin, au début… parfois à des 1000 mm microscopiquement ». L'arrêt
