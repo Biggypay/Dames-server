@@ -12,20 +12,24 @@
  * ------
  * - Une roue de six couleurs ; les deux joueurs disposent des mêmes six.
  * - À chaque manche, chacun choisit une couleur en secret.
- * - Même couleur pour les deux : rien ne tourne, on rechoisit (la manche ne
- *   compte pas).
- * - Sinon la roue tourne et s'arrête sur UNE couleur. Seule la couleur
- *   EXACTE marque : l'aiguille sur votre couleur, +1 ; sur celle de
- *   l'adversaire, +1 pour lui ; sur une couleur que personne n'a choisie,
- *   personne ne marque (« plus proche » ne compte plus).
+ * - La roue tourne et s'arrête sur UNE couleur. Seule la couleur EXACTE
+ *   marque : l'aiguille sur votre couleur, +1 ; sur celle de l'adversaire,
+ *   +1 pour lui ; sur une couleur que personne n'a choisie, personne ne marque
+ *   (« plus proche » ne compte plus).
  * - L'issue de la manche est tirée au sort AVANT les choix, à parts égales
- *   pour les deux joueurs : le joueur 1 marque (4 chances sur 10), le joueur 2
- *   marque (4 sur 10), ou personne (2 sur 10 : la roue s'arrête alors sur une
- *   des quatre couleurs que personne n'a choisies, chacune 1 chance sur 20).
- *   L'aiguille tombe EXACTEMENT sur la couleur du gagnant. La couleur choisie
- *   ne change rien aux chances : nul ne peut être favorisé, et une manche a
- *   un gagnant 8 fois sur 10 (elle en avait un 1 fois sur 3 quand la roue
- *   tirait une couleur sur six sans regarder les choix).
+ *   pour les deux joueurs : la couleur du joueur 1 (4 chances sur 10), celle
+ *   du joueur 2 (4 sur 10), ou une couleur que personne n'a choisie (2 sur 10,
+ *   chacune des couleurs libres à parts égales). L'aiguille tombe EXACTEMENT
+ *   sur la couleur désignée. La couleur choisie ne change rien aux chances :
+ *   nul ne peut être favorisé, et une manche a un gagnant 8 fois sur 10 (elle
+ *   en avait un 1 fois sur 3 quand la roue tirait une couleur sur six sans
+ *   regarder les choix).
+ * - Même couleur pour les deux (owner, 2026-11-05 : « le système doit
+ *   l'accepter et considérer ça comme une manche nulle… si les deux joueurs
+ *   gagnent, cela donne 1 point à chaque joueur, tout simplement parce que
+ *   c'est le hasard ») : on ne rechoisit plus, la manche se joue. L'aiguille
+ *   sur leur couleur commune (8 fois sur 10), 1 point chacun ; ailleurs,
+ *   personne. Dans les deux cas, une manche nulle : l'écart ne bouge pas.
  * - Six manches (owner : « ça devrait être 6 »). Le match s'arrête plus tôt
  *   si l'écart ne peut plus être comblé.
  * - Égalité au bout des six : on continue, 7e et 8e manches, puis 9e et
@@ -38,11 +42,12 @@
  *   plus de suspens à l'arrêt, un tour de roue plus long.
  *
  * Le tirage est scellé AVANT les choix : le serveur publie l'empreinte
- * (SHA-256) de l'issue tirée (un nombre de 0 à 19) et d'un sel secret au
+ * (SHA-256) de l'issue tirée (un nombre de 0 à 99) et d'un sel secret au
  * début de la manche, et les révèle après. N'importe qui peut vérifier que
- * l'issue n'a pas été changée une fois les choix connus (`sealText`) : 0 à 7,
- * le joueur 1 ; 8 à 15, le joueur 2 ; 16 à 19, la 1re, 2e, 3e ou 4e des
- * couleurs que personne n'a choisies, dans l'ordre de la roue.
+ * l'issue n'a pas été changée une fois les choix connus (`sealText`) : 0 à
+ * 39, la couleur du joueur 1 ; 40 à 79, celle du joueur 2 ; 80 à 99, une des
+ * couleurs que personne n'a choisies (la (n mod k)-ième, dans l'ordre de la
+ * roue, k = 4 ou 5 : vingt issues se partagent toujours également).
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
@@ -64,13 +69,15 @@
   /* Manches prévues d'un match, avant toute manche décisive. */
   var REGULAR_ROUNDS = 6;
   /*
-   * L'issue scellée d'une manche : un nombre tiré uniformément de 0 à 19.
-   * 0–7 : le joueur 1 marque ; 8–15 : le joueur 2 ; 16–19 : personne (une des
-   * quatre couleurs que personne n'a choisies). Parts égales pour les deux.
+   * L'issue scellée d'une manche : un nombre tiré uniformément de 0 à 99.
+   * 0–39 : la couleur du joueur 1 ; 40–79 : celle du joueur 2 ; 80–99 : une
+   * couleur que personne n'a choisie (quatre, ou cinq quand les deux ont la
+   * même : vingt issues se partagent également entre elles). Parts égales
+   * pour les deux joueurs.
    */
-  var OUTCOME_SPACE = 20;
-  var OUTCOME_P1_END = 8;
-  var OUTCOME_P2_END = 16;
+  var OUTCOME_SPACE = 100;
+  var OUTCOME_P1_END = 40;
+  var OUTCOME_P2_END = 80;
 
   function isColor(value) {
     return typeof value === 'number' && value % 1 === 0 && value >= 0 && value < COLOR_COUNT;
@@ -82,12 +89,12 @@
     return isColor(value) ? value : null;
   }
 
-  /** Une issue scellée valable : un entier de 0 à 19. */
+  /** Une issue scellée valable : un entier de 0 à 99. */
   function isOutcome(value) {
     return typeof value === 'number' && value % 1 === 0 && value >= 0 && value < OUTCOME_SPACE;
   }
 
-  /** Qui marque, d'après l'issue scellée : 1, 2, ou 0 (personne). */
+  /** La couleur que l'issue désigne : celle du joueur 1, du joueur 2, ou 0 (une couleur libre). */
   function outcomeWinner(value) {
     if (!isOutcome(value)) return 0;
     return value < OUTCOME_P1_END ? 1 : value < OUTCOME_P2_END ? 2 : 0;
@@ -95,7 +102,7 @@
 
   /**
    * Le texte scellé d'une manche. `kind` : 'outcome', la valeur est l'issue
-   * tirée (0 à 19, toute manche). Les genres 'color' (une couleur tirée sans
+   * tirée (0 à 99, toute manche). Les genres 'color' (une couleur tirée sans
    * regarder les choix, jusqu'à la 3e version des règles) et 'bit' (les
    * manches décisives à deux couleurs) n'ont plus cours.
    */
@@ -119,12 +126,16 @@
     return Math.min(d, COLOR_COUNT - d);
   }
 
-  /** Même couleur pour les deux : rien ne tourne, on rechoisit (toute manche). */
-  function isRepick(choice1, choice2) {
+  /**
+   * Même couleur pour les deux : la manche se joue quand même (plus de
+   * rechoix depuis le 2026-11-05) — 1 point chacun si l'aiguille s'arrête
+   * dessus, personne sinon : une manche nulle.
+   */
+  function sameColor(choice1, choice2) {
     return isColor(choice1) && choice1 === choice2;
   }
 
-  /** Les couleurs que personne n'a choisies, dans l'ordre de la roue (quatre). */
+  /** Les couleurs que personne n'a choisies, dans l'ordre de la roue (quatre, ou cinq pour une même couleur). */
   function unchosenColors(choice1, choice2) {
     var out = [];
     for (var c = 0; c < COLOR_COUNT; c++) if (c !== choice1 && c !== choice2) out.push(c);
@@ -133,39 +144,49 @@
 
   /**
    * La couleur où l'aiguille s'arrête, d'après l'issue scellée AVANT les
-   * choix : celle du joueur 1 (issue 0–7), celle du joueur 2 (8–15), ou une
-   * des couleurs que personne n'a choisies (16–19, dans l'ordre de la roue).
-   * null si les deux joueurs ont choisi la même (on rechoisit), s'il manque un
-   * choix, ou pour un sceau d'un autre genre.
+   * choix : celle du joueur 1 (issue 0–39), celle du joueur 2 (40–79), ou une
+   * des couleurs que personne n'a choisies (80–99 : la ((issue − 80) mod k)-
+   * ième, dans l'ordre de la roue — k = 4, ou 5 quand les deux ont la même
+   * couleur). Même couleur : l'issue d'un joueur désigne leur couleur commune.
+   * null s'il manque un choix, ou pour un sceau d'un autre genre.
    */
   function drawnColor(seal, choice1, choice2) {
     if (!seal || seal.kind !== 'outcome' || !isOutcome(seal.value)) return null;
-    if (!isColor(choice1) || !isColor(choice2) || isRepick(choice1, choice2)) return null;
+    if (!isColor(choice1) || !isColor(choice2)) return null;
     var winner = outcomeWinner(seal.value);
     if (winner === 1) return choice1;
     if (winner === 2) return choice2;
     var free = unchosenColors(choice1, choice2);
-    return free[seal.value - OUTCOME_P2_END] === undefined ? null : free[seal.value - OUTCOME_P2_END];
+    return free[(seal.value - OUTCOME_P2_END) % free.length];
   }
 
   /**
-   * Le gagnant de la manche : celui dont la couleur est EXACTEMENT celle où
-   * l'aiguille s'est arrêtée (1 ou 2) ; 0 si c'est une couleur que personne
-   * n'a choisie, ou si les deux ont la même couleur.
+   * Les points de la manche, [joueur 1, joueur 2] : 1 à celui dont la couleur
+   * est EXACTEMENT celle où l'aiguille s'est arrêtée. Même couleur pour les
+   * deux, l'aiguille dessus : [1, 1] (« 1 point à chaque joueur ») ; une
+   * couleur que personne n'a choisie : [0, 0].
    */
-  function roundWinner(choice1, choice2, drawn) {
-    if (!isColor(drawn) || !isColor(choice1) || !isColor(choice2) || choice1 === choice2) return 0;
-    if (drawn === choice1) return 1;
-    if (drawn === choice2) return 2;
-    return 0;
+  function roundPoints(choice1, choice2, drawn) {
+    if (!isColor(drawn) || !isColor(choice1) || !isColor(choice2)) return [0, 0];
+    return [choice1 === drawn ? 1 : 0, choice2 === drawn ? 1 : 0];
   }
 
-  /** Les manches réglementaires jouées (les rechoix ne comptent pas). */
+  /**
+   * Le gagnant de la manche, s'il est seul : 1 ou 2 ; 0 pour une manche
+   * nulle — une couleur que personne n'a choisie, ou la même couleur pour les
+   * deux (1 point chacun si l'aiguille est dessus : l'écart ne bouge pas).
+   */
+  function roundWinner(choice1, choice2, drawn) {
+    var points = roundPoints(choice1, choice2, drawn);
+    return points[0] === points[1] ? 0 : points[0] ? 1 : 2;
+  }
+
+  /** Les manches réglementaires jouées (les anciens rechoix, d'avant le 2026-11-05, ne comptent pas). */
   function regularPlayed(history) {
     return (Array.isArray(history) ? history : []).filter(function (h) { return h && !h.decisive && !h.repick; }).length;
   }
 
-  /** Les manches décisives jouées (les rechoix ne comptent pas). */
+  /** Les manches décisives jouées (les anciens rechoix ne comptent pas). */
   function decisivePlayed(history) {
     return (Array.isArray(history) ? history : []).filter(function (h) { return h && h.decisive && !h.repick; }).length;
   }
@@ -207,58 +228,170 @@
     return { over: false, decisive: false };
   }
 
-  /** Deux chiffres hexadécimaux du sel, en nombre de 0 à 1 (non cryptographique : l'affichage). */
-  function saltFraction(salt, at) {
-    var n = parseInt(String(salt || '').substr(at || 0, 2), 16);
-    return isFinite(n) ? n / 255 : 0.5;
+  /**
+   * Des chiffres hexadécimaux du sel (`len`, 2 par défaut, à partir de `at`),
+   * en nombre de 0 à 1 — non cryptographique : la mise en scène seulement.
+   */
+  function saltFraction(salt, at, len) {
+    var size = len || 2;
+    var hex = String(salt || '').substr(at || 0, size);
+    if (hex.length !== size || !/^[0-9a-f]+$/i.test(hex)) return 0.5;
+    return parseInt(hex, 16) / (Math.pow(16, size) - 1);
   }
 
+  function round3(x) { return Math.round(x * 1000) / 1000; }
+
+  /*
+   * Le mouvement d'un tour de roue, en temps normalisé u ∈ [0, 1] :
+   *   0 → 0,06      l'élan : la roue recule un peu, puis repart (vitesse nulle
+   *                 aux deux bouts) ;
+   *   → 0,21        l'accélération, x^2,4 : lente au départ, puis la roue s'emballe ;
+   *   → cruise      la pleine vitesse (0,30 à 0,40 du tour selon la manche) ;
+   *   → 1           le freinage, (1 − s)^ease (ease de 2,4 à 3,4) : plus il est
+   *                 grand, plus la roue ralentit tôt et plus la fin au ralenti
+   *                 dure, où les dernières lignes passent une à une.
+   * `area` : la surface sous la vitesse (la vitesse de pointe vaut le chemin
+   * parcouru divisé par la durée et par elle).
+   */
+  var MOTION_WIND_END = 0.06, MOTION_ACC_END = 0.21, MOTION_ACC_POW = 2.4, MOTION_STEPS = 900;
+  function motionArea(ease, cruise) {
+    return (MOTION_ACC_END - MOTION_WIND_END) / (MOTION_ACC_POW + 1) + (cruise - MOTION_ACC_END) + (1 - cruise) / (ease + 1);
+  }
+  var motionCache = {}, motionCached = 0;
+  function motionCurve(ease, cruise) {
+    var K = Number(ease), C = Number(cruise);
+    if (!(K >= 1.5 && K <= 5)) K = 2.8;
+    if (!(C >= MOTION_ACC_END + 0.02 && C <= 0.6)) C = 0.35;
+    var key = K.toFixed(3) + ':' + C.toFixed(3);
+    if (motionCache[key]) return motionCache[key];
+    function velocity(u) {
+      if (u < MOTION_WIND_END) return 0;
+      if (u < MOTION_ACC_END) return Math.pow((u - MOTION_WIND_END) / (MOTION_ACC_END - MOTION_WIND_END), MOTION_ACC_POW);
+      if (u < C) return 1;
+      return Math.pow(Math.max(0, 1 - (u - C) / (1 - C)), K);
+    }
+    var N = MOTION_STEPS, table = new Float64Array(N + 1), sum = 0;
+    for (var i = 1; i <= N; i++) { sum += (velocity((i - 1) / N) + velocity(i / N)) / (2 * N); table[i] = sum; }
+    for (var j = 0; j <= N; j++) table[j] /= sum;
+    var curve = {
+      ease: K,
+      cruise: C,
+      area: sum,
+      /** La part du chemin vers l'avant parcourue à l'instant u. */
+      progress: function (u) {
+        if (u <= 0) return 0;
+        if (u >= 1) return 1;
+        var x = u * N, k = Math.floor(x);
+        return table[k] + (table[Math.min(N, k + 1)] - table[k]) * (x - k);
+      },
+      /** La vitesse relative (1 à pleine vitesse). */
+      speed: velocity,
+      /** L'élan en arrière (degrés, ≤ 0) : 0 au départ et au bout de l'élan, sans à-coup. */
+      windup: function (u, depth) {
+        if (u <= 0 || u >= MOTION_WIND_END) return 0;
+        return -depth * (1 - Math.cos(2 * Math.PI * u / MOTION_WIND_END)) / 2;
+      }
+    };
+    if (motionCached >= 16) { motionCache = {}; motionCached = 0; }
+    motionCache[key] = curve;
+    motionCached++;
+    return curve;
+  }
+
+  /*
+   * Après l'arrêt de la roue : un instant immobile, puis le recentrage — et
+   * seulement alors le résultat (owner, 2026-11-06 : « c'est le recadrage ou
+   * le recentrage qui fera savoir au joueur si l'aiguille est tombée sur sa
+   * couleur »). Le serveur annonce le point au bout de ce temps.
+   */
+  var SPIN_SETTLE_MS = 1800;
+  /* La durée d'un tour (avant le recentrage), en manche normale et décisive. */
+  var SPIN_NOMINAL_MS = 7200, SPIN_DECISIVE_NOMINAL_MS = 8400;
+
   /**
-   * Où la roue s'arrête : la case (parmi celles de la couleur tirée) et
-   * l'endroit dans la case, tirés du sel — le même arrêt sur tous les écrans,
-   * joueurs et spectateurs. Pour le suspens (owner, 2026-11-05 : « parfois ça
-   * s'arrête sur la couleur à la dernière ligne… créer plus de suspense »),
-   * selon le sel :
-   *   'last-line'  (40 % ; 50 % en manche décisive) la roue franchit la ligne
-   *                au tout dernier moment : elle s'arrête juste entrée dans la
-   *                case (offset +0,78 à +0,88, du côté de la case qui vient de
-   *                passer sous l'aiguille) ;
-   *   'near-next'  (25 % ; 35 % en manche décisive) elle s'arrête juste avant
-   *                la ligne suivante (offset −0,78 à −0,88) ;
-   *   'middle'     sinon, vers le milieu de la case.
-   * Le presque-arrêt va vers une couleur choisie (owner : « des fois ça va
-   * tomber sur une couleur que l'un a choisi mais ça n'arrive pas ») : quand
-   * une seule des deux cases voisines est une couleur choisie, le côté passe
-   * de ce côté-là — la roue traîne sur elle puis franchit la ligne
-   * ('last-line'), ou s'arrête juste avant de l'atteindre ('near-next').
-   * Le sel décide toujours SI la manche a du suspens (65 % ; 85 % en manche
-   * décisive) ; les choix, publics au moment du tour, n'en décident que le
-   * côté. Toujours franchement dans la case (au moins 6 % de sa largeur depuis
-   * une ligne). Pure mise en scène : l'issue est scellée avant les choix,
-   * l'arrêt ne change jamais la couleur ni le point — et quelques instants
-   * après l'arrêt, la roue se recentre (roulette-board.js) : l'aiguille finit
-   * au milieu de la couleur tirée. Sans sel (un replay), au milieu.
+   * Le rythme du tour (owner, 2026-11-06 : « tu dois modifier le roulement
+   * parce que ça arrive toujours au même moment sur une couleur… ça doit être
+   * de manière aléatoire ») — tiré du sel, le même sur tous les écrans :
+   *   scale   la durée du tour, 0,90 à 1,12 fois la durée nominale (6,5 à 8,1 s ;
+   *           7,6 à 9,4 s en manche décisive) ;
+   *   cruise  la fin de la pleine vitesse, 0,30 à 0,40 du tour ;
+   *   ease    le freinage, 2,4 à 3,4 (voir motionCurve) ;
+   *   turns   le nombre de tours, pour une vitesse de pointe de 1 250 à 1 550
+   *           degrés par seconde (1 300 à 1 600 en manche décisive) — toujours
+   *           franchement visible : 7 à 12 tours.
+   * La roue ralentit ainsi tôt ou tard, rampe longtemps ou s'arrête plus net,
+   * et l'arrêt tombe à un instant différent à chaque manche. Sans sel (un
+   * replay), le tour de toujours.
+   */
+  function spinPlan(salt, decisive) {
+    if (!salt) return { turns: decisive ? 10 : 9, ease: 2.8, cruise: 0.35, scale: 1 };
+    var ease = round3(2.4 + saltFraction(salt, 16, 4));
+    var cruise = round3(0.3 + 0.1 * saltFraction(salt, 20, 4));
+    var scale = round3(0.9 + 0.22 * saltFraction(salt, 24, 4));
+    var peak = (decisive ? 1300 : 1250) + 300 * saltFraction(salt, 28, 4);
+    var seconds = (decisive ? SPIN_DECISIVE_NOMINAL_MS : SPIN_NOMINAL_MS) * scale / 1000;
+    var turns = Math.round(peak * seconds * motionArea(ease, cruise) / 360 - 0.5);
+    return { turns: Math.max(7, Math.min(12, turns)), ease: ease, cruise: cruise, scale: scale };
+  }
+
+  /* Les trois façons de s'arrêter dans la couleur, et leurs parts (normale ; décisive). */
+  var LANDING_SHARES = { anywhere: [0.5, 0.3], edge: [0.32, 0.4], hair: [0.18, 0.3] };
+
+  /**
+   * Où l'aiguille s'arrête dans la couleur tirée (owner, 2026-11-06 :
+   * « ça doit être de manière aléatoire, au milieu jusqu'à la fin, au
+   * début… le plus proche que possible, à des 1000 mm microscopiquement…
+   * même dans les infimes parties du côté de la couleur ») — tiré du sel, le
+   * même arrêt sur tous les écrans, joueurs et spectateurs :
+   *   'anywhere' (50 % ; 30 % en manche décisive) n'importe où dans la
+   *              couleur, du début à la fin (à plus de 6 % d'une ligne) ;
+   *   'edge'     (32 % ; 40 %) tout près d'une ligne : de 1 à 10 % de la
+   *              demi-case ;
+   *   'hair'     (18 % ; 30 %) à un cheveu de la ligne : de 0,1 à 1 % de la
+   *              demi-case (0,03 à 0,3 degré) — moins d'un pixel à l'écran :
+   *              on ne voit pas de quel côté elle est, c'est le recentrage qui
+   *              le dit.
+   * Le côté d'un arrêt près d'une ligne : vers une couleur choisie quand une
+   * seule des deux cases voisines l'est (« ça peut tomber sur la couleur
+   * qu'un joueur a choisi, mais la roue glisse tellement que ça finit par
+   * dévier ») — juste sortie d'elle (offset +, la case qui vient de passer
+   * sous l'aiguille) ou juste avant de l'atteindre (offset −, la suivante) ;
+   * sinon le sel décide. Le sel décide du genre d'arrêt et de sa distance ;
+   * les choix, publics au moment du tour, n'en décident que le côté. Pure
+   * mise en scène : l'issue est scellée avant les choix, l'arrêt ne change
+   * jamais la couleur ni le point, et la roue se recentre ensuite
+   * (roulette-board.js) au milieu de la couleur tirée. L'arrêt porte aussi le
+   * rythme du tour (`turns`, `ease`, `cruise` : spinPlan). Sans sel (un
+   * replay), au milieu.
    */
   function landingFor(wheel, drawn, salt, choice1, choice2, decisive) {
+    var plan = spinPlan(salt, decisive);
+    function landing(segment, offset, style) {
+      return { segment: segment, offset: offset, style: style, turns: plan.turns, ease: plan.ease, cruise: plan.cruise };
+    }
     var slots = [];
     for (var i = 0; i < wheel.length; i++) if (wheel[i] === drawn) slots.push(i);
-    if (!slots.length) return { segment: 0, offset: 0, style: 'middle' };
+    if (!slots.length) return landing(0, 0, 'middle');
     var pick = slots[Math.min(slots.length - 1, Math.floor(saltFraction(salt, 0) * slots.length))];
-    if (!salt) return { segment: pick, offset: 0, style: 'middle' };
-    var roll = saltFraction(salt, 4), f = saltFraction(salt, 2);
-    /* En manche décisive, le cœur doit battre : 85 % d'arrêts au ras d'une ligne. */
-    var lastLine = decisive ? 0.5 : 0.4, nearNext = decisive ? 0.85 : 0.65;
-    var style = roll < lastLine ? 'last-line' : roll < nearNext ? 'near-next' : 'middle';
-    if (style !== 'middle') {
-      // Le sens de rotation fait passer la case pick + 1 avant, puis pick − 1.
+    if (!salt) return landing(pick, 0, 'middle');
+    var roll = saltFraction(salt, 2, 4), depth = saltFraction(salt, 6, 6), coin = saltFraction(salt, 12, 2);
+    var k = decisive ? 1 : 0;
+    var style = roll < LANDING_SHARES.anywhere[k] ? 'anywhere'
+      : roll < LANDING_SHARES.anywhere[k] + LANDING_SHARES.edge[k] ? 'edge' : 'hair';
+    var offset;
+    if (style === 'anywhere') offset = (2 * depth - 1) * 0.94;
+    else {
+      var gap = style === 'edge' ? 0.01 + 0.09 * depth : 0.001 + 0.009 * depth;
+      var side = coin < 0.5 ? 1 : -1;
+      // Le sens de rotation fait passer la case pick + 1 sous l'aiguille avant, puis pick − 1.
       var n = wheel.length;
       var passed = wheel[(pick + 1) % n], coming = wheel[(pick - 1 + n) % n];
       var chosen = function (c) { return c !== drawn && (c === choice1 || c === choice2); };
-      if (chosen(passed) && !chosen(coming)) style = 'last-line';
-      else if (chosen(coming) && !chosen(passed)) style = 'near-next';
+      if (chosen(passed) && !chosen(coming)) side = 1;
+      else if (chosen(coming) && !chosen(passed)) side = -1;
+      offset = side * (1 - gap);
     }
-    var offset = style === 'last-line' ? 0.78 + 0.1 * f : style === 'near-next' ? -(0.78 + 0.1 * f) : (f - 0.5) * 0.9;
-    return { segment: pick, offset: Math.round(offset * 1000) / 1000, style: style };
+    return landing(pick, Math.round(offset * 1e5) / 1e5, style);
   }
 
   /** L'angle (degrés) qui amène la case `segment` sous le pointeur du haut. */
@@ -302,13 +435,21 @@
     wheelFor: wheelFor,
     drawnColor: drawnColor,
     colorDistance: colorDistance,
-    isRepick: isRepick,
+    sameColor: sameColor,
+    roundPoints: roundPoints,
     roundWinner: roundWinner,
     regularPlayed: regularPlayed,
     decisivePlayed: decisivePlayed,
     decisiveStep: decisiveStep,
     countedPlayed: countedPlayed,
     matchDecision: matchDecision,
+    SPIN_SETTLE_MS: SPIN_SETTLE_MS,
+    SPIN_NOMINAL_MS: SPIN_NOMINAL_MS,
+    SPIN_DECISIVE_NOMINAL_MS: SPIN_DECISIVE_NOMINAL_MS,
+    LANDING_SHARES: LANDING_SHARES,
+    motionCurve: motionCurve,
+    motionArea: motionArea,
+    spinPlan: spinPlan,
     landingFor: landingFor,
     landingAngle: landingAngle,
     publicRound: publicRound,

@@ -252,46 +252,23 @@
   }
 
   /*
-   * Le mouvement d'un tour de roue, en temps normalisé u ∈ [0, 1] (owner,
-   * 2026-11-05 : « ça doit être accéléré un peu plus… la vitesse doit être
-   * visible et le ralenti également ») :
-   *   0 → 0,06   l'élan : la roue recule un peu, puis repart (vitesse nulle aux deux bouts) ;
-   *   → 0,21     l'accélération, x^2,4 : lente au départ, puis la roue s'emballe ;
-   *   → 0,35     la pleine vitesse (près de quatre tours par seconde : 9 tours en 7,2 s) ;
-   *   → 1        le freinage, (1 − s)^2,8 : la vitesse tombe vite, puis une
-   *              longue fin au ralenti où les dernières lignes passent une à une.
-   * `progress(u)` : la part du chemin vers l'avant parcourue (table intégrée une fois).
-   * `speed(u)` : la vitesse relative (1 à pleine vitesse), pour le flou.
+   * Le mouvement d'un tour de roue (roulette-rules.js, motionCurve) : l'élan,
+   * l'accélération franche, la pleine vitesse, puis le freinage et la longue
+   * fin au ralenti. Son rythme change à chaque manche (spinPlan : la durée,
+   * la fin de la pleine vitesse, la force du freinage, le nombre de tours),
+   * tiré du sel : le même sur tous les écrans. MOTION : le tour de toujours
+   * (un replay, sans sel).
    */
-  var MOTION = (function () {
-    var WIND_END = 0.06, ACC_END = 0.21, CRUISE_END = 0.35, ACC_POW = 2.4, K = 2.8, N = 900;
-    function velocity(u) {
-      if (u < WIND_END) return 0;
-      if (u < ACC_END) return Math.pow((u - WIND_END) / (ACC_END - WIND_END), ACC_POW);
-      if (u < CRUISE_END) return 1;
-      return Math.pow(Math.max(0, 1 - (u - CRUISE_END) / (1 - CRUISE_END)), K);
-    }
-    var table = new Float64Array(N + 1), sum = 0;
-    for (var i = 1; i <= N; i++) { sum += (velocity((i - 1) / N) + velocity(i / N)) / (2 * N); table[i] = sum; }
-    for (var j = 0; j <= N; j++) table[j] /= sum;
-    return {
-      progress: function (u) {
-        if (u <= 0) return 0;
-        if (u >= 1) return 1;
-        var x = u * N, k = Math.floor(x);
-        return table[k] + (table[Math.min(N, k + 1)] - table[k]) * (x - k);
-      },
-      speed: velocity,
-      /** L'élan en arrière (degrés, ≤ 0) : 0 au départ et au bout de l'élan, sans à-coup. */
-      windup: function (u, depth) {
-        if (u <= 0 || u >= WIND_END) return 0;
-        return -depth * (1 - Math.cos(2 * Math.PI * u / WIND_END)) / 2;
-      }
-    };
-  })();
+  var MOTION = R.motionCurve(2.8, 0.35);
 
-  /* Après l'arrêt : l'instant où la roue reste où elle s'est arrêtée, puis le recentrage. */
-  var SETTLE_HOLD_MS = 1000, SETTLE_GLIDE_MS = 800;
+  /*
+   * Après l'arrêt (R.SPIN_SETTLE_MS en tout) : la roue reste immobile un
+   * instant (55 %) là où elle s'est arrêtée — parfois à un cheveu d'une
+   * ligne —, puis glisse (45 %) jusqu'au milieu de la couleur tirée. Le
+   * résultat ne vient qu'après : c'est le recentrage qui le dit.
+   */
+  var SETTLE_HOLD_SHARE = 0.55;
+  var SETTLE_HOLD_MS = Math.round(R.SPIN_SETTLE_MS * SETTLE_HOLD_SHARE), SETTLE_GLIDE_MS = R.SPIN_SETTLE_MS - SETTLE_HOLD_MS;
   function easeInOutCubic(x) { return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2; }
 
   /* Les couleurs fondues de la roue lancée : un dégradé conique, chaque ligne adoucie de part et d'autre. */
@@ -352,7 +329,6 @@
     var spinTimer = null;
     var spinFrame = 0;
     var finishSpin = null;
-    var settleTimer = null, settleFrame = 0;
     var reduced = false;
     try { reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (_) {}
 
@@ -393,37 +369,8 @@
       glow.style.opacity = (0.3 + 0.7 * pulse).toFixed(3);
       glow.style.transform = 'scale(' + (1 + 0.05 * pulse).toFixed(4) + ')';
     }
-    /* Le recentrage en attente ou en cours s'arrête : la roue reste où elle est. */
-    function stopSettle() {
-      if (settleTimer) { clearTimeout(settleTimer); settleTimer = null; }
-      if (settleFrame) { cancelAnimationFrame(settleFrame); settleFrame = 0; }
-    }
-    /*
-     * Le recentrage (owner : « à la fin du tour, l'aiguille doit recentrer
-     * dans la couleur… même si c'était jusqu'à la fin ») : la roue reste un
-     * instant où elle s'est arrêtée — juste après la ligne, juste avant la
-     * suivante —, puis glisse en douceur jusqu'à ce que l'aiguille soit au
-     * milieu de la couleur tirée. Rien ne change : ni la couleur, ni le point.
-     */
-    function settleTo(target) {
-      stopSettle();
-      if (Math.abs(target - rotation) < 0.05) return;
-      settleTimer = setTimeout(function () {
-        settleTimer = null;
-        var from = rotation, started = null;
-        function glide(now) {
-          settleFrame = 0;
-          if (started === null) started = now;
-          var x = Math.min(1, (now - started) / SETTLE_GLIDE_MS);
-          setAngle(from + (target - from) * easeInOutCubic(x));
-          if (x < 1) settleFrame = requestAnimationFrame(glide);
-        }
-        settleFrame = requestAnimationFrame(glide);
-      }, SETTLE_HOLD_MS);
-    }
     /* Un tour en cours s'arrête net (nouveau tour, remise à zéro) : la promesse se tient quand même. */
     function stopSpin() {
-      stopSettle();
       if (spinFrame) { cancelAnimationFrame(spinFrame); spinFrame = 0; }
       if (spinTimer) { clearTimeout(spinTimer); spinTimer = null; }
       if (finishSpin) { var done = finishSpin; finishSpin = null; done(false); }
@@ -431,18 +378,30 @@
     }
 
     /*
-     * Le tour de roue jusqu'à la case `landing` : depuis l'angle actuel,
-     * toujours en avant, neuf tours (dix en manche décisive, cinq pour un tour
-     * court), avec l'élan, l'accélération franche et la longue fin au ralenti
-     * de MOTION. À pleine vitesse, le flou fond les couleurs ; il s'efface à
-     * mesure que la roue ralentit. Chaque ligne qui passe sous le pointeur le
-     * fait claquer, d'autant plus visiblement que la roue ralentit. Un
-     * minuteur de secours conclut le tour si l'onglet, caché, ne dessine plus
-     * (le résultat n'attend jamais l'image suivante). La promesse se tient à
-     * l'arrêt ; un instant après, la roue se recentre (settleTo).
-     * `options.tension` (manche décisive) : le halo de la roue bat comme un
-     * cœur — 76 battements par minute au départ, 150 quand la roue rampe vers
-     * la dernière ligne (owner : « ça doit faire battre vite les cœurs »).
+     * Le tour de roue jusqu'à la case `landing`, puis le verdict :
+     *   1. le tour (`durationMs`) : depuis l'angle actuel, toujours en avant,
+     *      le nombre de tours de `landing.turns` (cinq pour un tour court),
+     *      avec l'élan, l'accélération franche et la longue fin au ralenti du
+     *      rythme de la manche (R.motionCurve(landing.ease, landing.cruise)).
+     *      À pleine vitesse, le flou fond les couleurs ; il s'efface à mesure
+     *      que la roue ralentit. Chaque ligne qui passe sous le pointeur le
+     *      fait claquer, d'autant plus visiblement que la roue ralentit ;
+     *   2. l'arrêt, là où le sel l'a voulu — n'importe où dans la couleur,
+     *      parfois à un cheveu d'une ligne : la roue reste immobile un
+     *      instant, rien n'est encore dit (`options.settle`, 55 %) ;
+     *   3. le recentrage : elle glisse jusqu'au milieu de la couleur tirée
+     *      (45 %) — c'est lui qui montre la couleur (owner, 2026-11-06) ;
+     *   4. la case s'éclaire, la promesse se tient : la page dit le résultat.
+     * `options.settle` : la durée de 2 + 3 (R.SPIN_SETTLE_MS par défaut ; 0 :
+     * la roue va droit au milieu à l'arrêt). Un `durationMs` nul avec un
+     * `settle` : la roue est posée à l'arrêt et seul le verdict se joue (un
+     * spectateur arrivé pendant). `options.tension` (manche décisive) : le
+     * halo de la roue bat comme un cœur — 76 battements par minute au départ,
+     * 150 quand la roue rampe vers la dernière ligne, et il bat encore,
+     * immobile, jusqu'au verdict (owner : « ça doit faire battre vite les
+     * cœurs »). Mouvement réduit : rien ne bouge, la roue se pose au milieu
+     * au moment du verdict. Un minuteur de secours conclut si l'onglet,
+     * caché, ne dessine plus (le résultat n'attend jamais l'image suivante).
      */
     function spinTo(wheel, landing, durationMs, options) {
       stopSpin();
@@ -453,26 +412,35 @@
       /* Le milieu de la couleur tirée : là où l'aiguille finit, une fois recentrée. */
       var glide = (Number(landing.offset) || 0) * seg / 2;
       var duration = Math.max(0, Number(durationMs) || 0);
+      var settle = options && options.settle != null ? Math.max(0, Number(options.settle) || 0) : R.SPIN_SETTLE_MS;
       var tense = !!(options && options.tension);
-      var turns = duration >= 4000 ? (tense ? 10 : 9) : duration > 1200 ? 5 : duration > 300 ? 2 : 0;
+      var full = Math.round(Number(landing.turns)) >= 1 ? Math.round(Number(landing.turns)) : (tense ? 10 : 9);
+      var turns = duration >= 4000 ? full : duration > 1200 ? 5 : duration > 300 ? 2 : 0;
+      var curve = R.motionCurve(landing.ease, landing.cruise);
       var from = rotation;
-      var to = from + turns * 360 + ((target - (from % 360) + 720) % 360);
+      var to = from + turns * 360 + ((target - (((from % 360) + 360) % 360) + 720) % 360);
+      var centre = to + glide;
+      var moving = !reduced && duration >= 120;
+      if (!moving) duration = reduced ? duration : 0;
+      if (settle < 120) settle = 0;
+      var hold = Math.round(settle * SETTLE_HOLD_SHARE), slide = settle - hold;
       rotor.style.transition = 'none';
-      if (reduced || duration < 120) {
-        /* Sans animation : directement au milieu de la couleur tirée. */
-        setAngle(to + glide);
+      if (!reduced && !moving && !settle) {
+        /* Rien à jouer : directement au milieu de la couleur tirée. */
+        setAngle(centre);
         setPointer(0);
         setBlur(0);
         markHit(landing.segment);
         return Promise.resolve();
       }
-      stage.classList.add('rr-spinning');
       var depth = Math.min(9, seg * 0.15);
-      var beat = 0, blurLevel = 0;
-      stage.classList.toggle('rr-tense', tense);
+      var beat = 0, blurLevel = 0, stopped = false;
+      if (moving) stage.classList.add('rr-spinning');
+      else if (!reduced) setAngle(to);
+      stage.classList.toggle('rr-tense', tense && !reduced);
       /* Le temps part de l'appel (comme le minuteur de secours), pas de la première image. */
       var started = window.performance && performance.now ? performance.now() : null;
-      var lastLine = Math.floor(from / seg), kick = 0, lastFrame = started || 0;
+      var lastLine = Math.floor(rotation / seg), kick = 0, lastFrame = started || 0;
       return new Promise(function (resolve) {
         finishSpin = function (landed) {
           if (spinFrame) { cancelAnimationFrame(spinFrame); spinFrame = 0; }
@@ -484,43 +452,65 @@
           setPointer(0);
           setBlur(0);
           if (landed !== false) {
-            setAngle(to);
+            setAngle(centre);
             markHit(landing.segment);
-            settleTo(to + glide);
           }
           resolve();
         };
+        /* L'arrêt : plus de flou, le pointeur droit, la roue immobile là où le sel l'a voulu. */
+        function stop() {
+          if (stopped) return;
+          stopped = true;
+          stage.classList.remove('rr-spinning');
+          setPointer(0);
+          setBlur(0);
+          blurLevel = 0;
+          if (!reduced) setAngle(to);
+        }
         function frame(now) {
           spinFrame = 0;
           if (started === null) { started = now; lastFrame = now; }
-          var u = Math.max(0, Math.min(1, (now - started) / duration));
-          setAngle(from + MOTION.windup(u, depth) + (to - from) * MOTION.progress(u));
-          /* Le pointeur : chaque taquet qui passe le pousse (la roue tourne vers la droite en haut). */
-          var line = Math.floor(rotation / seg);
+          var t = Math.max(0, now - started);
           var dt = Math.max(0, now - lastFrame);
           lastFrame = now;
-          kick *= Math.exp(-dt / 75);
-          if (line !== lastLine) { kick = -16; lastLine = line; }
-          setPointer(Math.abs(kick) < 0.2 ? 0 : kick);
-          /* Le flou suit la vitesse (lissé : une image en retard ne le fait pas clignoter). */
-          var sp = MOTION.speed(u);
-          var want = sp <= 0.3 ? 0 : 0.78 * Math.min(1, (sp - 0.3) / 0.45);
-          blurLevel += (want - blurLevel) * Math.min(1, dt / 70);
-          setBlur(blurLevel);
-          if (tense) {
-            beat += dt * HEART.bpm(u) / 60000;
-            setGlow(HEART.pulse(beat % 1), true);
+          if (moving && t < duration) {
+            var u = t / duration;
+            setAngle(from + curve.windup(u, depth) + (to - from) * curve.progress(u));
+            /* Le pointeur : chaque taquet qui passe le pousse (la roue tourne vers la droite en haut). */
+            var line = Math.floor(rotation / seg);
+            kick *= Math.exp(-dt / 75);
+            if (line !== lastLine) { kick = -16; lastLine = line; }
+            setPointer(Math.abs(kick) < 0.2 ? 0 : kick);
+            /* Le flou suit la vitesse (lissé : une image en retard ne le fait pas clignoter). */
+            var sp = curve.speed(u);
+            var want = sp <= 0.3 ? 0 : 0.78 * Math.min(1, (sp - 0.3) / 0.45);
+            blurLevel += (want - blurLevel) * Math.min(1, dt / 70);
+            setBlur(blurLevel);
+            if (tense) {
+              beat += dt * HEART.bpm(u) / 60000;
+              setGlow(HEART.pulse(beat % 1), true);
+            }
+          } else {
+            stop();
+            var s = t - duration;
+            if (s >= settle) { if (finishSpin) finishSpin(true); return; }
+            /* Le recentrage : de l'arrêt au milieu de la couleur, sans franchir de ligne. */
+            if (!reduced && s > hold) setAngle(to + glide * easeInOutCubic(Math.min(1, (s - hold) / Math.max(1, slide))));
+            if (tense && !reduced) {
+              beat += dt * HEART.bpm(1) / 60000;
+              setGlow(HEART.pulse(beat % 1), true);
+            }
           }
-          if (u >= 1) { if (finishSpin) finishSpin(true); return; }
           spinFrame = requestAnimationFrame(frame);
         }
         spinFrame = requestAnimationFrame(frame);
-        spinTimer = setTimeout(function () { spinTimer = null; if (finishSpin) finishSpin(true); }, duration + 250);
+        spinTimer = setTimeout(function () { spinTimer = null; if (finishSpin) finishSpin(true); }, duration + settle + 250);
       });
     }
 
+    /* La roue posée tout de suite au milieu de la couleur (une manche réaffichée sans son tour de roue). */
     function landNow(wheel, landing) {
-      return spinTo(wheel, landing, 0);
+      return spinTo(wheel, landing, 0, { settle: 0 });
     }
 
     /* Le moyeu : une ligne (« Manche 2 », « Tirage ») et le temps qui reste ;
@@ -709,7 +699,7 @@
         var label = document.createElement('div'); label.textContent = 'Texte révélé :'; label.style.marginTop = '6px'; sealBox.appendChild(label);
         var raw = document.createElement('code'); raw.textContent = s.revealed; sealBox.appendChild(raw);
         var key = document.createElement('div'); key.style.marginTop = '6px';
-        key.textContent = 'Issue 0 à 7 : le joueur 1 marque ; 8 à 15 : le joueur 2 ; 16 à 19 : personne (une couleur libre).';
+        key.textContent = 'Issue 0 à 39 : la couleur du joueur 1 ; 40 à 79 : celle du joueur 2 ; 80 à 99 : une couleur que personne n’a choisie.';
         sealBox.appendChild(key);
       }
       sealDetail = s.hash;
@@ -826,7 +816,7 @@
     for (var i = 0; i < 16; i++) { var b = randomInt(256); hex += (b < 16 ? '0' : '') + b.toString(16); }
     return hex;
   }
-  /** Un tirage scellé local (IA, entre amis) : même forme que celui du serveur — une issue de 0 à 19, toute manche. */
+  /** Un tirage scellé local (IA, entre amis) : même forme que celui du serveur — une issue de 0 à 99, toute manche. */
   function localSeal(roomId, round, decisive) {
     var kind = 'outcome';
     var value = randomInt(R.OUTCOME_SPACE);
@@ -836,5 +826,5 @@
     });
   }
 
-  window.RouletteBoard = { mount: mount, fitWheel: fitWheel, colorIcon: colorIcon, icon: icon, verifySpin: verifySpin, sha256Hex: sha256Hex, randomInt: randomInt, localSeal: localSeal, MOTION: MOTION, SETTLE_HOLD_MS: SETTLE_HOLD_MS, SETTLE_GLIDE_MS: SETTLE_GLIDE_MS };
+  window.RouletteBoard = { mount: mount, fitWheel: fitWheel, colorIcon: colorIcon, icon: icon, verifySpin: verifySpin, sha256Hex: sha256Hex, randomInt: randomInt, localSeal: localSeal, MOTION: MOTION, SETTLE_HOLD_MS: SETTLE_HOLD_MS, SETTLE_GLIDE_MS: SETTLE_GLIDE_MS, SETTLE_HOLD_SHARE: SETTLE_HOLD_SHARE };
 })();

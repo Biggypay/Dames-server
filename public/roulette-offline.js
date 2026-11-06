@@ -3,10 +3,12 @@
  * appareil (`<body data-mode="ai" | "local">`).
  *
  * Les mêmes règles que le serveur (roulette-rules.js) et le même plateau
- * (roulette-board.js). Comme en ligne, l'issue de la manche (le joueur 1, le
- * joueur 2 ou personne) est tirée et scellée AVANT les choix, et seule la
- * couleur exacte marque ; l'IA choisit au hasard, sans jamais connaître
- * l'issue — dans un jeu de hasard, aucun niveau ne « joue mieux ».
+ * (roulette-board.js). Comme en ligne, l'issue de la manche (la couleur du
+ * joueur 1, celle du joueur 2, ou une couleur libre) est tirée et scellée
+ * AVANT les choix, et seule la couleur exacte marque — la même couleur pour
+ * les deux se joue aussi : 1 point chacun si elle sort ; l'IA choisit au
+ * hasard, sans jamais connaître l'issue — dans un jeu de hasard, aucun niveau
+ * ne « joue mieux ».
  *
  * Entre amis, chacun choisit à son tour derrière un rideau : la couleur du
  * premier n'est jamais montrée au second avant le tour de roue. Celui qui
@@ -26,11 +28,13 @@
   var DIFFICULTY = String(P.get('difficulty') || P.get('level') || 'medium').toLowerCase();
   /* ?fast=1 : des manches accélérées, pour les tests de la page. */
   var FAST = P.get('fast') === '1';
-  var SPIN_MS = FAST ? 500 : 7200;
+  /* La durée nominale d'un tour ; chaque manche la module (R.spinPlan : 0,90 à 1,12), comme le serveur. */
+  var SPIN_MS = FAST ? 500 : R.SPIN_NOMINAL_MS;
   /* Manche décisive : un tour plus long, le cœur qui bat sur la roue (comme le serveur, 8,4 s). */
-  var DECISIVE_SPIN_MS = FAST ? 500 : 8400;
+  var DECISIVE_SPIN_MS = FAST ? 500 : R.SPIN_DECISIVE_NOMINAL_MS;
+  /* Après l'arrêt : un instant immobile, puis le recentrage ; le résultat vient après. */
+  var SETTLE_MS = FAST ? 240 : R.SPIN_SETTLE_MS;
   var BETWEEN_MS = FAST ? 300 : 2600;
-  var REPICK_MS = FAST ? 300 : 2200;
   var FINAL_HOLD_MS = FAST ? 200 : 1300;
   var TURN_MS = FAST ? 3000 : 30000;
   var CIRC_SMALL = 163.4;
@@ -75,6 +79,7 @@
   var scores = [0, 0], round = 1, decisive = false, history = [];
   var phase = 'idle';           /* idle | sealing | choosing | spinning | between | over */
   var seal = null;              /* le tirage de la manche : { kind, value, salt, hash } */
+  var lastSpin = null;          /* le dernier tour de roue (public une fois les deux choix faits) : arrêt, durée, recentrage */
   var picks = { 1: null, 2: null };
   var selected = null;          /* la couleur touchée par celui qui choisit */
   var chooser = 1;              /* qui choisit (entre amis) ; contre l'IA, toujours le joueur */
@@ -140,8 +145,7 @@
   }
 
   /* ══ Affichage ══ */
-  /* Les manches se comptent sans les rechoix (même couleur : rien ne tourne) ;
-     les manches décisives continuent la numérotation : 7, 8, 9… */
+  /* Chaque manche compte, même couleur comprise ; les manches décisives continuent la numérotation : 7, 8, 9… */
   function lastEntry() { return history.length ? history[history.length - 1] : null; }
   function roundNumber() {
     var counted = R.countedPlayed(history), last = lastEntry();
@@ -375,12 +379,11 @@
     stopTurnTimer();
     if (aiTimer) { clearTimeout(aiTimer); aiTimer = null; }
     var c1 = picks[1], c2 = picks[2];
-    /* Même couleur pour les deux, manche décisive ou non : rien ne tourne, on rechoisit. */
-    var repick = R.isRepick(c1, c2);
-    var drawn = repick ? null : R.drawnColor(seal, c1, c2);
+    /* La couleur désignée par l'issue scellée ; même couleur pour les deux, la manche se joue aussi. */
+    var drawn = R.drawnColor(seal, c1, c2);
     var entry = R.publicRound({
       round: round, choice1: c1, choice2: c2, drawn: drawn,
-      winnerSlot: R.roundWinner(c1, c2, drawn), decisive: decisive, repick: repick
+      winnerSlot: R.roundWinner(c1, c2, drawn), decisive: decisive, repick: false
     });
     board.setChip('me', { name: leftName(), kind: 'color', color: c1, reveal: true });
     board.setChip('op', { name: rightName(), kind: 'color', color: c2, reveal: true });
@@ -390,29 +393,41 @@
     renderAll();
     if (drawn === null) { finish(entry, token); return; }
     var wheel = R.wheelFor(decisive, c1, c2);
-    board.setStatus(decisive ? 'Manche décisive · la roue tourne…' : 'La roue tourne…');
+    if (R.sameColor(c1, c2)) board.setStatus('Même couleur · 1 point chacun si elle sort', null, 'scale');
+    else board.setStatus(decisive ? 'Manche décisive · la roue tourne…' : 'La roue tourne…');
     board.setHub(decisive ? 'Décisive' : 'Tirage', '', null, null);
-    /* Manche décisive : plus de suspens à l'arrêt, un tour plus long, le halo qui bat comme un cœur. */
-    board.spinTo(wheel, R.landingFor(wheel, drawn, seal.salt, c1, c2, decisive), decisive ? DECISIVE_SPIN_MS : SPIN_MS, { tension: decisive }).then(function () {
+    /*
+     * Le rythme de la manche (durée, freinage, tours) et l'arrêt dans la
+     * couleur viennent du sel : n'importe où, parfois à un cheveu d'une
+     * ligne. Puis la roue se recentre, et c'est alors que le résultat vient.
+     * Manche décisive : un tour plus long, le halo qui bat comme un cœur.
+     */
+    var plan = R.spinPlan(seal.salt, decisive);
+    var duration = Math.round((decisive ? DECISIVE_SPIN_MS : SPIN_MS) * plan.scale);
+    var landing = R.landingFor(wheel, drawn, seal.salt, c1, c2, decisive);
+    lastSpin = { round: round, wheel: wheel, drawn: drawn, landing: landing, duration: duration, settle: SETTLE_MS, decisive: decisive };
+    board.spinTo(wheel, landing, duration, { tension: decisive, settle: SETTLE_MS }).then(function () {
       if (token === matchToken) finish(entry, token);
     });
   }
 
   function finish(entry, token) {
     if (token !== matchToken) return;
-    if (entry.winnerSlot) scores[entry.winnerSlot - 1] += 1;
+    /* Les points de la manche : la couleur exacte — les deux quand ils avaient la même. */
+    var points = R.roundPoints(entry.choice1, entry.choice2, entry.drawn);
+    scores[0] += points[0];
+    scores[1] += points[1];
     history.push(entry);
     var ws = entry.winnerSlot, drawn = entry.drawn;
     var c1 = entry.choice1, c2 = entry.choice2;
-    if (entry.repick) {
+    if (!R.isColor(drawn)) {
       board.setChip('me', { name: leftName(), kind: 'color', color: c1 });
       board.setChip('op', { name: rightName(), kind: 'color', color: c2 });
-      board.setHub(hubLabel(), '=', null, null);
-      board.setStatus('Même couleur · on rechoisit', 'draw', 'repeat');
-      showToast('repeat', 'Même couleur !', 'Vous avez choisi la même couleur : chacun rechoisit.', 2000);
+      board.setHub(hubLabel(), '', null, null);
+      board.setStatus('');
     } else {
-      /* Seule la couleur exacte marque : la puce touchée s'éclaire (« Pile ! »),
-         l'autre — ou les deux, sur une couleur libre — s'efface. */
+      /* Seule la couleur exacte marque : la puce touchée s'éclaire (« Pile ! ») —
+         les deux pour une même couleur sortie ; sur une couleur libre, les deux s'effacent. */
       var chip = function (color) {
         var hit = color === drawn;
         return { kind: 'color', color: color, winner: hit, miss: !hit, label: hit ? 'Pile !' : R.colorName(color) };
@@ -423,7 +438,8 @@
       board.setChip('op', op);
       board.setHub('Tirée', '', null, drawn);
       var name = R.colorName(drawn);
-      if (!ws) board.setStatus('Personne ne marque · ' + name, 'draw', 'none');
+      if (points[0] && points[1]) board.setStatus('1 point chacun · ' + name, 'draw', 'scale');
+      else if (!ws) board.setStatus('Personne ne marque · ' + name, 'draw', 'none');
       else if (MODE === 'ai') board.setStatus(ws === 1 ? 'Manche gagnée · ' + name : 'Manche perdue · ' + name, ws === 1 ? 'win' : 'lose', ws === 1 ? 'win' : 'lose');
       else board.setStatus(NAMES[ws] + ' marque · ' + name, 'win', 'target');
       if (ws === 1 || (MODE === 'local' && ws)) createConfetti(50);
@@ -449,7 +465,7 @@
     if (next.decisive && !entry.decisive) setTimeout(function () {
       if (token === matchToken) showToast('scale', 'Égalité !', `On continue : manches ${upcoming} et ${upcoming + 1}, les deux se jouent.`, 2600);
     }, 700);
-    else if (entry.decisive && !entry.repick) setTimeout(function () {
+    else if (entry.decisive) setTimeout(function () {
       if (token !== matchToken) return;
       /* La première de la paire : l'autre joueur répond toujours. 1-1 ou deux nulles : une nouvelle paire. */
       if (R.decisivePlayed(history) % 2 === 1) {
@@ -468,7 +484,7 @@
       round += 1;
       decisive = decisive || next.decisive === true;
       openRound();
-    }, entry.repick ? REPICK_MS : BETWEEN_MS + (next.decisive && !entry.decisive ? 1400 : 0));
+    }, BETWEEN_MS + (next.decisive && !entry.decisive ? 1400 : 0));
   }
 
   /* ══ Fin de partie ══ */
@@ -528,7 +544,12 @@
       drawnEl.innerHTML = Board.icon('arrow-right', 'rr-ico rr-arrow') + miniChip(h.drawn);
       item.appendChild(drawnEl);
       var mark = document.createElement('span');
-      if (MODE === 'local' && !h.repick && (res === 'win' || res === 'lose')) {
+      /* Une même couleur sortie : 1 point chacun (la balance). */
+      var both = R.roundPoints(h.choice1, h.choice2, h.drawn).every(function (p) { return p === 1; });
+      if (both) {
+        mark.className = 'rr-mark rr-mark-both';
+        mark.innerHTML = Board.icon('scale');
+      } else if (MODE === 'local' && !h.repick && (res === 'win' || res === 'lose')) {
         /* Entre amis : qui a marqué, joueur 1 ou joueur 2. */
         mark.className = 'rr-mark-num' + (res === 'lose' ? ' rr-p2' : '');
         mark.textContent = res === 'win' ? '1' : '2';
@@ -548,7 +569,7 @@
     if (aiTimer) { clearTimeout(aiTimer); aiTimer = null; }
     if (nextTimer) { clearTimeout(nextTimer); nextTimer = null; }
     stopTurnTimer();
-    scores = [0, 0]; round = 1; decisive = false; history = []; seal = null;
+    scores = [0, 0]; round = 1; decisive = false; history = []; seal = null; lastSpin = null;
     picks = { 1: null, 2: null }; selected = null; phase = 'idle';
     gameOverModal.classList.remove('show');
     if (curtain) { curtain.hidden = true; curtainShown = false; }
@@ -585,7 +606,7 @@
     mode: MODE,
     /* Pour les tests de la page : l'état, jamais le tirage avant le tour de roue. */
     state: function () {
-      return { phase: phase, round: round, decisive: decisive, scores: scores.slice(), chooser: chooser, curtain: curtainShown, picked: { 1: picks[1] !== null, 2: picks[2] !== null }, history: history.slice() };
+      return { phase: phase, round: round, decisive: decisive, scores: scores.slice(), chooser: chooser, curtain: curtainShown, picked: { 1: picks[1] !== null, 2: picks[2] !== null }, history: history.slice(), spin: lastSpin };
     }
   };
   startMatch();

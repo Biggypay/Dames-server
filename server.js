@@ -2273,11 +2273,12 @@ function scheduleChifoumiReveal(croom, roomId) {
 // Les règles sont dans lib/color-roulette.js (le même fichier que les pages :
 // public/roulette-rules.js). Ici, le déroulé d'une partie, manche après manche :
 //   choosing — la manche est ouverte, son issue déjà tirée et scellée (seule
-//              l'empreinte est publiée : le joueur 1, le joueur 2 ou personne
-//              marquera) ; chacun choisit en secret, avec le chronomètre de
-//              tous les jeux (30 s, puis 60 s de grâce) ;
+//              l'empreinte est publiée : la couleur du joueur 1, celle du
+//              joueur 2, ou une couleur libre) ; chacun choisit en secret, avec
+//              le chronomètre de tous les jeux (30 s, puis 60 s de grâce) ;
 //   spinning — les deux ont choisi : la couleur est connue de tous, la roue
-//              tourne sur tous les écrans, le point est déjà compté ;
+//              tourne sur tous les écrans, s'arrête, se recentre ; le point,
+//              déjà compté, n'est annoncé qu'au bout du recentrage ;
 //   between  — la preuve reste à l'écran (ROUND_PROOF_MS), puis la manche
 //              suivante.
 // Un choix n'est jamais envoyé à l'adversaire ni aux spectateurs avant que
@@ -2285,20 +2286,26 @@ function scheduleChifoumiReveal(croom, roomId) {
 // règle à la fin du tour de roue, quoi qu'il arrive aux connexions entre-temps.
 const ROULETTE_TOTAL_ROUNDS = Roulette.REGULAR_ROUNDS;
 // Un tour de casino : l'élan, l'accélération, la pleine vitesse, puis une
-// longue fin au ralenti (public/roulette-board.js) — 7,2 s (4,8 s jusqu'au 2026-11-05).
-const ROULETTE_SPIN_MS = testDurationMs('ROULETTE_SPIN_MS', 7200);
+// longue fin au ralenti (public/roulette-board.js) — 7,2 s en durée nominale ;
+// chaque manche la module (Roulette.spinPlan : 0,90 à 1,12, tiré du sel), pour
+// que l'arrêt ne tombe jamais au même instant (owner, 2026-11-06).
+const ROULETTE_SPIN_MS = testDurationMs('ROULETTE_SPIN_MS', Roulette.SPIN_NOMINAL_MS);
 // Manche décisive (7e, 8e…) : « ça doit faire battre vite les cœurs » — un tour
 // plus long, la fin au ralenti encore plus lente, le cœur qui bat sur la roue.
-const ROULETTE_DECISIVE_SPIN_MS = testDurationMs('ROULETTE_DECISIVE_SPIN_MS', 8400);
-/* Même couleur pour les deux (toute manche) : rien ne tourne, on rechoisit. */
-const ROULETTE_REPICK_MS = testDurationMs('ROULETTE_REPICK_MS', 2600);
+const ROULETTE_DECISIVE_SPIN_MS = testDurationMs('ROULETTE_DECISIVE_SPIN_MS', Roulette.SPIN_DECISIVE_NOMINAL_MS);
+// Après l'arrêt : la roue reste un instant immobile (parfois à un cheveu d'une
+// ligne), puis se recentre au milieu de la couleur tirée — et seulement alors le
+// résultat : « c'est le recentrage qui fera savoir au joueur si l'aiguille est
+// tombée sur sa couleur » (owner, 2026-11-06). Le point est annoncé au bout.
+const ROULETTE_SETTLE_MS = testDurationMs('ROULETTE_SETTLE_MS', Roulette.SPIN_SETTLE_MS);
 /* Le dernier tour de roue reste à l'écran un instant avant la fin du match. */
 const ROULETTE_FINAL_HOLD_MS = testDurationMs('ROULETTE_FINAL_HOLD_MS', 1500);
 const ROULETTE_PHASES = new Set(['choosing', 'spinning', 'between']);
 
 // Tests d'exécution seulement (NODE_ENV=test) : une suite d'issues imposée
-// par room, en JSON — {"room-a":[0,8,16]} (0–7 : le joueur 1 marque, 8–15 : le
-// joueur 2, 16–19 : personne) — pour jouer un match connu d'avance.
+// par room, en JSON — {"room-a":[0,40,80]} (0–39 : la couleur du joueur 1,
+// 40–79 : celle du joueur 2, 80–99 : une couleur libre) — pour jouer un match
+// connu d'avance.
 // Hors tests, le tirage vient toujours de crypto.randomInt.
 const ROULETTE_TEST_DRAWS = (() => {
   if (process.env.NODE_ENV !== 'test' || !process.env.ROULETTE_TEST_DRAWS) return null;
@@ -2358,7 +2365,7 @@ function clearRouletteTimers(rroom) {
   if (rroom.nextRoundTimer) { clearTimeout(rroom.nextRoundTimer); rroom.nextRoundTimer = null; }
 }
 
-/** Les manches réglementaires jouées : ni les rechoix (même couleur), ni les manches décisives. */
+/** Les manches réglementaires jouées : ni les manches décisives, ni les anciens rechoix (d'avant le 2026-11-05). */
 function rouletteRegularRoundsPlayed(rroom) {
   return Roulette.regularPlayed(rroom.history);
 }
@@ -2409,14 +2416,17 @@ function spinRouletteRound(rroom, roomId) {
   if (c1 === undefined || c2 === undefined || !rroom.seal) return;
   clearRouletteTimers(rroom);
   const seal = rroom.seal;
-  // Même couleur pour les deux, manche décisive ou non : rien ne tourne, on rechoisit.
-  const repick = Roulette.isRepick(c1, c2);
-  const drawn = repick ? null : Roulette.drawnColor(seal, c1, c2);
-  // Seule la couleur EXACTE marque : l'issue scellée avant les choix désigne le
-  // joueur 1, le joueur 2, ou personne (une couleur que personne n'a choisie).
+  // La couleur où l'aiguille s'arrête, désignée par l'issue scellée avant les choix.
+  // Même couleur pour les deux : la manche se joue (plus de rechoix).
+  const drawn = Roulette.drawnColor(seal, c1, c2);
+  // Seule la couleur EXACTE marque : 1 point à chacun de ceux qui l'ont — les deux
+  // quand ils ont la même (« 1 point à chaque joueur »), personne sur une couleur libre.
+  const points = Roulette.roundPoints(c1, c2, drawn);
+  rroom.scores[0] += points[0];
+  rroom.scores[1] += points[1];
+  // Le gagnant seul (0 : manche nulle — personne, ou un point chacun).
   const winnerSlot = Roulette.roundWinner(c1, c2, drawn);
-  if (winnerSlot) rroom.scores[winnerSlot - 1] += 1;
-  rroom.history.push({ round: rroom.round, choice1: c1, choice2: c2, drawn, winnerSlot, decisive: rroom.decisive, repick });
+  rroom.history.push({ round: rroom.round, choice1: c1, choice2: c2, drawn, winnerSlot, decisive: rroom.decisive, repick: false });
   for (const [slot, color] of [[1, c1], [2, c2]]) {
     // La couleur en texte, comme le Penalty (la base la garde en texte) ; t = la couleur tirée.
     MatchSummary.logMove(rroom, drawn === null ? { p: slot, g: rroom.round, v: String(color) } : { p: slot, g: rroom.round, v: String(color), t: drawn });
@@ -2431,19 +2441,22 @@ function spinRouletteRound(rroom, roomId) {
   });
   const wheel = Roulette.wheelFor(rroom.decisive, c1, c2);
   const startTime = Date.now();
-  const duration = repick ? 0 : rroom.decisive ? ROULETTE_DECISIVE_SPIN_MS : ROULETTE_SPIN_MS;
+  // Le rythme du tour vient du sel révélé : le même sur tous les écrans, différent à chaque manche.
+  const plan = Roulette.spinPlan(seal.salt, rroom.decisive);
+  const duration = Math.round((rroom.decisive ? ROULETTE_DECISIVE_SPIN_MS : ROULETTE_SPIN_MS) * plan.scale);
+  const settle = ROULETTE_SETTLE_MS;
   rroom.phase = 'spinning';
   rroom.next = { over: next.over === true, winnerSlot: next.over ? next.winnerSlot : 0, decisive: next.over ? rroom.decisive : next.decisive === true };
   rroom.spin = {
-    round: rroom.round, choice1: c1, choice2: c2, drawn, winnerSlot, decisive: rroom.decisive, repick,
+    round: rroom.round, choice1: c1, choice2: c2, drawn, winnerSlot, points, decisive: rroom.decisive, repick: false,
     wheel, landing: drawn === null ? null : Roulette.landingFor(wheel, drawn, seal.salt, c1, c2, rroom.decisive),
     seal: { kind: seal.kind, value: seal.value, salt: seal.salt, hash: seal.hash },
-    scores: [...rroom.scores], startTime, duration,
+    scores: [...rroom.scores], startTime, duration, settle,
     final: rroom.next.over, matchWinnerSlot: rroom.next.over ? rroom.next.winnerSlot : 0
   };
   persistRoomSoon('roulette', rroom);
   io.to(roomId).emit('roulette_spin', roulettePublicSpin(rroom, roomId));
-  scheduleRouletteSpinEnd(rroom, roomId, Math.max(0, startTime + duration - Date.now()));
+  scheduleRouletteSpinEnd(rroom, roomId, Math.max(0, startTime + duration + settle - Date.now()));
 }
 
 function scheduleRouletteSpinEnd(rroom, roomId, delay) {
@@ -2456,7 +2469,7 @@ function scheduleRouletteSpinEnd(rroom, roomId, delay) {
   if (rroom.revealTimer.unref) rroom.revealTimer.unref();
 }
 
-/** La roue s'est arrêtée : fin du match, ou la preuve puis la manche suivante. */
+/** La roue s'est arrêtée et recentrée : fin du match, ou le point, la preuve, puis la manche suivante. */
 function finishRouletteSpin(rroom, roomId) {
   if (rroom.phase !== 'spinning' || rroom.status === 'finished') return;
   const next = rroom.next || { over: false, decisive: rroom.decisive };
@@ -2474,6 +2487,7 @@ function finishRouletteSpin(rroom, roomId) {
     room: roomId,
     round: last?.round ?? rroom.round,
     winnerSlot: last?.winnerSlot || 0,
+    points: last ? Roulette.roundPoints(last.choice1, last.choice2, last.drawn) : [0, 0],
     drawn: last?.drawn ?? null,
     choice1: last?.choice1 ?? null,
     choice2: last?.choice2 ?? null,
@@ -2483,7 +2497,7 @@ function finishRouletteSpin(rroom, roomId) {
     totalRounds: ROULETTE_TOTAL_ROUNDS,
     next: next.decisive ? 'decisive' : 'next'
   });
-  scheduleRouletteNextRound(rroom, roomId, last?.repick ? ROULETTE_REPICK_MS : ROUND_PROOF_MS);
+  scheduleRouletteNextRound(rroom, roomId, ROUND_PROOF_MS);
 }
 
 function scheduleRouletteNextRound(rroom, roomId, delay) {
@@ -2502,7 +2516,8 @@ function scheduleRouletteNextRound(rroom, roomId, delay) {
 function resumeRouletteRound(rroom, roomId) {
   if (rroom.status !== 'playing') return;
   if (rroom.phase === 'spinning') {
-    const ends = Number(rroom.spin?.startTime || 0) + Number(rroom.spin?.duration || 0);
+    // Le verdict : l'arrêt, puis le recentrage (une room d'avant le 2026-11-06 n'a pas de `settle`).
+    const ends = Number(rroom.spin?.startTime || 0) + Number(rroom.spin?.duration || 0) + Math.max(0, Number(rroom.spin?.settle) || 0);
     return scheduleRouletteSpinEnd(rroom, roomId, Math.max(600, ends - Date.now()));
   }
   if (rroom.phase === 'between') return scheduleRouletteNextRound(rroom, roomId, 1500);

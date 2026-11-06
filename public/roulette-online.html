@@ -86,9 +86,10 @@
         <div class="rr-rules" id="rulesBox" hidden>
           <ul>
             <li>Chacun choisit une couleur en secret.</li>
-            <li>Avant vos choix, le serveur tire au sort l’issue de la manche, puis la scelle : chaque joueur a 4 chances sur 10 de marquer ; 2 fois sur 10, personne ne marque.</li>
+            <li>Avant vos choix, le serveur tire au sort l’issue de la manche, puis la scelle : votre couleur (4 chances sur 10), celle de l’adversaire (4 sur 10), ou une couleur que personne n’a choisie (2 sur 10).</li>
             <li>Seule la couleur exacte compte : l’aiguille s’arrête pile sur la couleur du joueur qui marque, sinon sur une couleur que personne n’a choisie. La couleur choisie ne change rien aux chances.</li>
-            <li>Même couleur pour les deux : rien ne tourne, on rechoisit.</li>
+            <li>L’aiguille peut s’arrêter n’importe où dans la couleur, parfois à un cheveu de la ligne. La roue se recentre ensuite : c’est le recentrage qui montre la couleur, et le point vient après.</li>
+            <li>Même couleur pour les deux : la manche se joue quand même. L’aiguille sur votre couleur commune, 1 point chacun ; ailleurs, personne ne marque. La manche est nulle.</li>
             <li>6 manches. Le match s’arrête plus tôt si l’écart ne peut plus être comblé.</li>
             <li>Égalité après 6 manches : on continue, 7e et 8e manches, puis 9e et 10e… jusqu’à ce qu’un joueur gagne. La roue garde ses six couleurs.</li>
             <li>Les deux manches d’une paire se jouent toujours : même si l’un gagne la première, l’autre joue la seconde. Un point d’avance au bout de la paire, et c’est gagné.</li>
@@ -201,6 +202,11 @@ function num(v) { var n = Number(v); return isFinite(n) && n > 0 ? Math.floor(n)
 /* La perspective : à gauche le joueur de cette page (le joueur 1 pour un spectateur). */
 function leftSlot() { return IS_SPECTATOR ? 1 : MY_SLOT; }
 function rightSlot() { return leftSlot() === 1 ? 2 : 1; }
+/* Les points d'un tour de roue : un à chacun de ceux qui avaient la couleur tirée. */
+function spinPoints(sp) {
+  if (sp && Array.isArray(sp.points) && sp.points.length === 2) return [sp.points[0] ? 1 : 0, sp.points[1] ? 1 : 0];
+  return R.roundPoints(sp && sp.choice1, sp && sp.choice2, R.toColor(sp && sp.drawn));
+}
 function choiceOf(entry, slot) { return entry ? R.toColor(slot === 1 ? entry.choice1 : entry.choice2) : null; }
 function resultOf(winnerSlot) { return winnerSlot === leftSlot() ? 'win' : (winnerSlot === 1 || winnerSlot === 2) ? 'lose' : 'draw'; }
 function leftName() { return IS_SPECTATOR ? P1_NAME : 'Vous'; }
@@ -318,8 +324,8 @@ function renderScores() {
   $('playerScore').textContent = scores[leftSlot() - 1];
   $('aiScore').textContent = scores[rightSlot() - 1];
 }
-/* Les manches se comptent sans les rechoix (même couleur : rien ne tourne) ;
-   les manches décisives continuent la numérotation : 7, 8, 9… */
+/* Chaque manche compte, même couleur comprise (les anciens rechoix d'avant le
+   2026-11-05 ne comptent pas) ; les manches décisives continuent la numérotation : 7, 8, 9… */
 function lastEntry() { return history.length ? history[history.length - 1] : null; }
 function roundNumber() {
   var counted = R.countedPlayed(history), last = lastEntry();
@@ -566,7 +572,7 @@ function openRound(d) {
   renderChoosing();
 }
 
-/* La roue tourne : les deux couleurs sont montrées, le point viendra à l'arrêt. */
+/* La roue tourne : les deux couleurs sont montrées, le point viendra une fois la roue recentrée. */
 function handleSpin(sp) {
   if (!sp || typeof sp !== 'object') return;
   var r = num(sp.round);
@@ -593,11 +599,23 @@ function handleSpin(sp) {
   if (sp.repick || drawn === null) { finishSpin(sp, token); return; }
   var wheel = Array.isArray(sp.wheel) && sp.wheel.length >= 2 && sp.wheel.every(R.isColor) ? sp.wheel : R.wheelFor(decisive, sp.choice1, sp.choice2);
   var landing = sp.landing && wheel[sp.landing.segment] === drawn ? sp.landing : R.landingFor(wheel, drawn, sp.seal && sp.seal.salt, sp.choice1, sp.choice2, decisive);
-  board.setStatus(decisive ? 'Manche décisive · la roue tourne…' : 'La roue tourne…');
+  /* Même couleur pour les deux : la manche se joue, 1 point chacun si elle sort. */
+  if (R.sameColor(sp.choice1, sp.choice2)) board.setStatus('Même couleur · 1 point chacun si elle sort', null, 'scale');
+  else board.setStatus(decisive ? 'Manche décisive · la roue tourne…' : 'La roue tourne…');
   board.setHub(decisive ? 'Décisive' : 'Tirage', '', null, null);
-  var remaining = Number(sp.startTime) + Number(sp.duration) - serverNow();
+  /*
+   * Le tour, puis l'arrêt (n'importe où dans la couleur, parfois à un cheveu
+   * d'une ligne), puis le recentrage : le résultat vient au bout du
+   * recentrage, en même temps que l'annonce du serveur. Arrivé pendant le
+   * tour, on en joue la fin ; pendant le recentrage, seulement le verdict.
+   */
+  var settle = Math.max(0, Number(sp.settle) || 0);
+  var stopAt = Number(sp.startTime) + Number(sp.duration);
+  var now = serverNow();
+  var motion = stopAt - now;
+  var verdict = Math.min(settle, stopAt + settle - now);
   /* Manche décisive : le halo de la roue bat comme un cœur, de plus en plus vite. */
-  board.spinTo(wheel, landing, remaining > 250 ? Math.min(remaining, 9500) : 0, { tension: decisive }).then(function () {
+  board.spinTo(wheel, landing, motion > 250 ? Math.min(motion, 12000) : 0, { tension: decisive, settle: motion > 250 ? settle : Math.max(0, verdict) }).then(function () {
     if (token === spinToken) finishSpin(sp, token);
   });
 }
@@ -613,9 +631,7 @@ function finishSpin(sp, token) {
   var ws = Number(sp.winnerSlot) || 0;
   var drawn = R.toColor(sp.drawn);
   showResult(sp);
-  if (sp.repick || drawn === null) {
-    showToast('repeat', 'Même couleur !', 'Vous avez choisi la même couleur : chacun rechoisit.', 2200);
-  } else if (ws === MY_SLOT && !IS_SPECTATOR && !sp.final) createConfetti(60);
+  if (drawn !== null && ws === MY_SLOT && !IS_SPECTATOR && !sp.final) createConfetti(60);
   verifySeal(sp);
   phase = sp.final ? 'over' : 'between';
   renderRoundLabel(); renderDots();
@@ -643,13 +659,15 @@ function verifySeal(sp) {
 }
 
 /*
- * Le résultat d'une manche, à l'arrêt de la roue : seule la couleur EXACTE
- * marque. La puce touchée s'éclaire (« Pile ! ») ; l'autre, ou les deux quand
- * l'aiguille est sur une couleur libre, s'efface. Puis la roue se recentre.
+ * Le résultat d'une manche, une fois la roue recentrée (c'est le recentrage
+ * qui dit la couleur) : seule la couleur EXACTE marque. La puce touchée
+ * s'éclaire (« Pile ! ») — les deux quand ils avaient la même couleur
+ * (1 point chacun) ; une couleur libre, les deux s'effacent.
  */
 function showResult(entry) {
   var drawn = R.toColor(entry.drawn), ws = Number(entry.winnerSlot) || 0;
   var lc = choiceOf(entry, leftSlot()), rc = choiceOf(entry, rightSlot());
+  /* Un ancien rechoix (avant le 2026-11-05) : rien n'avait tourné. */
   if (entry.repick || drawn === null) {
     board.setChip('me', { name: leftName(), kind: 'color', color: lc });
     board.setChip('op', { name: rightName(), kind: 'color', color: rc });
@@ -667,7 +685,9 @@ function showResult(entry) {
   board.setChip('op', op);
   board.setHub('Tirée', '', null, drawn);
   var name = R.colorName(drawn);
-  if (!ws) board.setStatus('Personne ne marque · ' + name, 'draw', 'none');
+  var points = R.roundPoints(entry.choice1, entry.choice2, drawn);
+  if (points[0] && points[1]) board.setStatus('1 point chacun · ' + name, 'draw', 'scale');
+  else if (!ws) board.setStatus('Personne ne marque · ' + name, 'draw', 'none');
   else if (IS_SPECTATOR) board.setStatus(slotName(ws) + ' marque · ' + name, 'win', 'target');
   else if (ws === MY_SLOT) board.setStatus('Manche gagnée · ' + name, 'win', 'win');
   else board.setStatus('Manche perdue · ' + name, 'lose', 'lose');
@@ -691,7 +711,7 @@ function showRoundStatic(entry) {
 function onRoundResult(d) {
   if (gameOver || !d) return;
   var r = num(d.round);
-  /* La roue de cette manche tourne encore ici : elle finit son tour, le point vient à l'arrêt. */
+  /* La roue de cette manche tourne encore ici : elle finit son tour et son recentrage, le point vient après. */
   if (phase === 'spinning' && currentSpin && num(currentSpin.round) === r) return;
   if (resultShownFor !== r) {
     /* Le tour de roue n'a pas été vu ici : la manche s'affiche telle quelle. */
@@ -751,9 +771,9 @@ function applyState(gs, opts) {
   decisive = gs.decisive === true;
   scores = Array.isArray(gs.scores) ? [num(gs.scores[0]), num(gs.scores[1])] : scores;
   if (spin) {
-    /* Pendant le tour de roue, le point n'est montré qu'à l'arrêt. */
-    var ws = Number(spin.winnerSlot) || 0;
-    if (ws === 1 || ws === 2) scores[ws - 1] = Math.max(0, scores[ws - 1] - 1);
+    /* Pendant le tour de roue, le point n'est montré qu'au verdict (les deux, même couleur sortie). */
+    var pts = spinPoints(spin);
+    scores = [Math.max(0, scores[0] - pts[0]), Math.max(0, scores[1] - pts[1])];
     history = list.filter(function (h) { return h.round !== num(spin.round); });
     currentSpin = null; resultShownFor = 0;
     if (sealRound !== num(spin.round)) { sealHash = null; sealRound = 0; }
@@ -831,8 +851,10 @@ function renderModalHistory() {
     drawn.innerHTML = Board.icon('arrow-right', 'rr-ico rr-arrow') + miniChip(h.drawn);
     item.appendChild(drawn);
     var mark = document.createElement('span');
-    mark.className = 'rr-mark rr-mark-' + (h.repick ? 'repick' : res);
-    mark.innerHTML = Board.icon(h.repick ? 'repeat' : res === 'win' ? 'win' : res === 'lose' ? 'lose' : 'none');
+    /* Une même couleur sortie : 1 point chacun (la balance) ; une couleur libre : personne. */
+    var both = !h.repick && R.roundPoints(h.choice1, h.choice2, h.drawn).every(function (p) { return p === 1; });
+    mark.className = 'rr-mark rr-mark-' + (h.repick ? 'repick' : both ? 'both' : res);
+    mark.innerHTML = Board.icon(h.repick ? 'repeat' : both ? 'scale' : res === 'win' ? 'win' : res === 'lose' ? 'lose' : 'none');
     item.appendChild(mark);
     modalHistoryList.appendChild(item);
   }
@@ -1137,7 +1159,7 @@ window.addEventListener('message', function (e) {
     if (drawn === null) { done(); return; }
     var wheel = R.wheelFor(entry.decisive, entry.choice1, entry.choice2);
     board.setStatus(decisive ? 'Manche décisive · la roue tourne…' : 'La roue tourne…');
-    board.spinTo(wheel, R.landingFor(wheel, drawn, ''), 1400).then(done);
+    board.spinTo(wheel, R.landingFor(wheel, drawn, ''), 1400, { settle: 0 }).then(done);
     return;
   }
   phase = 'choosing';

@@ -10,10 +10,12 @@
  *     vérifié » : l'empreinte publiée correspond au tirage révélé ;
  *   • la roue s'arrête, sur les trois écrans, sur la couleur tirée par le
  *     serveur (la case sous le pointeur, calculée depuis la rotation réelle) ;
- *   • le point n'est compté qu'à l'arrêt de la roue ; seule la couleur EXACTE
- *     marque (« Pile ! » sous la puce touchée) : l'aiguille sur une couleur
- *     que personne n'a choisie, « Personne ne marque » — même voisine d'une
- *     couleur choisie ; même couleur → on rechoisit ;
+ *   • le point n'est compté qu'une fois la roue arrêtée ET recentrée ; seule
+ *     la couleur EXACTE marque (« Pile ! » sous la puce touchée) : l'aiguille
+ *     sur une couleur que personne n'a choisie, « Personne ne marque » — même
+ *     voisine d'une couleur choisie ; même couleur pour les deux : la manche
+ *     se joue, 1 point chacun si elle sort (les deux puces « Pile ! »),
+ *     personne sinon ;
  *   • six manches, puis à égalité « Manche 7 · décisive », « Manche 8 »… sur
  *     la roue ENTIÈRE (six couleurs) ; elles vont par deux : après la
  *     première, l'autre joueur répond (« À vous de répondre », « Vous
@@ -32,12 +34,15 @@
  *     dedans) ;
  *   • contre l'IA et entre amis : un match complet, `practice_over`, et entre
  *     amis la couleur du premier n'est jamais montrée au second ;
- *   • le tour de roue de casino, à vitesse réelle (7,2 s) : un léger élan en
- *     arrière, un départ lent puis une accélération franche jusqu'à près de
- *     quatre tours par seconde (le flou de vitesse), neuf tours, un ralenti
- *     qui se voit et une longue fin au ralenti, le pointeur qui claque jusque
- *     dans le freinage, l'arrêt sur la couleur tirée — puis, un instant
- *     après, le recentrage : l'aiguille au milieu de la couleur.
+ *   • le tour de roue de casino, à vitesse réelle (6,5 à 8,1 s selon le
+ *     rythme de la manche, tiré du sel) : un léger élan en arrière, un départ
+ *     lent puis une accélération franche jusqu'à plus de trois tours par
+ *     seconde (le flou de vitesse), les tours prévus, un ralenti qui se voit
+ *     et une longue fin au ralenti, le pointeur qui claque jusque dans le
+ *     freinage, l'arrêt dans la couleur tirée (là où le sel l'a voulu) — rien
+ *     n'est encore dit : la roue reste immobile, puis se recentre au milieu
+ *     de la couleur, et SEULEMENT ALORS le résultat (la case qui s'éclaire,
+ *     le statut).
  */
 const { spawn } = require('child_process');
 const http = require('http');
@@ -45,6 +50,7 @@ const path = require('path');
 const jwt = require('jsonwebtoken');
 const { chromium } = require('playwright-core');
 const { chromiumBinary } = require('./helpers/chromium');
+const Rules = require('../public/roulette-rules.js');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const GAME_PORT = 3282;
@@ -62,11 +68,11 @@ const GAME = {
 };
 /* Les issues imposées (NODE_ENV=test) : un match connu d'avance. */
 const DRAWS = {
-  // Une issue par manche ouverte (le rechoix de la manche 4 compris) : 0–7
-  // Alice marque, 8–15 Bob, 16–19 personne (une couleur libre).
-  [GAME.match]: [3, 10, 16, 5, 6, 9, 19, 15, 7, 12, 17],
-  [GAME.grace]: [10, 10, 10, 10, 10],
-  [GAME.reload]: [1, 1, 1, 1, 1]
+  // Une issue par manche : 0–39 la couleur d'Alice, 40–79 celle de Bob,
+  // 80–99 une couleur que personne n'a choisie (la (n − 80) mod k-ième).
+  [GAME.match]: [3, 50, 81, 10, 25, 60, 45, 15, 70, 81],
+  [GAME.grace]: [50, 50, 50, 50, 50],
+  [GAME.reload]: [5, 5, 5, 5, 5]
 };
 
 let failures = 0;
@@ -160,7 +166,8 @@ const underPointer = page => page.evaluate(() => {
   const n = segs.length;
   const index = Math.floor(((360 - angle) % 360) / (360 / n));
   const seg = segs.find(s => Number(s.getAttribute('data-seg')) === index);
-  return { color: seg ? Number(seg.getAttribute('data-color')) : null, colors: [...new Set(segs.map(s => s.getAttribute('data-color')))].length, hit: Number((rotor.querySelector('path.rr-hit') || {}).getAttribute?.('data-color')) };
+  const pos = (360 - angle) % 360, width = 360 / n;
+  return { color: seg ? Number(seg.getAttribute('data-color')) : null, colors: [...new Set(segs.map(s => s.getAttribute('data-color')))].length, hit: Number((rotor.querySelector('path.rr-hit') || {}).getAttribute?.('data-color')), off: Math.round(Math.abs((pos % width) - width / 2) * 1000) / 1000 };
 });
 async function choose(page, color) {
   await page.waitForFunction(() => {
@@ -172,7 +179,7 @@ async function choose(page, color) {
 }
 const waitResult = (page, round) => page.waitForFunction(r => {
   const status = document.getElementById('status').textContent;
-  return /gagnée|perdue|Personne ne marque|Même couleur|marque/.test(status) && document.querySelectorAll('#roundsProgress .round-dot.played').length >= r;
+  return /gagnée|perdue|Personne ne marque|1 point chacun ·|marque ·/.test(status) && document.querySelectorAll('#roundsProgress .round-dot.played').length >= r;
 }, round, { timeout: 15000 });
 /* Aucun émoji à l'écran : ni dans les textes, ni dans les titres des éléments. */
 const emojis = page => page.evaluate(() => {
@@ -252,23 +259,23 @@ async function fullMatch(browser) {
       labels: { a: ['Pile !', 'Bleu'], b: ['Bleu', 'Pile !'] }, title: 'issue d’Alice : l’aiguille pile sur son Rouge' },
     { c: [2, 1], drawn: 1, a: /Manche perdue · Orange/, b: /Manche gagnée · Orange/, v: /Bob marque · Orange/, s: ['1-1', '1-1'],
       labels: { a: ['Jaune', 'Pile !'], b: ['Pile !', 'Jaune'] }, title: 'issue de Bob : pile sur son Orange' },
-    { c: [0, 2], drawn: 1, a: /Personne ne marque · Orange/, b: /Personne ne marque · Orange/, v: /Personne ne marque · Orange/, s: ['1-1', '1-1'],
-      labels: { a: ['Rouge', 'Jaune'] }, none: true, title: 'issue « personne » : l’Orange, libre, entre le Rouge et le Jaune — personne ne marque' },
-    { c: [3, 3], drawn: null, a: /Même couleur/, b: /Même couleur/, v: /Même couleur/, s: ['1-1', '1-1'], title: 'même couleur : on rechoisit' },
-    { c: [4, 5], drawn: 4, a: /Manche gagnée · Bleu/, b: /Manche perdue · Bleu/, v: /Alice marque · Bleu/, s: ['2-1', '1-2'],
-      label: 'Manche 4 / 6', title: 'issue d’Alice : pile sur son Bleu (le Violet de Bob juste à côté ne compte pas)' },
-    { c: [1, 0], drawn: 0, a: /Manche perdue · Rouge/, b: /Manche gagnée · Rouge/, v: /Bob marque · Rouge/, s: ['2-2', '2-2'],
-      title: 'issue de Bob : pile sur son Rouge' },
-    { c: [3, 5], drawn: 4, a: /Personne ne marque · Bleu/, b: /Personne ne marque · Bleu/, v: /Personne ne marque · Bleu/, s: ['2-2', '2-2'],
-      label: 'Manche 6 / 6', none: true, title: 'sixième manche, issue « personne » : le Bleu, libre — 2-2' },
-    { c: [5, 2], drawn: 2, a: /Manche perdue · Jaune/, b: /Manche gagnée · Jaune/, v: /Bob marque · Jaune/, s: ['2-3', '3-2'],
+    { c: [2, 2], drawn: 1, a: /Personne ne marque · Orange/, b: /Personne ne marque · Orange/, v: /Personne ne marque · Orange/, s: ['1-1', '1-1'],
+      labels: { a: ['Jaune', 'Jaune'] }, none: true, same: true, title: 'même couleur (Jaune), issue « personne » : l’Orange, libre — la manche se joue, personne ne marque' },
+    { c: [3, 3], drawn: 3, a: /1 point chacun · Vert/, b: /1 point chacun · Vert/, v: /1 point chacun · Vert/, s: ['2-2', '2-2'],
+      labels: { a: ['Pile !', 'Pile !'], b: ['Pile !', 'Pile !'] }, both: true, same: true, label: 'Manche 4 / 6',
+      title: 'même couleur (Vert), l’aiguille dessus : 1 point chacun, la manche compte' },
+    { c: [4, 5], drawn: 4, a: /Manche gagnée · Bleu/, b: /Manche perdue · Bleu/, v: /Alice marque · Bleu/, s: ['3-2', '2-3'],
+      title: 'issue d’Alice : pile sur son Bleu (le Violet de Bob juste à côté ne compte pas)' },
+    { c: [1, 0], drawn: 0, a: /Manche perdue · Rouge/, b: /Manche gagnée · Rouge/, v: /Bob marque · Rouge/, s: ['3-3', '3-3'],
+      label: 'Manche 6 / 6', title: 'sixième manche, issue de Bob : pile sur son Rouge — 3-3' },
+    { c: [5, 2], drawn: 2, a: /Manche perdue · Jaune/, b: /Manche gagnée · Jaune/, v: /Bob marque · Jaune/, s: ['3-4', '4-3'],
       labels: { a: ['Violet', 'Pile !'], b: ['Pile !', 'Violet'] },
       decisive: true, opens: 'Manche 7 · décisive', title: 'manche 7, décisive : Bob gagne la première de la paire' },
-    { c: [0, 3], drawn: 0, a: /Manche gagnée · Rouge/, b: /Manche perdue · Rouge/, v: /Alice marque · Rouge/, s: ['3-3', '3-3'],
+    { c: [0, 3], drawn: 0, a: /Manche gagnée · Rouge/, b: /Manche perdue · Rouge/, v: /Alice marque · Rouge/, s: ['4-4', '4-4'],
       decisive: true, answer: 'Manche 8 · décisive', toast: /1 partout !.*manches 9 et 10/, title: 'manche 8 : Alice répond et égalise, 1-1' },
-    { c: [1, 4], drawn: 4, a: /Manche perdue · Bleu/, b: /Manche gagnée · Bleu/, v: /Bob marque · Bleu/, s: ['3-4', '4-3'],
+    { c: [1, 4], drawn: 4, a: /Manche perdue · Bleu/, b: /Manche gagnée · Bleu/, v: /Bob marque · Bleu/, s: ['4-5', '5-4'],
       decisive: true, opens: 'Manche 9 · décisive', title: 'nouvelle paire, manche 9 : Bob' },
-    { c: [2, 0], drawn: 3, a: /Personne ne marque · Vert/, b: /Personne ne marque · Vert/, v: /Personne ne marque · Vert/, s: ['3-4', '4-3'],
+    { c: [2, 0], drawn: 3, a: /Personne ne marque · Vert/, b: /Personne ne marque · Vert/, v: /Personne ne marque · Vert/, s: ['4-5', '5-4'],
       decisive: true, answer: 'Manche 10 · décisive', none: true, title: 'manche 10 : le Vert, libre — 1-0 au bout de la paire, Bob gagne le match' }
   ];
   for (let i = 0; i < plays.length; i++) {
@@ -300,12 +307,25 @@ async function fullMatch(browser) {
       }), 3000, 30);
       check(`manche ${i + 1} : ${play.decisive ? 'décisive, le halo bat comme un cœur' : 'manche normale, pas de battement'}`, mood === (play.decisive ? 'tense' : 'calm'), mood);
     }
+    if (i === 1) {
+      /* À l'arrêt, rien n'est encore dit : ni le point, ni la case, ni la puce — le recentrage d'abord. */
+      const atStop = await (await p1.waitForFunction(() => {
+        const stage = document.getElementById('wheel');
+        if (stage.classList.contains('rr-spinning')) return null;
+        return {
+          status: document.getElementById('status').textContent, hit: !!document.querySelector('.rr-rotor .rr-hit'),
+          winner: !!document.querySelector('#duel .rr-chip.rr-winner'),
+          score: [document.getElementById('playerScore').textContent, document.getElementById('aiScore').textContent].join('-')
+        };
+      }, null, { polling: 'raf', timeout: 8000 })).jsonValue();
+      check('manche 2 : la roue arrêtée, rien n’est encore dit — ni point, ni case éclairée, ni puce', /tourne/.test(atStop.status) && !atStop.hit && !atStop.winner && atStop.score === '1-0', atStop);
+    }
     await Promise.all([waitStatus(p1, play.a), waitStatus(p2, play.b), waitStatus(viewer, play.v)]);
     const [ta, tb, tv] = await Promise.all([text(p1, '#status'), text(p2, '#status'), text(viewer, '#status')]);
     check(`manche ${i + 1} (${play.title}) : chaque écran dit le bon résultat`, play.a.test(ta) && play.b.test(tb) && play.v.test(tv), [ta, tb, tv]);
     if (play.drawn !== null) {
       const where = await Promise.all([p1, p2, viewer].map(underPointer));
-      check(`manche ${i + 1} : la roue s'arrête sur la couleur tirée, sur les trois écrans`, where.every(w => w.color === play.drawn && w.hit === play.drawn), where);
+      check(`manche ${i + 1} : la roue recentrée sur la couleur tirée, sur les trois écrans`, where.every(w => w.color === play.drawn && w.hit === play.drawn && w.off < 0.6), where);
       if (play.decisive) check(`manche ${i + 1} : décisive, la roue garde ses six couleurs`, where.every(w => w.colors === 6), where);
     }
     if (play.labels) {
@@ -315,15 +335,16 @@ async function fullMatch(browser) {
         { alice: [ca.me.label, ca.op.label], bob: [cb.me.label, cb.op.label] });
       if (play.a.source.includes('gagnée')) check(`manche ${i + 1} : la puce gagnante s’éclaire`, ca.me.winner && !ca.op.winner, ca);
       if (play.none) check(`manche ${i + 1} : personne ne marque, aucune puce ne s’éclaire`, !ca.me.winner && !ca.op.winner, ca);
+      if (play.both) check(`manche ${i + 1} : même couleur sortie, les deux puces s’éclairent (1 point chacun)`, ca.me.winner && ca.op.winner, ca);
     }
     if (play.drawn !== null) {
       const icons = await Promise.all([p1, p2, viewer].map(p => p.evaluate(() => !!document.querySelector('#status .rr-status-ico svg'))));
       check(`manche ${i + 1} : le résultat porte son icône SVG sur les trois écrans`, icons.every(Boolean), icons);
     }
-    if (play.label) check(`manche ${i + 1} : le rechoix ne compte pas (« ${play.label} »)`, (await text(p1, '#roundLabel')) === play.label, await text(p1, '#roundLabel'));
+    if (play.label) check(`manche ${i + 1} : chaque manche compte, même couleur comprise (« ${play.label} »)`, (await text(p1, '#roundLabel')) === play.label, await text(p1, '#roundLabel'));
     const [sa, sb] = await Promise.all([scores(p1), scores(p2)]);
     check(`manche ${i + 1} : le score après l'arrêt (${play.s.join(' / ')})`, sa === play.s[0] && sb === play.s[1], [sa, sb]);
-    if (play.drawn !== null || i === 3) {
+    {
       const verified = await waitFor(async () => (await Promise.all([p1, p2, viewer].map(p => p.getAttribute('#seal', 'data-state')))).every(s => s === 'verified'), 4000);
       check(`manche ${i + 1} : « Tirage vérifié » sur les trois écrans`, verified === true);
     }
@@ -344,14 +365,15 @@ async function fullMatch(browser) {
     const row = document.querySelector('.rounds-decisive');
     return row && !row.hidden ? row.querySelectorAll('.ms-dec-dot').length : 0;
   });
-  check('les manches décisives ont leur rangée : quatre repères (le rechoix n’y compte pas)', decisiveRow === 4, decisiveRow);
+  check('les manches décisives ont leur rangée : quatre repères', decisiveRow === 4, decisiveRow);
   const regularRow = await p1.evaluate(() => [...document.querySelectorAll('#roundsProgress .round-dot')].map(d => d.className.replace('round-dot', '').trim()));
-  check('les six manches comptées ont chacune leur repère (le rechoix non)', regularRow.length === 6 && regularRow.every(c => /played/.test(c)), regularRow);
+  check('les six manches ont chacune leur repère (les deux à même couleur comprises)', regularRow.length === 6 && regularRow.every(c => /played/.test(c)), regularRow);
   const feet = await Promise.all([p1, p2, viewer].map(footItems));
   check('en bas, seulement « Règles » (ni tirages, ni empreinte)', feet.every(f => JSON.stringify(f) === JSON.stringify(['rulesBtn'])) && !(await p1.$('#history')), feet);
   await p1.click('#rulesBtn');
   const rules = await p1.evaluate(() => ({ text: document.getElementById('rulesBox').textContent.replace(/\s+/g, ' '), seal: document.getElementById('seal').closest('#rulesBox') !== null }));
   check('les règles disent la couleur exacte et les chances (4 sur 10 chacun)', /Seule la couleur exacte compte/.test(rules.text) && /4 chances sur 10/.test(rules.text) && !/plus proche/.test(rules.text), rules.text.slice(0, 160));
+  check('les règles disent la même couleur : la manche se joue, 1 point chacun si elle sort', /Même couleur pour les deux : la manche se joue quand même/.test(rules.text) && /1 point chacun/.test(rules.text) && !/rechoisi/.test(rules.text), rules.text);
   check('la vérification du tirage est dans les règles', rules.seal);
   await p1.click('#rulesBtn');
 
@@ -360,18 +382,18 @@ async function fullMatch(browser) {
     return shown.every(Boolean) ? true : null;
   }, 10000);
   check('la fiche de fin s’ouvre chez les deux joueurs et le spectateur', ends === true);
-  check('Alice : défaite 3 - 4', (await text(p1, '#modalTitle')).includes('DÉFAITE') && (await text(p1, '#finalScore')) === '3 - 4', await text(p1, '#finalScore'));
-  check('Bob : victoire 4 - 3, gain net affiché', (await text(p2, '#modalTitle')).includes('VICTOIRE') && (await text(p2, '#finalScore')) === '4 - 3' && /\+1800 HTG/.test(await text(p2, '#prizeLine')), [await text(p2, '#modalTitle'), await text(p2, '#prizeLine')]);
+  check('Alice : défaite 4 - 5', (await text(p1, '#modalTitle')).includes('DÉFAITE') && (await text(p1, '#finalScore')) === '4 - 5', await text(p1, '#finalScore'));
+  check('Bob : victoire 5 - 4, gain net affiché', (await text(p2, '#modalTitle')).includes('VICTOIRE') && (await text(p2, '#finalScore')) === '5 - 4' && /\+1800 HTG/.test(await text(p2, '#prizeLine')), [await text(p2, '#modalTitle'), await text(p2, '#prizeLine')]);
   check('le spectateur : Bob remporte la Roulette Royale', /Bob remporte la Roulette Royale/.test(await text(viewer, '#finalMessage')));
   const rows = await p2.evaluate(() => document.querySelectorAll('#modalHistoryList .modal-history-item').length);
   const titleIcons = await Promise.all([p1, p2, viewer].map(p => p.evaluate(() => !!document.querySelector('#modalTitle .rr-title-ico svg'))));
   check('la fiche de fin : une icône SVG dans le titre (trophée, croix)', titleIcons.every(Boolean), titleIcons);
   const left = await Promise.all([p1, p2, viewer].map(emojis));
   check('aucun émoji à l’écran (statuts, annonces, fiche de fin, historique)', left.every(l => l.length === 0), left);
-  check('l’historique de fin compte les 11 manches ouvertes (le rechoix compris)', rows === 11, rows);
+  check('l’historique de fin compte les 10 manches (aucun rechoix)', rows === 10, rows);
   const labels = await p2.evaluate(() => [...document.querySelectorAll('#modalHistoryList .modal-history-item > span:first-child')].map(el => el.textContent).reverse());
-  check('l’historique numérote les manches comptées (le rechoix reprend le numéro, les décisives continuent : 7, 8, 9, 10)',
-    JSON.stringify(labels) === JSON.stringify(['Manche 1', 'Manche 2', 'Manche 3', 'Manche 4', 'Manche 4', 'Manche 5', 'Manche 6',
+  check('l’historique numérote les manches (les décisives continuent : 7, 8, 9, 10)',
+    JSON.stringify(labels) === JSON.stringify(['Manche 1', 'Manche 2', 'Manche 3', 'Manche 4', 'Manche 5', 'Manche 6',
       'Manche 7 · décisive', 'Manche 8 · décisive', 'Manche 9 · décisive', 'Manche 10 · décisive']), labels);
   const proof = await p2.evaluate(() => {
     const card = document.querySelector('#gameOverModal .modal').getBoundingClientRect();
@@ -533,8 +555,11 @@ async function offline(browser, mode) {
 /*
  * Le tour de roue de casino (owner, 2026-11-05 : « ralentie au début… prend de
  * la vitesse… s'arrêter comme dans les grands jeux de roulette »), à la vitesse
- * réelle de la page contre l'IA (sans ?fast=1). Le moteur écrit l'angle absolu
- * dans le style du rotor à chaque image : on le relève image par image.
+ * réelle de la page contre l'IA (sans ?fast=1), avec son rythme du jour (owner,
+ * 2026-11-06 : « ça arrive toujours au même moment… ça doit être de manière
+ * aléatoire ») et son verdict : l'arrêt là où le sel l'a voulu, rien de dit,
+ * puis le recentrage, puis le résultat. Le moteur écrit l'angle absolu dans le
+ * style du rotor à chaque image : on le relève image par image.
  */
 async function casinoSpin(browser) {
   console.log('Roulette Royale : le tour de roue de casino (vitesse réelle)');
@@ -545,6 +570,7 @@ async function casinoSpin(browser) {
     && window.RouletteOffline.state().phase === 'choosing' && !!document.querySelector('.rr-swatch:not(.rr-off)')), 15000);
   check('la page contre l’IA est prête', !!ready);
   const samplesP = page.evaluate(() => new Promise(resolve => {
+    const stage = document.getElementById('wheel');
     const rotor = document.querySelector('.rr-rotor'), pointer = document.querySelector('.rr-pointer');
     const rot = el => { const m = /rotate\((-?[\d.]+)deg\)/.exec(el.style.transform || ''); return m ? Number(m[1]) : 0; };
     const out = [];
@@ -556,21 +582,32 @@ async function casinoSpin(browser) {
         t0 = now;
       }
       const blur = document.querySelector('.rr-blur');
-      out.push({ t: now - t0, angle: rot(rotor), pointer: rot(pointer), blur: blur ? Number(blur.style.opacity || 0) : 0 });
-      if (phase !== 'spinning' || now - t0 > 12000) { resolve(out); return; }
+      out.push({
+        t: now - t0, angle: rot(rotor), pointer: rot(pointer), blur: blur ? Number(blur.style.opacity || 0) : 0,
+        spinning: stage.classList.contains('rr-spinning'), hit: !!rotor.querySelector('.rr-hit'),
+        status: document.getElementById('status').textContent, winner: !!document.querySelector('#duel .rr-chip.rr-winner'), phase
+      });
+      if (phase !== 'spinning' || now - t0 > 15000) { resolve(out); return; }
       requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
   }));
   await page.click('.rr-swatch[data-color="2"]');
   await page.click('#lockBtn');
-  const samples = await samplesP;
+  const all = await samplesP;
+  const info = await page.evaluate(() => window.RouletteOffline.state().spin);
+  const landing = info.landing;
+  const stopIdx = all.findIndex(x => !x.spinning && x.t > 300);
+  const samples = all.slice(0, stopIdx + 1);
   const at = t => { let best = samples[0]; for (const x of samples) if (x.t <= t) best = x; return best.angle; };
-  const end = samples[samples.length - 1].t;
+  const end = all[stopIdx].t, duration = info.duration, seconds = duration / 1000;
   const start = samples[0].angle;
   const speeds = [];
   for (let t = 0; t + 250 <= end; t += 50) speeds.push({ t, v: (at(t + 250) - at(t)) / 0.25 });
   const peak = speeds.reduce((a, b) => (b.v > a.v ? b : a), { t: 0, v: 0 });
+  // La vitesse de pointe attendue : le chemin parcouru, la durée, et la forme du mouvement de la manche.
+  const travelled = at(end) - start;
+  const expectedPeak = travelled / seconds / Rules.motionArea(landing.ease, landing.cruise);
   const early = (at(1000) - at(0)) / 1;
   const late = (at(end) - at(end - 1500)) / 1.5;
   const dip = start - Math.min(...samples.filter(x => x.t < 700).map(x => x.angle));
@@ -578,39 +615,53 @@ async function casinoSpin(browser) {
   const lastKick = kicks.length ? kicks[kicks.length - 1].t : 0;
   const firstAbove = share => (speeds.find(x => x.v >= peak.v * share) || { t: NaN }).t;
   const ramp = firstAbove(0.8) - firstAbove(0.25);
-  const at4s = (speeds.find(x => x.t >= 3875) || { v: 0 }).v;
+  const at60 = (speeds.find(x => x.t + 125 >= 0.6 * duration) || { v: 0 }).v;
   const blurPeak = Math.max(...samples.map(x => x.blur));
-  const detail = { end: Math.round(end), peak: Math.round(peak.v), peakAt: Math.round(peak.t), early: Math.round(early), late: Math.round(late), ramp: Math.round(ramp), at4s: Math.round(at4s), blurPeak, dip: Math.round(dip * 10) / 10, turns: Math.round((at(end) - start) / 36) / 10, kicks: kicks.length, lastKick: Math.round(lastKick), frames: samples.length };
-  check(`un tour de 7 s environ (${detail.end} ms, ${detail.frames} images)`, end > 6400 && end < 9500, detail);
+  const detail = { end: Math.round(end), duration, plan: { turns: landing.turns, ease: landing.ease, cruise: landing.cruise }, peak: Math.round(peak.v), expectedPeak: Math.round(expectedPeak), peakAt: Math.round(peak.t),
+    early: Math.round(early), late: Math.round(late), ramp: Math.round(ramp), at60: Math.round(at60), blurPeak, dip: Math.round(dip * 10) / 10,
+    turns: Math.round(travelled / 36) / 10, kicks: kicks.length, lastKick: Math.round(lastKick), frames: all.length };
+  check(`le rythme de la manche vient du sel : un tour de ${(duration / 1000).toFixed(2)} s (6,5 à 8,1 s), ${landing.turns} tours, freinage ${landing.ease}`,
+    duration >= 6480 && duration <= 8070 && landing.turns >= 7 && landing.turns <= 12, detail);
+  check(`la roue s’arrête au bout du tour prévu (${detail.end} ms pour ${duration})`, Math.abs(end - duration) < 250, detail);
   check(`un léger élan en arrière d’abord (${detail.dip}°)`, dip >= 3 && dip <= 12, detail);
   check(`un départ lent : la première seconde à moins d’un quart de la pleine vitesse (${detail.early} contre ${detail.peak} °/s)`, early < peak.v * 0.25, detail);
   check(`puis une accélération franche : d’un quart à 80 % de la pleine vitesse en moins de 0,9 s (${detail.ramp} ms)`, ramp > 0 && ramp < 900, detail);
-  check(`une vitesse qui se voit : près de quatre tours par seconde (${detail.peak} °/s), tôt dans le tour (${detail.peakAt} ms)`, peak.v > 1100 && peak.t > 900 && peak.t < 3200, detail);
+  check(`une vitesse qui se voit : plus de trois tours par seconde (${detail.peak} °/s, ${detail.expectedPeak} attendus), tôt dans le tour (${detail.peakAt} ms)`,
+    peak.v > 1000 && Math.abs(peak.v - expectedPeak) < expectedPeak * 0.15 && peak.t > 700 && peak.t < 0.45 * duration, detail);
   check(`à pleine vitesse, le flou fond les couleurs (opacité ${blurPeak})`, blurPeak >= 0.6, detail);
-  check(`un ralenti qui se voit : à 4 s, encore 15 à 60 % de la pleine vitesse (${detail.at4s} °/s)`, at4s > peak.v * 0.15 && at4s < peak.v * 0.6, detail);
+  check(`un ralenti qui se voit : aux 3/5 du tour, encore 10 à 60 % de la pleine vitesse (${detail.at60} °/s)`, at60 > peak.v * 0.1 && at60 < peak.v * 0.6, detail);
   check(`une longue fin au ralenti : la dernière seconde et demie à moins de 12 % (${detail.late} °/s)`, late < peak.v * 0.12, detail);
-  check(`neuf tours au moins (${detail.turns})`, (at(end) - start) >= 9 * 360 - 1, detail);
-  check(`le pointeur claque sur les taquets, jusque dans le freinage (dernier à ${detail.lastKick} ms)`, kicks.length >= 10 && lastKick > 4000, detail);
-  check('le pointeur revient droit à l’arrêt', Math.abs(samples[samples.length - 1].pointer) < 0.5 || (await page.evaluate(() => !document.querySelector('.rr-pointer').style.transform)), detail);
-  const final = await page.evaluate(() => {
-    const st = window.RouletteOffline.state();
-    const last = st.history[st.history.length - 1];
-    const m = /rotate\((-?[\d.]+)deg\)/.exec(document.querySelector('.rr-rotor').style.transform || '');
-    return { drawn: last ? last.drawn : null, repick: !!(last && last.repick), angle: m ? Number(m[1]) : null };
-  });
+  check(`les tours prévus (${detail.turns} pour ${landing.turns} prévus)`, travelled >= landing.turns * 360 - 1 && travelled < (landing.turns + 1) * 360 + 1, detail);
+  check(`le pointeur claque sur les taquets, jusque dans le freinage (dernier à ${detail.lastKick} ms)`, kicks.length >= 10 && lastKick > 0.55 * duration, detail);
+  check('le pointeur revient droit à l’arrêt', Math.abs(all[stopIdx].pointer) < 0.5, detail);
+  check('à l’arrêt, plus de flou', all[stopIdx].blur === 0, detail);
   const posOf = angle => ((((360 - (angle % 360)) % 360) + 360) % 360);
-  const under = final.angle === null ? null : Math.floor(posOf(final.angle) / 60);
-  check('la roue s’arrête sur la couleur tirée', final.repick || under === final.drawn, final);
-  check('à l’arrêt, plus de flou', samples[samples.length - 1].blur === 0 && (await page.evaluate(() => Number(document.querySelector('.rr-blur').style.opacity || 0))) === 0);
-  /* Un instant après l'arrêt, la roue se recentre : l'aiguille au milieu de la couleur tirée. */
-  await sleep(2100);
+  const stopAngle = all[stopIdx].angle;
+  const stopPos = posOf(stopAngle);
+  const measured = (stopPos - (landing.segment * 60 + 30)) / 30;
+  check(`l’arrêt est celui du sel, dans la couleur tirée : ${landing.style}, à ${(30 * (1 - Math.abs(landing.offset))).toFixed(3)}° de la ligne (mesuré ${(30 * (1 - Math.abs(measured))).toFixed(3)}°)`,
+    Math.floor(stopPos / 60) === info.drawn && landing.segment === info.drawn && Math.abs(measured - landing.offset) < 0.0005, { landing, measured, stopAngle });
+  // Le verdict : la roue immobile, rien de dit ; puis le recentrage ; puis seulement le résultat.
+  const hold = info.settle * 0.55;
+  const holding = all.slice(stopIdx).filter(x => x.t - end < hold - 80);
+  check(`à l’arrêt, rien n’est encore dit : la roue immobile, ni case éclairée, ni puce, ni résultat (${holding.length} images)`,
+    holding.length >= 10 && holding.every(x => !x.hit && !x.winner && /tourne|Même couleur/.test(x.status) && Math.abs(x.angle - stopAngle) < 0.002 && x.phase === 'spinning'),
+    holding.slice(0, 3).concat(holding.slice(-2)));
+  const reveal = all.find(x => x.hit);
+  const last = all[all.length - 1];
+  const glide = (landing.offset || 0) * 30;
+  const gliding = all.filter(x => x.t > end + hold + 60 && (!reveal || x.t < reveal.t - 60));
+  check(`puis le recentrage : la roue glisse de ${Math.abs(glide).toFixed(1)}° jusqu’au milieu de la couleur`,
+    Math.abs(glide) < 1 || (gliding.length >= 5 && gliding.every(x => !x.hit) && gliding.some(x => Math.abs(x.angle - stopAngle) > 0.05 && Math.abs(x.angle - (stopAngle + glide)) > 0.05)), { glide, gliding: gliding.length });
+  check(`et seulement alors le résultat (${reveal ? Math.round(reveal.t - end) : '—'} ms après l’arrêt, ${info.settle} prévus)`,
+    !!reveal && reveal.t - end >= info.settle - 60 && /gagnée|perdue|Personne ne marque|1 point chacun ·/.test(last.status), { reveal: reveal && reveal.t, end, status: last.status });
+  const offCentre = a => Math.abs((posOf(a) % 60) - 30);
   const settled = await page.evaluate(() => {
     const m = /rotate\((-?[\d.]+)deg\)/.exec(document.querySelector('.rr-rotor').style.transform || '');
     return m ? Number(m[1]) : null;
   });
-  const offCentre = a => Math.abs((posOf(a) % 60) - 30);
-  check(`un instant après, recentrée : l’aiguille au milieu de la couleur tirée (${offCentre(final.angle).toFixed(1)}° → ${offCentre(settled).toFixed(2)}°)`,
-    final.repick || (Math.floor(posOf(settled) / 60) === final.drawn && offCentre(settled) < 0.6), { stop: final.angle, settled });
+  check(`au résultat, recentrée : l’aiguille au milieu de la couleur tirée (${offCentre(stopAngle).toFixed(2)}° → ${offCentre(settled).toFixed(3)}°)`,
+    Math.floor(posOf(settled) / 60) === info.drawn && offCentre(settled) < 0.01, { stop: stopAngle, settled });
   check('aucune erreur JavaScript', errors.length === 0, errors);
   await page.context().close();
 }
@@ -626,7 +677,7 @@ async function main() {
       SUPABASE_URL: DB_URL, SUPABASE_SERVICE_ROLE_KEY: 'test-service-role',
       ALLOWED_ORIGIN: GAME_URL,
       ROULETTE_TEST_DRAWS: JSON.stringify(DRAWS),
-      ROULETTE_SPIN_MS: '1400', ROULETTE_DECISIVE_SPIN_MS: '1400', ROUND_PROOF_MS: '700', ROULETTE_REPICK_MS: '500', ROULETTE_FINAL_HOLD_MS: '400',
+      ROULETTE_SPIN_MS: '1400', ROULETTE_DECISIVE_SPIN_MS: '1400', ROULETTE_SETTLE_MS: '900', ROUND_PROOF_MS: '700', ROULETTE_FINAL_HOLD_MS: '400',
       TURN_DURATION_MS: '4000', GRACE_DURATION_MS: '4500', RECONNECT_DURATION_MS: '15000'
     },
     stdio: ['ignore', 'pipe', 'pipe']
