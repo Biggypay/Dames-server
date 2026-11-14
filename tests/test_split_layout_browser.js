@@ -209,16 +209,24 @@ async function main() {
     const lastNotices = (await messages()).filter(m => m && m.type === 'mindspille:board-notices').pop();
     check('retour en portrait : le panneau ne garde aucun bandeau', lastNotices && lastNotices.notices.length === 0, lastNotices);
 
-    // Un spectateur garde sa propre vue : le message ne le concerne pas.
+    // Un spectateur garde sa propre vue tant que l'application ne demande rien (une
+    // ancienne application n'envoie jamais ce message à une page spectateur) ; l'écran
+    // « Live » le demande, et l'en-tête s'efface (tests/test_live_immersive_browser.js).
     const spectator = await (await newContext({ width: 700, height: 390 })).newPage();
     spectator.on('pageerror', e => errors.push(`spectateur: ${e.message}`));
     await spectator.goto(`${PARENT_URL}/app?src=${encodeURIComponent(boardUrl(1, { spectate: '1' }))}`);
     await sleep(1500);
+    const spectatorFrame = spectator.frames().find(f => f.url().startsWith(`${GAME_URL}/dames`));
+    const spectatorView = () => spectatorFrame.evaluate(() => ({
+      split: document.documentElement.classList.contains('ms-split'),
+      top: getComputedStyle(document.getElementById('top')).display !== 'none'
+    }));
+    const untouched = await spectatorView();
+    check('la page spectateur garde sa vue sans demande de l application', !untouched.split && untouched.top, untouched);
     await spectator.evaluate(() => window.__layout(true));
     await sleep(400);
-    const spectatorFrame = spectator.frames().find(f => f.url().startsWith(`${GAME_URL}/dames`));
-    const spectatorSplit = await spectatorFrame.evaluate(() => document.documentElement.classList.contains('ms-split'));
-    check('la page spectateur ignore l écran partagé', spectatorSplit === false);
+    const asked = await spectatorView();
+    check('à la demande de l application, l en-tête du spectateur s efface', asked.split && !asked.top, asked);
 
     check('aucune exception JavaScript', errors.length === 0, errors);
   } finally {

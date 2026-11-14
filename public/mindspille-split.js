@@ -11,8 +11,16 @@
  * rotation — reste. Les bandeaux ne sont pas perdus : leur texte est relayé à
  * l'application (`mindspille:board-notices`), qui l'affiche dans son panneau.
  *
- * En portrait, ou hors de l'application, rien ne change. Les spectateurs ne
- * sont pas concernés : leur page a déjà sa propre vue dépouillée.
+ * En portrait, ou hors de l'application, rien ne change.
+ *
+ * Le direct (spectateur, ?spectate=1) : l'écran « Live » de l'application dessine
+ * lui-même les deux joueurs, le VS et les commentaires PAR-DESSUS le plateau, qui
+ * occupe tout l'écran. Quand il le demande — et seulement alors : une ancienne
+ * application n'envoie rien à une page spectateur, qui garde sa vue —, l'en-tête
+ * s'efface comme pour un joueur et son contenu part vers l'application
+ * (`hud: true`). `insetTop` / `insetBottom` disent la hauteur que l'application
+ * couvre en haut et en bas : le message de manche et la fiche de fin se posent
+ * dessous, jamais sous les portraits.
  *
  * Entraînement contre l'IA et partie entre amis sur le même appareil : il n'y
  * a là aucun direct à suivre, l'application ne sait de la partie que ce que la
@@ -32,7 +40,7 @@
   'use strict';
   if (window.parent === window) return;
   var params = new URLSearchParams(window.location.search);
-  if (params.get('spectate') === '1' || params.get('spectator') === '1') return;
+  var spectator = params.get('spectate') === '1' || params.get('spectator') === '1';
 
   var parentOrigin = null;
   try { if (document.referrer) parentOrigin = new URL(document.referrer).origin; } catch (_) {}
@@ -48,7 +56,10 @@
 
   var style = document.createElement('style');
   style.textContent = HIDDEN.map(function (selector) { return 'html.ms-split ' + selector; }).join(',') + '{display:none!important}' +
-    LOADERS.map(function (id) { return 'html.ms-covered #' + id; }).join(',') + '{visibility:hidden!important;transition:none!important}';
+    LOADERS.map(function (id) { return 'html.ms-covered #' + id; }).join(',') + '{visibility:hidden!important;transition:none!important}' +
+    /* Sous ce que l'application pose en haut de l'écran (mindspille-proof.js les met en haut). */
+    'html.ms-inset body #toast{top:calc(var(--ms-inset-top, 0px) + 10px)!important}' +
+    'html.ms-inset body #gameOverModal{padding-top:calc(var(--ms-inset-top, 0px) + 10px)!important;padding-bottom:var(--ms-inset-bottom, 0px)!important}';
   (document.head || document.documentElement).appendChild(style);
 
   var split = false;
@@ -151,6 +162,19 @@
     });
   }
 
+  /* Hauteur couverte par l'application, bornée : elle vient d'une autre origine. */
+  function inset(value) {
+    var n = Number(value);
+    return isFinite(n) ? Math.max(0, Math.min(600, Math.round(n))) : 0;
+  }
+  function applyInsets(top, bottom) {
+    var root = document.documentElement;
+    var t = inset(top), b = inset(bottom);
+    root.classList.toggle('ms-inset', t > 0 || b > 0);
+    root.style.setProperty('--ms-inset-top', t + 'px');
+    root.style.setProperty('--ms-inset-bottom', b + 'px');
+  }
+
   function apply(next, hud) {
     if (hud !== wantHud) {
       wantHud = hud;
@@ -219,6 +243,7 @@
     if (!data || data.type !== 'mindspille:layout') return;
     if (data.gameId && gameId && data.gameId !== gameId) return;
     if (data.cover === true) document.documentElement.classList.add('ms-covered');
+    applyInsets(data.split === true ? data.insetTop : 0, data.split === true ? data.insetBottom : 0);
     apply(data.split === true, data.hud === true);
     /* Prêt avant que l'application n'écoute : elle le redemande ici. */
     if (boardReady) postReady();
@@ -237,7 +262,7 @@
     /* L'application attend ce signal pour annoncer la mise en page : un
        message envoyé avant que la page n'écoute serait perdu. `boardReady`
        lui dit aussi que cette page annonce son plateau prêt. */
-    post({ type: 'mindspille:layout-ready', gameId: gameId, boardReady: boardReady });
+    post({ type: 'mindspille:layout-ready', gameId: gameId, boardReady: boardReady, spectator: spectator });
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
