@@ -818,7 +818,7 @@
   }
   /** Un tirage scellé local (IA, entre amis) : même forme que celui du serveur — une issue de 0 à 99, toute manche. */
   function localSeal(roomId, round, decisive) {
-    var kind = 'outcome';
+    var kind = 'color';
     var value = randomInt(R.OUTCOME_SPACE);
     var salt = randomSalt();
     return sha256Hex(R.sealText(roomId, round, kind, value, salt)).then(function (hash) {
