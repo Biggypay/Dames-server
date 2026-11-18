@@ -5,49 +5,21 @@
  * `require`) et aux trois pages du jeu (en ligne, contre l'IA, entre amis) :
  * aucune page ne peut compter un point autrement que le serveur.
  *
- * Le jeu (règles du 2026-11-05, troisième version — owner : « l'aiguille doit
- * tomber sur la couleur exacte, pas sur une couleur qui est plus proche… le
- * système doit être strict, mais toujours donner la possibilité aux joueurs
- * d'avoir un gagnant… je ne dis pas de favoriser aucun joueur »)
- * ------
- * - Une roue de six couleurs ; les deux joueurs disposent des mêmes six.
- * - À chaque manche, chacun choisit une couleur en secret.
- * - La roue tourne et s'arrête sur UNE couleur. Seule la couleur EXACTE
- *   marque : l'aiguille sur votre couleur, +1 ; sur celle de l'adversaire,
- *   +1 pour lui ; sur une couleur que personne n'a choisie, personne ne marque
- *   (« plus proche » ne compte plus).
- * - L'issue de la manche est tirée au sort AVANT les choix, à parts égales
- *   pour les deux joueurs : la couleur du joueur 1 (4 chances sur 10), celle
- *   du joueur 2 (4 sur 10), ou une couleur que personne n'a choisie (2 sur 10,
- *   chacune des couleurs libres à parts égales). L'aiguille tombe EXACTEMENT
- *   sur la couleur désignée. La couleur choisie ne change rien aux chances :
- *   nul ne peut être favorisé, et une manche a un gagnant 8 fois sur 10 (elle
- *   en avait un 1 fois sur 3 quand la roue tirait une couleur sur six sans
- *   regarder les choix).
- * - Même couleur pour les deux (owner, 2026-11-05 : « le système doit
- *   l'accepter et considérer ça comme une manche nulle… si les deux joueurs
- *   gagnent, cela donne 1 point à chaque joueur, tout simplement parce que
- *   c'est le hasard ») : on ne rechoisit plus, la manche se joue. L'aiguille
- *   sur leur couleur commune (8 fois sur 10), 1 point chacun ; ailleurs,
- *   personne. Dans les deux cas, une manche nulle : l'écart ne bouge pas.
- * - Six manches (owner : « ça devrait être 6 »). Le match s'arrête plus tôt
- *   si l'écart ne peut plus être comblé.
- * - Égalité au bout des six : on continue, 7e et 8e manches, puis 9e et
- *   10e… « jusqu'à ce qu'un joueur gagne ». Ces manches décisives vont DEUX
- *   PAR DEUX : même si l'un gagne la première de la paire, l'autre joue la
- *   seconde (« pour l'équité ») ; un point d'avance au bout de la paire, et
- *   c'est gagné ; sinon, une nouvelle paire.
- * - La roue garde ses six couleurs, manches décisives comprises (« ne réduis
- *   pas, pour ne pas baisser la tension »). Seule la mise en scène change :
- *   plus de suspens à l'arrêt, un tour de roue plus long.
+ * Règles de Roulette Royale — six couleurs équiprobables.
+ * - Chaque joueur choisit secrètement une couleur parmi les six.
+ * - Avant les choix, le serveur tire uniformément une couleur parmi les six :
+ *   chaque couleur a exactement 1 chance sur 6 (16,67 %), indépendamment des
+ *   choix. L'aiguille s'arrête exactement sur cette couleur.
+ * - Chaque joueur ayant choisi la couleur tirée marque 1 point. Si personne
+ *   ne l'a choisie, personne ne marque. Si les deux ont choisi la même couleur
+ *   et qu'elle sort, chacun marque 1 point.
+ * - Six manches réglementaires, puis départage par paires en cas d'égalité.
+ * - Le tirage est scellé avant les choix avec SHA-256 et un sel secret. Le
+ *   format v2 invalide les anciens sceaux fondés sur les probabilités pondérées.
  *
- * Le tirage est scellé AVANT les choix : le serveur publie l'empreinte
- * (SHA-256) de l'issue tirée (un nombre de 0 à 99) et d'un sel secret au
- * début de la manche, et les révèle après. N'importe qui peut vérifier que
- * l'issue n'a pas été changée une fois les choix connus (`sealText`) : 0 à
- * 39, la couleur du joueur 1 ; 40 à 79, celle du joueur 2 ; 80 à 99, une des
- * couleurs que personne n'a choisies (la (n mod k)-ième, dans l'ordre de la
- * roue, k = 4 ou 5 : vingt issues se partagent toujours également).
+ * Le même fichier sert au serveur et aux pages du jeu afin que les règles
+ * soient identiques en ligne, contre l'IA et entre amis.
+
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
@@ -68,16 +40,8 @@
   var COLOR_COUNT = COLORS.length;
   /* Manches prévues d'un match, avant toute manche décisive. */
   var REGULAR_ROUNDS = 6;
-  /*
-   * L'issue scellée d'une manche : un nombre tiré uniformément de 0 à 99.
-   * 0–39 : la couleur du joueur 1 ; 40–79 : celle du joueur 2 ; 80–99 : une
-   * couleur que personne n'a choisie (quatre, ou cinq quand les deux ont la
-   * même : vingt issues se partagent également entre elles). Parts égales
-   * pour les deux joueurs.
-   */
-  var OUTCOME_SPACE = 100;
-  var OUTCOME_P1_END = 40;
-  var OUTCOME_P2_END = 80;
+  /* Une des six couleurs, toutes équiprobables, est tirée indépendamment des choix. */
+  var OUTCOME_SPACE = COLOR_COUNT;
 
   function isColor(value) {
     return typeof value === 'number' && value % 1 === 0 && value >= 0 && value < COLOR_COUNT;
@@ -89,15 +53,9 @@
     return isColor(value) ? value : null;
   }
 
-  /** Une issue scellée valable : un entier de 0 à 99. */
+  /** Une couleur tirée et scellée valable : un entier de 0 à 5. */
   function isOutcome(value) {
-    return typeof value === 'number' && value % 1 === 0 && value >= 0 && value < OUTCOME_SPACE;
-  }
-
-  /** La couleur que l'issue désigne : celle du joueur 1, du joueur 2, ou 0 (une couleur libre). */
-  function outcomeWinner(value) {
-    if (!isOutcome(value)) return 0;
-    return value < OUTCOME_P1_END ? 1 : value < OUTCOME_P2_END ? 2 : 0;
+    return isColor(value);
   }
 
   /**
@@ -107,7 +65,7 @@
    * manches décisives à deux couleurs) n'ont plus cours.
    */
   function sealText(roomId, round, kind, value, salt) {
-    return 'roulette:v1:' + roomId + ':' + round + ':' + kind + ':' + value + ':' + salt;
+    return 'roulette:v2:' + roomId + ':' + round + ':' + kind + ':' + value + ':' + salt;
   }
 
   /**
@@ -143,21 +101,13 @@
   }
 
   /**
-   * La couleur où l'aiguille s'arrête, d'après l'issue scellée AVANT les
-   * choix : celle du joueur 1 (issue 0–39), celle du joueur 2 (40–79), ou une
-   * des couleurs que personne n'a choisies (80–99 : la ((issue − 80) mod k)-
-   * ième, dans l'ordre de la roue — k = 4, ou 5 quand les deux ont la même
-   * couleur). Même couleur : l'issue d'un joueur désigne leur couleur commune.
-   * null s'il manque un choix, ou pour un sceau d'un autre genre.
+   * La couleur tirée est indépendante des choix : le sceau contient directement
+   * son identifiant (0 à 5). Les choix ne peuvent jamais influer sur le tirage.
    */
   function drawnColor(seal, choice1, choice2) {
-    if (!seal || seal.kind !== 'outcome' || !isOutcome(seal.value)) return null;
+    if (!seal || seal.kind !== 'color' || !isColor(seal.value)) return null;
     if (!isColor(choice1) || !isColor(choice2)) return null;
-    var winner = outcomeWinner(seal.value);
-    if (winner === 1) return choice1;
-    if (winner === 2) return choice2;
-    var free = unchosenColors(choice1, choice2);
-    return free[(seal.value - OUTCOME_P2_END) % free.length];
+    return seal.value;
   }
 
   /**
@@ -424,11 +374,8 @@
     COLOR_COUNT: COLOR_COUNT,
     REGULAR_ROUNDS: REGULAR_ROUNDS,
     OUTCOME_SPACE: OUTCOME_SPACE,
-    OUTCOME_P1_END: OUTCOME_P1_END,
-    OUTCOME_P2_END: OUTCOME_P2_END,
     isColor: isColor,
     isOutcome: isOutcome,
-    outcomeWinner: outcomeWinner,
     unchosenColors: unchosenColors,
     toColor: toColor,
     sealText: sealText,
