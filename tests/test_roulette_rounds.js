@@ -2,9 +2,8 @@
  * Roulette Royale en ligne : de vrais matchs contre le serveur.
  *
  * Ce que ce test protège :
- *   • l'issue de chaque manche est tirée et scellée AVANT les choix (0–7 le
- *     joueur 1, 8–15 le joueur 2, 16–19 personne), et la révélation
- *     correspond à l'empreinte publiée ;
+ *   • une couleur est tirée uniformément parmi les six, indépendamment des
+ *     choix, et sa révélation correspond à l’empreinte publiée ;
  *   • l'adversaire et les spectateurs n'apprennent que « a choisi », jamais la
  *     couleur, avant que les deux choix soient verrouillés ;
  *   • les points (règles du 2026-11-05, 3e version) : seule la couleur EXACTE
@@ -49,12 +48,11 @@ const GAME = {
   reconnect: '30000000-0000-4000-8000-0000000000a6'
 };
 const DRAWS = {
-  // Une issue par manche : 0–39 la couleur du joueur 1, 40–79 celle du joueur
-  // 2, 80–99 une couleur libre. Les manches 3 et 9 : la même couleur pour les deux.
-  [GAME.full]: [10, 85, 25, 55, 35, 40, 60, 0, 86, 20],
+  // Identifiants des couleurs tirées (0 Rouge, 1 Orange, 2 Jaune, 3 Vert, 4 Bleu, 5 Violet).
+  [GAME.full]: [4, 3, 3, 0, 2, 5, 4, 0, 1, 2],
   [GAME.early]: [0, 0, 0, 0],
-  [GAME.secret]: [65],
-  [GAME.reconnect]: [45, 45, 45, 45, 45]
+  [GAME.secret]: [5],
+  [GAME.reconnect]: [2, 2, 2, 2, 2]
 };
 let failures = 0;
 const rpcCalls = [];
@@ -202,12 +200,12 @@ async function main() {
 
     // Couleurs : 0 Rouge, 1 Orange, 2 Jaune, 3 Vert, 4 Bleu, 5 Violet (dans cet ordre sur la roue).
     const plan = [
-      { c: [4, 0], drawn: 4, winner: 1, points: [1, 0], scores: [1, 0], label: 'issue 10 (joueur 1) : l’aiguille pile sur le Bleu d’Alice' },
-      { c: [0, 2], drawn: 3, winner: 0, points: [0, 0], scores: [1, 0], label: 'issue 85 (couleur libre) : l’aiguille sur le Vert — nulle, même si le Jaune de Bob est voisin' },
-      { c: [3, 3], drawn: 3, winner: 0, points: [1, 1], scores: [2, 1], label: 'même couleur (Vert), issue 25 : l’aiguille dessus, 1 point chacun — la manche compte, nulle' },
-      { c: [2, 0], drawn: 0, winner: 2, points: [0, 1], scores: [2, 2], label: 'issue 55 (joueur 2) : pile sur le Rouge de Bob' },
-      { c: [2, 1], drawn: 2, winner: 1, points: [1, 0], scores: [3, 2], label: 'issue 35 (la dernière du joueur 1) : pile sur le Jaune d’Alice' },
-      { c: [0, 5], drawn: 5, winner: 2, points: [0, 1], scores: [3, 3], label: 'sixième manche, issue 40 (la première du joueur 2) : pile sur le Violet de Bob — 3-3' }
+      { c: [4, 0], drawn: 4, winner: 1, points: [1, 0], scores: [1, 0], label: 'couleur tirée Bleu : l’aiguille pile sur le Bleu d’Alice' },
+      { c: [0, 2], drawn: 3, winner: 0, points: [0, 0], scores: [1, 0], label: 'couleur tirée Vert : l’aiguille sur le Vert — nulle, même si le Jaune de Bob est voisin' },
+      { c: [3, 3], drawn: 3, winner: 0, points: [1, 1], scores: [2, 1], label: 'même couleur (Vert), couleur tirée Vert : l’aiguille dessus, 1 point chacun — la manche compte, nulle' },
+      { c: [2, 0], drawn: 0, winner: 2, points: [0, 1], scores: [2, 2], label: 'couleur tirée Rouge : pile sur le Rouge de Bob' },
+      { c: [2, 1], drawn: 2, winner: 1, points: [1, 0], scores: [3, 2], label: 'couleur tirée Jaune : pile sur le Jaune d’Alice' },
+      { c: [0, 5], drawn: 5, winner: 2, points: [0, 1], scores: [3, 3], label: 'sixième manche, couleur tirée Violet : pile sur le Violet de Bob — 3-3' }
     ];
     const durations = new Set();
     for (let i = 0; i < plan.length; i++) {
@@ -220,7 +218,7 @@ async function main() {
       check(`manche ${round} : ${step.label}`, spin.winnerSlot === step.winner && JSON.stringify(spin.points) === JSON.stringify(step.points)
         && JSON.stringify(spin.scores) === JSON.stringify(step.scores), spin);
       check(`manche ${round} : la révélation correspond à l’empreinte publiée`, sealOk(GAME.full, spin, ready.seal), { seal: spin.seal, published: ready.seal });
-      check(`manche ${round} : l’issue scellée désigne la couleur exacte`, spin.drawn === step.drawn && spin.seal.kind === 'outcome' && spin.seal.value === DRAWS[GAME.full][i]
+      check(`manche ${round} : l’couleur scellée indépendante désigne la couleur exacte`, spin.drawn === step.drawn && spin.seal.kind === 'color' && spin.seal.value === DRAWS[GAME.full][i]
         && Rules.drawnColor(spin.seal, step.c[0], step.c[1]) === step.drawn, { drawn: spin.drawn, seal: spin.seal });
       check(`manche ${round} : la roue tourne (même couleur comprise) et s’arrête sur la couleur tirée`,
         spin.repick === false && spin.wheel.length === 6 && spin.wheel[spin.landing.segment] === spin.drawn, spin.landing);
@@ -246,7 +244,7 @@ async function main() {
     check('la 7e manche : première décisive de la paire', ready.decisive === true && ready.decisiveStep === 1 && ready.played === 6 && ready.decisivePlayed === 0, ready);
     const d1 = await playRound(p1, p2, GAME.full, 7, 1, 4);
     check('décisive : la roue garde ses six couleurs (« ne réduis pas »)', JSON.stringify(d1.wheel) === JSON.stringify([0, 1, 2, 3, 4, 5]), d1.wheel);
-    check('décisive : une issue scellée (60, joueur 2) → pile sur le Bleu de Bob', d1.drawn === 4 && d1.winnerSlot === 2 && d1.seal.kind === 'outcome' && d1.seal.value === 60 && JSON.stringify(d1.scores) === JSON.stringify([3, 4]), d1);
+    check('décisive : une couleur scellée (Bleu) → pile sur le Bleu de Bob', d1.drawn === 4 && d1.winnerSlot === 2 && d1.seal.kind === 'color' && d1.seal.value === 4 && JSON.stringify(d1.scores) === JSON.stringify([3, 4]), d1);
     check('décisive : la révélation correspond à l’empreinte', sealOk(GAME.full, d1, ready.seal));
     check('décisive : un tour de roue plus long, qui s’arrête sur la couleur tirée', d1.duration === spinMs(d1, 360) && d1.settle === 200 && d1.wheel[d1.landing.segment] === d1.drawn, d1);
     check('Bob a gagné la première décisive : le match n’est PAS fini, Alice répond', d1.final === false, d1);
@@ -262,14 +260,14 @@ async function main() {
     ready = await onceWhere(p1, 'roulette_round_ready', d => d.room === GAME.full && d.round === 9);
     check('une nouvelle paire commence (9e manche)', ready.decisive === true && ready.decisiveStep === 1 && ready.decisivePlayed === 2, ready);
     const d3 = await playRound(p1, p2, GAME.full, 9, 5, 5);
-    check('décisive, même couleur (Violet), issue 86 : l’aiguille sur l’Orange, libre — personne, la manche compte',
+    check('décisive, même couleur (Violet), couleur tirée Orange : personne ne marque — personne, la manche compte',
       d3.repick === false && d3.drawn === 1 && d3.winnerSlot === 0 && JSON.stringify(d3.points) === JSON.stringify([0, 0]) && d3.duration === spinMs(d3, 360) && d3.final === false
       && JSON.stringify(d3.scores) === JSON.stringify([4, 4]), d3);
     ready = await onceWhere(p1, 'roulette_round_ready', d => d.room === GAME.full && d.round === 10);
     check('la même couleur a compté : la 10e manche est la réponse', ready.decisive === true && ready.decisiveStep === 2 && ready.decisivePlayed === 3, ready);
     const over = onceWhere(p1, 'game:over', d => d.room === GAME.full, 8000);
     const d4 = await playRound(p1, p2, GAME.full, 10, 2, 5);
-    check('issue 20 : pile sur le Jaune d’Alice — 1-0 au bout de la paire, Alice gagne 5-4', d4.drawn === 2 && d4.winnerSlot === 1 && d4.final === true && d4.matchWinnerSlot === 1 && JSON.stringify(d4.scores) === JSON.stringify([5, 4]), d4);
+    check('couleur tirée Jaune : Alice marque — 1-0 au bout de la paire, Alice gagne 5-4', d4.drawn === 2 && d4.winnerSlot === 1 && d4.final === true && d4.matchWinnerSlot === 1 && JSON.stringify(d4.scores) === JSON.stringify([5, 4]), d4);
     const end = await over;
     check('fin du match : Alice gagne 5-4', end.winnerSlot === 1 && JSON.stringify(end.scores) === JSON.stringify([5, 4]), end);
     check('l’historique de fin garde les dix manches (aucun rechoix)', Array.isArray(end.history) && end.history.length === 10 && end.history.every(h => h.repick === false), end.history && end.history.length);
