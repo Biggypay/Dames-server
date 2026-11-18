@@ -66,12 +66,11 @@ const GAME = {
   grace: '30000000-0000-4000-8000-0000000004a2',
   reload: '30000000-0000-4000-8000-0000000004a3'
 };
-/* Les issues imposées (NODE_ENV=test) : un match connu d'avance. */
+/* Les couleurs imposées (NODE_ENV=test) : un match connu d'avance. */
 const DRAWS = {
-  // Une issue par manche : 0–39 la couleur d'Alice, 40–79 celle de Bob,
-  // 80–99 une couleur que personne n'a choisie (la (n − 80) mod k-ième).
-  [GAME.match]: [3, 50, 81, 10, 25, 60, 45, 15, 70, 81],
-  [GAME.grace]: [50, 50, 50, 50, 50],
+  // Identifiants des couleurs tirées (0 Rouge, 1 Orange, 2 Jaune, 3 Vert, 4 Bleu, 5 Violet).
+  [GAME.match]: [0, 1, 1, 3, 4, 0, 2, 0, 4, 3],
+  [GAME.grace]: [4, 4, 4, 4, 4],
   [GAME.reload]: [5, 5, 5, 5, 5]
 };
 
@@ -256,18 +255,18 @@ async function fullMatch(browser) {
   // Seule la couleur exacte marque : « Pile ! » sous la puce touchée, le nom de la couleur sous l'autre.
   const plays = [
     { c: [0, 4], drawn: 0, a: /Manche gagnée · Rouge/, b: /Manche perdue · Rouge/, v: /Alice marque · Rouge/, s: ['1-0', '0-1'],
-      labels: { a: ['Pile !', 'Bleu'], b: ['Bleu', 'Pile !'] }, title: 'issue d’Alice : l’aiguille pile sur son Rouge' },
+      labels: { a: ['Pile !', 'Bleu'], b: ['Bleu', 'Pile !'] }, title: 'couleur tirée Rouge : l’aiguille pile sur le Rouge d’Alice' },
     { c: [2, 1], drawn: 1, a: /Manche perdue · Orange/, b: /Manche gagnée · Orange/, v: /Bob marque · Orange/, s: ['1-1', '1-1'],
-      labels: { a: ['Jaune', 'Pile !'], b: ['Pile !', 'Jaune'] }, title: 'issue de Bob : pile sur son Orange' },
+      labels: { a: ['Jaune', 'Pile !'], b: ['Pile !', 'Jaune'] }, title: 'couleur tirée Orange : pile sur l’Orange de Bob' },
     { c: [2, 2], drawn: 1, a: /Personne ne marque · Orange/, b: /Personne ne marque · Orange/, v: /Personne ne marque · Orange/, s: ['1-1', '1-1'],
-      labels: { a: ['Jaune', 'Jaune'] }, none: true, same: true, title: 'même couleur (Jaune), issue « personne » : l’Orange, libre — la manche se joue, personne ne marque' },
+      labels: { a: ['Jaune', 'Jaune'] }, none: true, same: true, title: 'même couleur (Jaune), couleur tirée Orange : personne ne marque' },
     { c: [3, 3], drawn: 3, a: /1 point chacun · Vert/, b: /1 point chacun · Vert/, v: /1 point chacun · Vert/, s: ['2-2', '2-2'],
       labels: { a: ['Pile !', 'Pile !'], b: ['Pile !', 'Pile !'] }, both: true, same: true, label: 'Manche 4 / 6',
       title: 'même couleur (Vert), l’aiguille dessus : 1 point chacun, la manche compte' },
     { c: [4, 5], drawn: 4, a: /Manche gagnée · Bleu/, b: /Manche perdue · Bleu/, v: /Alice marque · Bleu/, s: ['3-2', '2-3'],
-      title: 'issue d’Alice : pile sur son Bleu (le Violet de Bob juste à côté ne compte pas)' },
+      title: 'couleur tirée Bleu : Alice marque' },
     { c: [1, 0], drawn: 0, a: /Manche perdue · Rouge/, b: /Manche gagnée · Rouge/, v: /Bob marque · Rouge/, s: ['3-3', '3-3'],
-      label: 'Manche 6 / 6', title: 'sixième manche, issue de Bob : pile sur son Rouge — 3-3' },
+      label: 'Manche 6 / 6', title: 'sixième manche, couleur tirée Rouge — 3-3' },
     { c: [5, 2], drawn: 2, a: /Manche perdue · Jaune/, b: /Manche gagnée · Jaune/, v: /Bob marque · Jaune/, s: ['3-4', '4-3'],
       labels: { a: ['Violet', 'Pile !'], b: ['Pile !', 'Violet'] },
       decisive: true, opens: 'Manche 7 · décisive', title: 'manche 7, décisive : Bob gagne la première de la paire' },
@@ -276,7 +275,7 @@ async function fullMatch(browser) {
     { c: [1, 4], drawn: 4, a: /Manche perdue · Bleu/, b: /Manche gagnée · Bleu/, v: /Bob marque · Bleu/, s: ['4-5', '5-4'],
       decisive: true, opens: 'Manche 9 · décisive', title: 'nouvelle paire, manche 9 : Bob' },
     { c: [2, 0], drawn: 3, a: /Personne ne marque · Vert/, b: /Personne ne marque · Vert/, v: /Personne ne marque · Vert/, s: ['4-5', '5-4'],
-      decisive: true, answer: 'Manche 10 · décisive', none: true, title: 'manche 10 : le Vert, libre — 1-0 au bout de la paire, Bob gagne le match' }
+      decisive: true, answer: 'Manche 10 · décisive', none: true, title: 'manche 10 : le Vert ne correspond à aucun choix — personne ne marque' }
   ];
   for (let i = 0; i < plays.length; i++) {
     const play = plays[i];
