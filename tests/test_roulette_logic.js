@@ -19,7 +19,7 @@
  *     manche nulle) décide, à 1-1 ou 0-0 elle en appelle une autre ;
  *   • la manche décisive garde la roue entière (six couleurs) et ses règles :
  *     la couleur exacte marque, la même couleur se joue ; son tirage est une
- *     issue scellée, comme les autres ;
+ *     couleur scellée, comme les autres ;
  *   • le tirage est uniforme, scellé avant les choix, vérifiable, et toute
  *     retouche de la valeur ou du sel se voit ; un ancien sceau (« color »,
  *     « bit ») n'a plus cours ;
@@ -133,7 +133,7 @@ console.log('Tirage scellé');
 const seal = R.sealDraw('room-x', 3, false);
 check('couleur 0..5, sel de 128 bits, empreinte SHA-256', seal.kind === 'color' && R.isOutcome(seal.value) && /^[0-9a-f]{32}$/.test(seal.salt) && /^[0-9a-f]{64}$/.test(seal.hash));
 check('l’empreinte se vérifie', R.verifySeal('room-x', 3, seal));
-check('une autre issue ne correspond plus', !R.verifySeal('room-x', 3, { ...seal, value: (seal.value + 1) % 6 }));
+check('une autre couleur ne correspond plus', !R.verifySeal('room-x', 3, { ...seal, value: (seal.value + 1) % 6 }));
 check('un autre sel ne correspond plus', !R.verifySeal('room-x', 3, { ...seal, salt: crypto.randomBytes(16).toString('hex') }));
 check('une autre manche ne correspond plus', !R.verifySeal('room-x', 4, seal));
 check('une autre partie ne correspond plus', !R.verifySeal('room-y', 3, seal));
