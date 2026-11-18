@@ -352,9 +352,9 @@ vm.runInNewContext(source, sandbox);
 const browserRules = sandbox.self.RouletteRules;
 check('window.RouletteRules exposé sans module', !!browserRules && browserRules.COLORS.length === 6);
 check('mêmes réponses que le serveur', browserRules.roundWinner(2, 4, 4) === 2 && browserRules.roundWinner(0, 4, 3) === 0
-  && browserRules.drawnColor({ kind: 'outcome', value: 45 }, 4, 1) === 1 && browserRules.drawnColor({ kind: 'outcome', value: 83 }, 4, 1) === 5
-  && browserRules.drawnColor({ kind: 'outcome', value: 10 }, 3, 3) === 3 && JSON.stringify(browserRules.roundPoints(3, 3, 3)) === JSON.stringify([1, 1])
-  && browserRules.drawnColor({ kind: 'color', value: 1 }, 4, 1) === null && browserRules.REGULAR_ROUNDS === 6
+  && browserRules.drawnColor({ kind: 'color', value: 1 }, 4, 1) === 1 && browserRules.drawnColor({ kind: 'color', value: 5 }, 4, 1) === 5
+  && browserRules.drawnColor({ kind: 'color', value: 3 }, 3, 3) === 3 && JSON.stringify(browserRules.roundPoints(3, 3, 3)) === JSON.stringify([1, 1])
+  && browserRules.drawnColor({ kind: 'outcome', value: 1 }, 4, 1) === null && browserRules.REGULAR_ROUNDS === 6
   && JSON.stringify(browserRules.wheelFor(true, 4, 1)) === JSON.stringify([0, 1, 2, 3, 4, 5])
   && JSON.stringify(browserRules.matchDecision({ scores: [3, 4], decisive: true, decisivePlayed: 1 })) === JSON.stringify({ over: false, decisive: true }));
 
