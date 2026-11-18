@@ -143,7 +143,12 @@ check('scellé décisif : une couleur, comme les autres', decisiveSeal.kind === 
 const oldSalt = crypto.randomBytes(16).toString('hex');
 const oldBit = { kind: 'bit', value: 1, salt: oldSalt, hash: R.hashSeal('room-x', 7, 'bit', 1, oldSalt) };
 check('un ancien sceau « bit » relu après une mise à jour : la manche se rejoue (null)', R.sanitizeSeal('room-x', 7, oldBit) === null && !R.verifySeal('room-x', 7, oldBit));
-check('un ancien sceau pondéré « outcome » est refusé par le format v2', R.sanitizeSeal('room-x', 3, { ...seal, kind: 'outcome' }) === null && !R.verifySeal('room-x', 3, { ...seal, kind: 'outcome' }));
+const legacyV1 = { kind: 'color', value: 4, salt: oldSalt,
+  hash: crypto.createHash('sha256').update('roulette:v1:room-x:3:color:4:' + oldSalt).digest('hex') };
+check('un ancien sceau pondéré « outcome » est refusé par le format v2',
+  R.sanitizeSeal('room-x', 3, { ...seal, kind: 'outcome' }) === null && !R.verifySeal('room-x', 3, { ...seal, kind: 'outcome' }));
+check('un sceau couleur au format v1 est refusé après migration vers v2',
+  R.sanitizeSeal('room-x', 3, legacyV1) === null && !R.verifySeal('room-x', 3, legacyV1));
 check('sanitizeSeal garde un sceau intact', JSON.stringify(R.sanitizeSeal('room-x', 3, seal)) === JSON.stringify(seal));
 check('sanitizeSeal refuse une couleur retouchée', R.sanitizeSeal('room-x', 3, { ...seal, value: (seal.value + 2) % 6 }) === null);
 
