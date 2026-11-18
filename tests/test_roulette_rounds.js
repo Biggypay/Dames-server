@@ -334,7 +334,7 @@ async function main() {
     const spunForSpectator = await spinSecret;
     check('le spectateur voit les deux couleurs une fois verrouillées', spunForSpectator.choice1 === 3 && spunForSpectator.choice2 === 5, spunForSpectator);
     check('le second choix d’Alice a été ignoré', spunForSpectator.choice1 === 3);
-    check('issue 65 (joueur 2) : pile sur le Violet de Bob, +1 Bob', spunForSpectator.drawn === 5 && spunForSpectator.winnerSlot === 2, spunForSpectator);
+    check('couleur tirée Violet : pile sur le Violet de Bob, +1 Bob', spunForSpectator.drawn === 5 && spunForSpectator.winnerSlot === 2, spunForSpectator);
     p2b.offAny(recordBob);
     spectator.offAny(recordSpectator);
 
