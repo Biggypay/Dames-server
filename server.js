@@ -2302,10 +2302,9 @@ const ROULETTE_SETTLE_MS = testDurationMs('ROULETTE_SETTLE_MS', Roulette.SPIN_SE
 const ROULETTE_FINAL_HOLD_MS = testDurationMs('ROULETTE_FINAL_HOLD_MS', 1500);
 const ROULETTE_PHASES = new Set(['choosing', 'spinning', 'between']);
 
-// Tests d'exécution seulement (NODE_ENV=test) : une suite d'issues imposée
-// par room, en JSON — {"room-a":[0,40,80]} (0–39 : la couleur du joueur 1,
-// 40–79 : celle du joueur 2, 80–99 : une couleur libre) — pour jouer un match
-// connu d'avance.
+// Tests d'exécution seulement (NODE_ENV=test) : une suite de couleurs imposées
+// par room, en JSON — {"room-a":[0,4,2]} (identifiants 0 à 5) — pour jouer
+// un match connu d'avance.
 // Hors tests, le tirage vient toujours de crypto.randomInt.
 const ROULETTE_TEST_DRAWS = (() => {
   if (process.env.NODE_ENV !== 'test' || !process.env.ROULETTE_TEST_DRAWS) return null;
