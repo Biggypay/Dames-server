@@ -59,10 +59,8 @@
   }
 
   /**
-   * Le texte scellé d'une manche. `kind` : 'outcome', la valeur est l'issue
-   * tirée (0 à 99, toute manche). Les genres 'color' (une couleur tirée sans
-   * regarder les choix, jusqu'à la 3e version des règles) et 'bit' (les
-   * manches décisives à deux couleurs) n'ont plus cours.
+   * Le texte scellé d'une manche. `kind` : 'color', la valeur est l'identifiant de couleur (0 à 5). Le format
+   * v2 remplace l'ancien tirage pondéré v1.
    */
   function sealText(roomId, round, kind, value, salt) {
     return 'roulette:v2:' + roomId + ':' + round + ':' + kind + ':' + value + ':' + salt;
