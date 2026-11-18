@@ -8,11 +8,10 @@
  *     lui ; sur une couleur que personne n'a choisie, personne ; même couleur
  *     pour les deux, la manche se joue : l'aiguille dessus, 1 point chacun
  *     (une manche nulle) ;
- *   • l'issue scellée avant les choix (0–99) : la couleur du joueur 1 (0–39),
- *     celle du joueur 2 (40–79) ou une couleur libre (80–99, chacune à parts
- *     égales, qu'il y en ait quatre ou cinq) — pour toute paire de couleurs, la
- *     même chance pour les deux (40 % chacun), un gagnant 8 manches sur 10, et
- *     l'aiguille toujours sur la couleur désignée ;
+ *   • une couleur tirée uniformément parmi six, indépendamment des choix ;
+ *     chaque couleur apparaît exactement une fois sur six issues possibles ;
+ *     les deux joueurs ont chacun 1 chance sur 6 de marquer (ou ensemble si
+ *     même choix), et personne ne marque sur les quatre autres couleurs ;
  *   • la fin du match : six manches (les rechoix ne comptent pas), fin
  *     anticipée quand l'écart ne peut plus être comblé, puis à égalité les
  *     manches 7 et 8, 9 et 10… DEUX PAR DEUX jusqu'à ce qu'un joueur gagne :
@@ -68,60 +67,31 @@ check('les points : 1 au seul joueur pile dessus', JSON.stringify(R.roundPoints(
   && JSON.stringify(R.roundPoints(2, 4, 0)) === JSON.stringify([0, 0]));
 check('tirage invalide : nulle, aucun point', R.roundWinner(1, 2, null) === 0 && R.roundWinner(1, 2, 9) === 0 && JSON.stringify(R.roundPoints(1, 2, null)) === JSON.stringify([0, 0]));
 
-console.log('L’issue scellée : la couleur désignée, où l’aiguille s’arrête');
-check('issues : 0–39 la couleur du joueur 1, 40–79 celle du joueur 2, 80–99 une couleur libre', R.OUTCOME_SPACE === 100
-  && [0, 39].every(v => R.outcomeWinner(v) === 1) && [40, 79].every(v => R.outcomeWinner(v) === 2) && [80, 99].every(v => R.outcomeWinner(v) === 0));
-check('issue invalide : rien', [100, -1, 2.5, '3', null].every(v => R.outcomeWinner(v) === 0 && !R.isOutcome(v)) && R.isOutcome(0) && R.isOutcome(99));
-check('les couleurs libres : les quatre autres, dans l’ordre de la roue ; cinq pour une même couleur', JSON.stringify(R.unchosenColors(4, 1)) === JSON.stringify([0, 2, 3, 5])
-  && JSON.stringify(R.unchosenColors(2, 2)) === JSON.stringify([0, 1, 3, 4, 5]));
-const out = v => ({ kind: 'outcome', value: v });
-check('issue du joueur 1 : l’aiguille sur SA couleur', R.drawnColor(out(3), 4, 1) === 4 && R.drawnColor(out(39), 4, 1) === 4);
-check('issue du joueur 2 : l’aiguille sur SA couleur', R.drawnColor(out(40), 4, 1) === 1 && R.drawnColor(out(79), 4, 1) === 1);
-check('issue « couleur libre » : 80 → la 1re, 83 → la 4e, 84 → la 1re de nouveau', R.drawnColor(out(80), 4, 1) === 0 && R.drawnColor(out(81), 4, 1) === 2
-  && R.drawnColor(out(82), 4, 1) === 3 && R.drawnColor(out(83), 4, 1) === 5 && R.drawnColor(out(84), 4, 1) === 0);
-check('même couleur : l’issue d’un joueur désigne leur couleur commune', R.drawnColor(out(3), 2, 2) === 2 && R.drawnColor(out(55), 2, 2) === 2);
-check('même couleur, issue « couleur libre » : une des cinq autres', R.drawnColor(out(80), 2, 2) === 0 && R.drawnColor(out(84), 2, 2) === 5 && R.drawnColor(out(85), 2, 2) === 0);
-check('un choix manquant : rien', R.drawnColor(out(3), 2, null) === null && R.drawnColor(out(3), undefined, 1) === null);
-check('un ancien sceau « color » (une couleur tirée sans regarder les choix) n’a plus cours', R.drawnColor({ kind: 'color', value: 5 }, 0, 1) === null);
-check('un ancien sceau « bit » (roue à deux couleurs) n’a plus cours', R.drawnColor({ kind: 'bit', value: 1 }, 4, 1) === null);
-check('une issue hors limites : rien', R.drawnColor(out(100), 4, 1) === null && R.drawnColor(out(-1), 4, 1) === null);
-
-// L'équité, pour TOUTE paire de couleurs et TOUTE issue : l'aiguille tombe
-// exactement sur la couleur désignée (jamais sur une couleur choisie quand
-// personne ne marque) ; deux couleurs différentes : 40 issues sur 100 pour
-// chacun, 20 pour personne, chacune des quatre couleurs libres 5 fois ; la
-// même couleur : 80 issues sur 100 donnent 1 point à chacun, 20 aucune,
-// chacune des cinq couleurs libres 4 fois.
-let exactOk = true, fairOk = true, freeOk = true, sameOk = true;
-for (let a = 0; a < 6; a++) for (let b = 0; b < 6; b++) {
-  const won = [0, 0, 0], both = { yes: 0, no: 0 }, free = new Map();
-  for (let v = 0; v < 100; v++) {
-    const drawn = R.drawnColor(out(v), a, b);
-    const points = R.roundPoints(a, b, drawn);
-    if (!R.isColor(drawn)) { exactOk = false; continue; }
-    if (R.outcomeWinner(v) === 1 && points[0] !== 1) exactOk = false;
-    if (R.outcomeWinner(v) === 2 && points[1] !== 1) exactOk = false;
-    if (R.outcomeWinner(v) === 0) {
-      if (drawn === a || drawn === b) exactOk = false;
-      free.set(drawn, (free.get(drawn) || 0) + 1);
-    }
-    if (a === b) (points[0] && points[1] ? both.yes++ : both.no++);
-    else won[R.roundWinner(a, b, drawn)]++;
+console.log('La couleur scellée : tirage uniforme indépendant des choix');
+check('six couleurs équiprobables, valeurs 0 à 5', R.OUTCOME_SPACE === 6
+  && [0, 1, 2, 3, 4, 5].every(v => R.isOutcome(v))
+  && [6, -1, 2.5, '3', null].every(v => !R.isOutcome(v)));
+const out = v => ({ kind: 'color', value: v });
+check('la couleur scellée sort exactement, quels que soient les choix', R.drawnColor(out(4), 4, 1) === 4
+  && R.drawnColor(out(5), 4, 1) === 5 && R.drawnColor(out(3), 2, 2) === 3);
+check('un choix manquant ou un ancien sceau pondéré est refusé',
+  R.drawnColor(out(3), 2, null) === null && R.drawnColor({ kind: 'outcome', value: 45 }, 4, 1) === null
+  && R.drawnColor({ kind: 'bit', value: 1 }, 4, 1) === null);
+let uniformRulesOk = true;
+for (let c1 = 0; c1 < 6; c1++) for (let c2 = 0; c2 < 6; c2++) {
+  const counts = new Array(6).fill(0);
+  for (let value = 0; value < 6; value++) {
+    const drawn = R.drawnColor(out(value), c1, c2);
+    counts[drawn]++;
+    const points = R.roundPoints(c1, c2, drawn);
+    if (points[0] !== (c1 === value ? 1 : 0) || points[1] !== (c2 === value ? 1 : 0)) uniformRulesOk = false;
   }
-  const shares = [...free.values()];
-  if (a === b) {
-    if (both.yes !== 80 || both.no !== 20) sameOk = false;
-    if (free.size !== 5 || !shares.every(n => n === 4)) freeOk = false;
-  } else {
-    if (won[1] !== 40 || won[2] !== 40 || won[0] !== 20) fairOk = false;
-    if (free.size !== 4 || !shares.every(n => n === 5)) freeOk = false;
-  }
+  if (!counts.every(n => n === 1)) uniformRulesOk = false;
 }
-check('l’aiguille tombe exactement sur la couleur désignée', exactOk);
-check('deux couleurs différentes : 40 issues sur 100 pour chacun, 20 pour personne', fairOk);
-check('la même couleur : 80 issues sur 100 donnent 1 point à chacun, 20 aucune', sameOk);
-check('une couleur libre : chacune à parts égales (5 issues sur 4 couleurs, 4 sur 5)', freeOk);
-
+check('toutes les paires de choix : chaque couleur apparaît exactement 1 fois sur 6', uniformRulesOk);
+check('même couleur : 1 point chacun uniquement si cette couleur sort',
+  JSON.stringify(R.roundPoints(2, 2, R.drawnColor(out(2), 2, 2))) === JSON.stringify([1, 1])
+  && JSON.stringify(R.roundPoints(2, 2, R.drawnColor(out(3), 2, 2))) === JSON.stringify([0, 0]));
 console.log('Suite du match');
 const go = (scores, roundsPlayed, extra) => R.matchDecision({ scores, roundsPlayed, totalRounds: 6, ...extra });
 check('0-0 après 1 manche : on continue', JSON.stringify(go([0, 0], 1)) === JSON.stringify({ over: false, decisive: false }));
@@ -155,75 +125,72 @@ check('place dans la paire : 2 (la réponse) après une décisive jouée', R.dec
 console.log('Manche décisive : la roue garde ses six couleurs');
 check('manche décisive : les six couleurs (« ne réduis pas »)', JSON.stringify(R.wheelFor(true, 4, 1)) === JSON.stringify([0, 1, 2, 3, 4, 5]));
 check('manche normale : les six couleurs', JSON.stringify(R.wheelFor(false, 4, 1)) === JSON.stringify([0, 1, 2, 3, 4, 5]));
-check('toute manche : l’issue scellée', R.drawnColor(out(52), 0, 1) === 1 && R.drawnColor(out(2), 0, 1) === 0);
+check('toute manche : l’issue scellée', R.drawnColor(out(1), 0, 1) === 1 && R.drawnColor(out(0), 0, 1) === 0);
 check('même couleur en manche décisive : elle se joue (1 point chacun si elle sort)', R.drawnColor(out(5), 2, 2) === 2 && JSON.stringify(R.roundPoints(2, 2, 2)) === JSON.stringify([1, 1]));
-check('manche décisive sur une couleur libre : nulle, comme les autres', R.roundWinner(0, 2, R.drawnColor(out(80), 0, 2)) === 0);
+check('manche décisive sur une couleur libre : nulle, comme les autres', R.roundWinner(0, 2, R.drawnColor(out(5), 0, 2)) === 0);
 
 console.log('Tirage scellé');
 const seal = R.sealDraw('room-x', 3, false);
-check('issue 0..99, sel de 128 bits, empreinte SHA-256', seal.kind === 'outcome' && R.isOutcome(seal.value) && /^[0-9a-f]{32}$/.test(seal.salt) && /^[0-9a-f]{64}$/.test(seal.hash));
+check('issue 0..99, sel de 128 bits, empreinte SHA-256', seal.kind === 'color' && R.isOutcome(seal.value) && /^[0-9a-f]{32}$/.test(seal.salt) && /^[0-9a-f]{64}$/.test(seal.hash));
 check('l’empreinte se vérifie', R.verifySeal('room-x', 3, seal));
 check('une autre issue ne correspond plus', !R.verifySeal('room-x', 3, { ...seal, value: (seal.value + 1) % 100 }));
 check('un autre sel ne correspond plus', !R.verifySeal('room-x', 3, { ...seal, salt: crypto.randomBytes(16).toString('hex') }));
 check('une autre manche ne correspond plus', !R.verifySeal('room-x', 4, seal));
 check('une autre partie ne correspond plus', !R.verifySeal('room-y', 3, seal));
-check('l’empreinte = SHA-256 du texte publié', crypto.createHash('sha256').update(R.sealText('room-x', 3, 'outcome', seal.value, seal.salt)).digest('hex') === seal.hash);
+check('l’empreinte = SHA-256 du texte publié', crypto.createHash('sha256').update(R.sealText('room-x', 3, 'color', seal.value, seal.salt)).digest('hex') === seal.hash);
 const decisiveSeal = R.sealDraw('room-x', 7, true);
-check('scellé décisif : une issue, comme les autres', decisiveSeal.kind === 'outcome' && R.isOutcome(decisiveSeal.value) && R.verifySeal('room-x', 7, decisiveSeal));
+check('scellé décisif : une issue, comme les autres', decisiveSeal.kind === 'color' && R.isOutcome(decisiveSeal.value) && R.verifySeal('room-x', 7, decisiveSeal));
 const oldSalt = crypto.randomBytes(16).toString('hex');
 const oldBit = { kind: 'bit', value: 1, salt: oldSalt, hash: R.hashSeal('room-x', 7, 'bit', 1, oldSalt) };
 check('un ancien sceau « bit » relu après une mise à jour : la manche se rejoue (null)', R.sanitizeSeal('room-x', 7, oldBit) === null && !R.verifySeal('room-x', 7, oldBit));
 const oldColor = { kind: 'color', value: 4, salt: oldSalt, hash: R.hashSeal('room-x', 3, 'color', 4, oldSalt) };
-check('un ancien sceau « color » relu après une mise à jour : la manche se rejoue (null)', R.sanitizeSeal('room-x', 3, oldColor) === null && !R.verifySeal('room-x', 3, oldColor));
+check('un ancien sceau pondéré « outcome » est refusé par le format v2', R.sanitizeSeal('room-x', 3, { ...seal, kind: 'outcome' }) === null && !R.verifySeal('room-x', 3, { ...seal, kind: 'outcome' }));
 check('sanitizeSeal garde un sceau intact', JSON.stringify(R.sanitizeSeal('room-x', 3, seal)) === JSON.stringify(seal));
 check('sanitizeSeal refuse un sceau retouché', R.sanitizeSeal('room-x', 3, { ...seal, value: (seal.value + 2) % 100 }) === null);
 
-// Uniformité : 60 000 tirages, khi-deux à 99 degrés de liberté (seuil 0,1 % : 148,23).
+// Uniformité : 60 000 tirages, six couleurs, khi-deux à 5 degrés de liberté.
 const N = 60000;
-const chi2Of = list => list.reduce((sum, c) => sum + ((c - N / 100) ** 2) / (N / 100), 0);
-const counts = new Array(100).fill(0);
+const chi2Of = list => list.reduce((sum, c) => sum + ((c - N / 6) ** 2) / (N / 6), 0);
+const counts = new Array(6).fill(0);
 for (let i = 0; i < N; i++) counts[R.sealDraw('u', i, false).value]++;
 const chi2 = chi2Of(counts);
-check(`tirage uniforme sur 60 000 (khi-deux ${chi2.toFixed(2)} < 148,23)`, chi2 < 148.23, counts);
-const decisiveCounts = new Array(100).fill(0);
+check(`tirage uniforme sur 60 000 (khi-deux ${chi2.toFixed(2)} < 20,52)`, chi2 < 20.52, counts);
+const decisiveCounts = new Array(6).fill(0);
 for (let i = 0; i < N; i++) decisiveCounts[R.sealDraw('u', i, true).value]++;
 const chi2d = chi2Of(decisiveCounts);
-check(`tirage décisif uniforme lui aussi (khi-deux ${chi2d.toFixed(2)} < 148,23)`, chi2d < 148.23, decisiveCounts);
+check(`tirage décisif uniforme lui aussi (khi-deux ${chi2d.toFixed(2)} < 20,52)`, chi2d < 20.52, decisiveCounts);
 
-// Équité, avec le vrai tirage : quelles que soient les deux couleurs choisies
-// (différentes, tous les écarts), chaque joueur gagne 40 % des manches, et
-// une manche a un gagnant 8 fois sur 10.
+// Indépendance des choix : pour deux couleurs différentes, chacune marque
+// 1 fois sur 6 et personne ne marque sur les quatre autres couleurs.
 const wins = [0, 0, 0];
 for (let i = 0; i < 36000; i++) {
   const s = R.sealDraw('f', i, false);
-  const c1 = i % 6, c2 = (i + 1 + (i % 5)) % 6;
+  const c1 = i % 6, c2 = (i + 1) % 6;
   wins[R.roundWinner(c1, c2, R.drawnColor(s, c1, c2))]++;
 }
-check(`chaque joueur gagne ~40 % des manches, personne ~20 % (${wins.join(' / ')})`,
-  Math.abs(wins[1] / 36000 - 0.4) < 0.012 && Math.abs(wins[2] / 36000 - 0.4) < 0.012 && Math.abs(wins[0] / 36000 - 0.2) < 0.012, wins);
-// La même couleur, avec le vrai tirage : 1 point chacun 8 fois sur 10.
+check(`chaque joueur marque environ 1/6, personne environ 4/6 (${wins.join(' / ')})`,
+  Math.abs(wins[1] / 36000 - 1 / 6) < 0.012 && Math.abs(wins[2] / 36000 - 1 / 6) < 0.012
+  && Math.abs(wins[0] / 36000 - 4 / 6) < 0.012, wins);
 let bothScored = 0;
 for (let i = 0; i < 20000; i++) {
   const c = i % 6;
   const p = R.roundPoints(c, c, R.drawnColor(R.sealDraw('s', i, false), c, c));
   if (p[0] && p[1]) bothScored++;
 }
-check(`la même couleur sort ~80 % du temps : 1 point chacun (${(100 * bothScored / 20000).toFixed(1)} %)`, Math.abs(bothScored / 20000 - 0.8) < 0.015, bothScored);
+check(`même couleur : les deux marquent environ 1/6 du temps (${(100 * bothScored / 20000).toFixed(1)} %)`,
+  Math.abs(bothScored / 20000 - 1 / 6) < 0.015, bothScored);
 
-// Owner, 2026-11-06 : « un joueur a décidé de jouer avec une seule couleur… c'est lui seulement qui
-// gagne ». Une couleur toujours la même, contre un adversaire qui change : les mêmes chances que lui.
 {
-  const out = { mine: 0, theirs: 0, both: 0, none: 0 };
+  const out = { mine: 0, theirs: 0 };
   const N = 60000;
   for (let i = 0; i < N; i++) {
     const other = crypto.randomInt(0, 6);
     const seal = R.sealDraw('one-colour', i, false);
     const p = R.roundPoints(0, other, R.drawnColor(seal, 0, other));
-    if (p[0] && p[1]) out.both++; else if (p[0]) out.mine++; else if (p[1]) out.theirs++; else out.none++;
+    out.mine += p[0]; out.theirs += p[1];
   }
-  const mine = (out.mine + out.both) / N, theirs = (out.theirs + out.both) / N;
-  check(`toujours la même couleur n’avantage pas : ${(100 * mine).toFixed(1)} % de points contre ${(100 * theirs).toFixed(1)} % pour l’adversaire`,
-    Math.abs(mine - theirs) < 0.012 && Math.abs(out.mine / N - out.theirs / N) < 0.012, out);
+  check(`un joueur qui garde toujours la même couleur ne gagne aucun avantage (${out.mine} / ${out.theirs} points)`,
+    Math.abs(out.mine / N - 1 / 6) < 0.012 && Math.abs(out.theirs / N - 1 / 6) < 0.012, out);
 }
 
 console.log('Arrêt de la roue');
