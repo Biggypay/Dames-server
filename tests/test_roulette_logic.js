@@ -125,28 +125,27 @@ check('place dans la paire : 2 (la réponse) après une décisive jouée', R.dec
 console.log('Manche décisive : la roue garde ses six couleurs');
 check('manche décisive : les six couleurs (« ne réduis pas »)', JSON.stringify(R.wheelFor(true, 4, 1)) === JSON.stringify([0, 1, 2, 3, 4, 5]));
 check('manche normale : les six couleurs', JSON.stringify(R.wheelFor(false, 4, 1)) === JSON.stringify([0, 1, 2, 3, 4, 5]));
-check('toute manche : l’issue scellée', R.drawnColor(out(1), 0, 1) === 1 && R.drawnColor(out(0), 0, 1) === 0);
-check('même couleur en manche décisive : elle se joue (1 point chacun si elle sort)', R.drawnColor(out(5), 2, 2) === 2 && JSON.stringify(R.roundPoints(2, 2, 2)) === JSON.stringify([1, 1]));
+check('toute manche : la couleur scellée', R.drawnColor(out(1), 0, 1) === 1 && R.drawnColor(out(0), 0, 1) === 0);
+check('même couleur en manche décisive : elle se joue (1 point chacun si elle sort)', R.drawnColor(out(5), 2, 2) === 5 && JSON.stringify(R.roundPoints(2, 2, 2)) === JSON.stringify([1, 1]));
 check('manche décisive sur une couleur libre : nulle, comme les autres', R.roundWinner(0, 2, R.drawnColor(out(5), 0, 2)) === 0);
 
 console.log('Tirage scellé');
 const seal = R.sealDraw('room-x', 3, false);
-check('issue 0..99, sel de 128 bits, empreinte SHA-256', seal.kind === 'color' && R.isOutcome(seal.value) && /^[0-9a-f]{32}$/.test(seal.salt) && /^[0-9a-f]{64}$/.test(seal.hash));
+check('couleur 0..5, sel de 128 bits, empreinte SHA-256', seal.kind === 'color' && R.isOutcome(seal.value) && /^[0-9a-f]{32}$/.test(seal.salt) && /^[0-9a-f]{64}$/.test(seal.hash));
 check('l’empreinte se vérifie', R.verifySeal('room-x', 3, seal));
-check('une autre issue ne correspond plus', !R.verifySeal('room-x', 3, { ...seal, value: (seal.value + 1) % 100 }));
+check('une autre issue ne correspond plus', !R.verifySeal('room-x', 3, { ...seal, value: (seal.value + 1) % 6 }));
 check('un autre sel ne correspond plus', !R.verifySeal('room-x', 3, { ...seal, salt: crypto.randomBytes(16).toString('hex') }));
 check('une autre manche ne correspond plus', !R.verifySeal('room-x', 4, seal));
 check('une autre partie ne correspond plus', !R.verifySeal('room-y', 3, seal));
 check('l’empreinte = SHA-256 du texte publié', crypto.createHash('sha256').update(R.sealText('room-x', 3, 'color', seal.value, seal.salt)).digest('hex') === seal.hash);
 const decisiveSeal = R.sealDraw('room-x', 7, true);
-check('scellé décisif : une issue, comme les autres', decisiveSeal.kind === 'color' && R.isOutcome(decisiveSeal.value) && R.verifySeal('room-x', 7, decisiveSeal));
+check('scellé décisif : une couleur, comme les autres', decisiveSeal.kind === 'color' && R.isOutcome(decisiveSeal.value) && R.verifySeal('room-x', 7, decisiveSeal));
 const oldSalt = crypto.randomBytes(16).toString('hex');
 const oldBit = { kind: 'bit', value: 1, salt: oldSalt, hash: R.hashSeal('room-x', 7, 'bit', 1, oldSalt) };
 check('un ancien sceau « bit » relu après une mise à jour : la manche se rejoue (null)', R.sanitizeSeal('room-x', 7, oldBit) === null && !R.verifySeal('room-x', 7, oldBit));
-const oldColor = { kind: 'color', value: 4, salt: oldSalt, hash: R.hashSeal('room-x', 3, 'color', 4, oldSalt) };
 check('un ancien sceau pondéré « outcome » est refusé par le format v2', R.sanitizeSeal('room-x', 3, { ...seal, kind: 'outcome' }) === null && !R.verifySeal('room-x', 3, { ...seal, kind: 'outcome' }));
 check('sanitizeSeal garde un sceau intact', JSON.stringify(R.sanitizeSeal('room-x', 3, seal)) === JSON.stringify(seal));
-check('sanitizeSeal refuse un sceau retouché', R.sanitizeSeal('room-x', 3, { ...seal, value: (seal.value + 2) % 100 }) === null);
+check('sanitizeSeal refuse une couleur retouchée', R.sanitizeSeal('room-x', 3, { ...seal, value: (seal.value + 2) % 6 }) === null);
 
 // Uniformité : 60 000 tirages, six couleurs, khi-deux à 5 degrés de liberté.
 const N = 60000;
