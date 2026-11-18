@@ -218,7 +218,7 @@ async function main() {
       check(`manche ${round} : ${step.label}`, spin.winnerSlot === step.winner && JSON.stringify(spin.points) === JSON.stringify(step.points)
         && JSON.stringify(spin.scores) === JSON.stringify(step.scores), spin);
       check(`manche ${round} : la révélation correspond à l’empreinte publiée`, sealOk(GAME.full, spin, ready.seal), { seal: spin.seal, published: ready.seal });
-      check(`manche ${round} : l’couleur scellée indépendante désigne la couleur exacte`, spin.drawn === step.drawn && spin.seal.kind === 'color' && spin.seal.value === DRAWS[GAME.full][i]
+      check(`manche ${round} : la couleur scellée indépendante désigne la couleur exacte`, spin.drawn === step.drawn && spin.seal.kind === 'color' && spin.seal.value === DRAWS[GAME.full][i]
         && Rules.drawnColor(spin.seal, step.c[0], step.c[1]) === step.drawn, { drawn: spin.drawn, seal: spin.seal });
       check(`manche ${round} : la roue tourne (même couleur comprise) et s’arrête sur la couleur tirée`,
         spin.repick === false && spin.wheel.length === 6 && spin.wheel[spin.landing.segment] === spin.drawn, spin.landing);
@@ -253,7 +253,7 @@ async function main() {
     ready = await onceWhere(p1, 'roulette_round_ready', d => d.room === GAME.full && d.round === 8);
     check('la 8e manche : la réponse (2e de la paire)', ready.decisive === true && ready.decisiveStep === 2 && ready.decisivePlayed === 1, ready);
     const d2 = await playRound(p1, p2, GAME.full, 8, 0, 3);
-    check('Alice égalise (issue 0 : pile sur son Rouge) : 1-1 dans la paire, 4-4', d2.drawn === 0 && d2.winnerSlot === 1 && JSON.stringify(d2.scores) === JSON.stringify([4, 4]) && d2.final === false, d2);
+    check('Alice égalise (couleur tirée Rouge) : 1-1 dans la paire, 4-4', d2.drawn === 0 && d2.winnerSlot === 1 && JSON.stringify(d2.scores) === JSON.stringify([4, 4]) && d2.final === false, d2);
     await onceWhere(p1, 'roulette_round_result', d => d.room === GAME.full && d.round === 8);
 
     // Paire 2 (manches 9 et 10) : la même couleur qui ne sort pas (personne), puis Alice : 1-0.
