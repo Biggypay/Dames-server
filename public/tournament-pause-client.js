@@ -62,6 +62,10 @@
 (function () {
   var path = String(window.location && window.location.pathname || '').toLowerCase();
   if (path.indexOf('quoridor') === -1) return;
+  /* La page Quoridor en ligne fait désormais elle-même ce que ce garde-fou faisait (coup envoyé, saisie
+     verrouillée jusqu'à l'état du serveur, aucune fin de match sur une simple manche) — et pose un mur
+     en deux temps. Remplacer son handleTap ferait sauter cette confirmation. */
+  if (window.QUORIDOR_NATIVE_SYNC) return;
   if (typeof socket === 'undefined' || !socket || typeof socket.on !== 'function') return;
   if (typeof handleTap !== 'function' || typeof nearestHWSlot !== 'function' || typeof nearestVWSlot !== 'function') return;
 

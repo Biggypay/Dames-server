@@ -106,6 +106,7 @@ body.chrome-hidden #forfeit-bar,body.spectator #forfeit-bar{display:none!importa
 </style>
   <script defer src="/mindspille-i18n.js"></script>
   <script src="/mindspille-hud.js"></script>
+  <script src="/quoridor-ui.js"></script>
 </head>
 <body>
 
@@ -121,8 +122,8 @@ body.chrome-hidden #forfeit-bar,body.spectator #forfeit-bar{display:none!importa
       <div class="profile-avatar" id="avatar-me"><div class="av-w" id="dot-me"></div></div>
     </div>
     <div class="profile-name" id="name-me">Vous</div>
-    <div class="walls-badge"><span class="walls-num" id="walls-me">10</span><span>🧱</span></div>
-    <div class="goal-hint" id="goal-me">▲ OBJ</div>
+    <div class="walls-badge"><span class="walls-num" id="walls-me">10</span><span class="q-wall-chip" id="chip-me"></span></div>
+    <div class="goal-hint" id="goal-me"></div>
   </div>
 
   <div class="top-center">
@@ -138,8 +139,8 @@ body.chrome-hidden #forfeit-bar,body.spectator #forfeit-bar{display:none!importa
       <div class="profile-avatar" id="avatar-op"><div class="av-r" id="dot-op"></div></div>
     </div>
     <div class="profile-name" id="name-op">Adversaire</div>
-    <div class="walls-badge"><span class="walls-num" id="walls-op">10</span><span>🧱</span></div>
-    <div class="goal-hint" id="goal-op">▼ OBJ</div>
+    <div class="walls-badge"><span class="walls-num" id="walls-op">10</span><span class="q-wall-chip" id="chip-op"></span></div>
+    <div class="goal-hint" id="goal-op"></div>
   </div>
 </div>
 
@@ -271,6 +272,9 @@ function applyProfiles() {
      jouée, pas la place à l'écran. */
   setProfilePhoto('avatar-me', meAvatar, MY_SLOT === 2 ? 'av-r' : 'av-w');
   setProfilePhoto('avatar-op', opAvatar, MY_SLOT === 2 ? 'av-w' : 'av-r');
+  /* Les murs de chacun portent sa couleur, jusque dans le compteur. */
+  QuoridorUI.paintChip(document.getElementById('chip-me'), MY_SLOT);
+  QuoridorUI.paintChip(document.getElementById('chip-op'), MY_SLOT === 1 ? 2 : 1);
 }
 
 /* Marque le corps de page comme « spectateur ». La classe survit a
@@ -298,6 +302,16 @@ if (BET_AMOUNT > 0) {
    ÉTAT GLOBAL
 ══════════════════════════════════════════ */
 var hW, vW;
+/* Qui a posé chaque mur (0 inconnu, 1, 2) : la couleur du mur à l'écran. */
+var hO, vO;
+/* Le dernier déplacement (sa trace), le dernier mur posé (il brille un instant), la fin de manche
+   (la rangée atteinte clignote), le mur choisi mais pas encore posé. */
+var lastMove = null, fxWall = null, fxRound = null, pendingWall = null;
+/* Un coup envoyé attend l'état du serveur avant d'apparaître : rien n'est joué « en avance » puis
+   repris (le pion qui revenait en arrière, la fausse défaite). Cette page le fait elle-même ; l'ancien
+   garde-fou de tournament-pause-client.js s'efface quand il voit ce drapeau. */
+var QUORIDOR_NATIVE_SYNC = true;
+var pendingMove = false, pendingBaseVersion = -1, pendingMoveTimer = null;
 var s1Pos, s2Pos;
 var s1Walls, s2Walls;
 var currentSlot;
@@ -317,6 +331,13 @@ function updateSeriesUI(next){
     var w=seriesState.wins||{};
     MindspilleHud.decisive(el,dec,!!seriesState.suddenDeath&&(Number(w[1])||0)===(Number(w[2])||0)&&!gameOver);
   }
+  refreshScore();
+}
+/* Le score de la série, en grand sous le titre, et la manche en cours. */
+function refreshScore(){
+  var w=seriesState.wins||{}, me=IS_SPECTATOR?1:MY_SLOT, op=me===1?2:1, lbl=QuoridorUI.roundLabel(seriesState);
+  QuoridorUI.setScore(document.querySelector('#top .top-center'), Number(w[me])||0, Number(w[op])||0,
+    gameOver ? 'Match terminé' : lbl.text, me, op, !gameOver && lbl.decisive);
 }
 var gameOver = false, gameReady = false, resultSent = false;
 var isProcessing = false;
@@ -455,12 +476,17 @@ var canvas = document.getElementById('c');
 var ctx = canvas.getContext('2d');
 var CS, GAP, PAD;
 
+/* BAND : la hauteur des deux bandes nommées, au-dessus et au-dessous du plateau
+   (« Votre arrivée », « Votre camp »). Elles sont symétriques : retourner le plateau
+   pour le joueur 2 garde le plateau à sa place. */
+var BAND = 0, G = null;
 function calcLayout() {
   var topH = document.getElementById('top').offsetHeight || 86;
   var botH = document.getElementById('bot').offsetHeight || 50;
+  BAND = QuoridorUI.bandHeight(Math.floor(Math.min(window.innerWidth - 8, 500) / 11), window.innerHeight - topH - botH - 12);
   var avail = Math.min(
     window.innerWidth - 8,
-    window.innerHeight - topH - botH - 12,
+    window.innerHeight - topH - botH - 12 - BAND * 2,
     500
   );
   if (avail < 180) avail = 180;
@@ -469,11 +495,12 @@ function calcLayout() {
   var total = CS * 9 + GAP * 8;
   PAD = Math.floor((avail - total) / 2);
   canvas.width  = avail;
-  canvas.height = avail;
+  canvas.height = avail + BAND * 2;
+  G = { cx: cx, cy: cy, CS: CS, GAP: GAP, hwRect: hwRect, vwRect: vwRect };
 }
 
 function cx(c) { return PAD + c * (CS + GAP); }
-function cy(r) { return PAD + r * (CS + GAP); }
+function cy(r) { return BAND + PAD + r * (CS + GAP); }
 function hwRect(r, c) { return { x: cx(c), y: cy(r)+CS, w: 2*CS+GAP, h: GAP }; }
 function vwRect(r, c) { return { x: cx(c)+CS, y: cy(r), w: GAP, h: 2*CS+GAP }; }
 
@@ -584,6 +611,8 @@ function initGame() {
   s2Pos   = {r:0, c:4};
   s1Walls = 10;
   s2Walls = 10;
+  hO = QuoridorUI.ownerGrid(); vO = QuoridorUI.ownerGrid();
+  lastMove = null; fxWall = null; fxRound = null; pendingWall = null;
   gameOver    = false;
   currentSlot = 1;
   pendingTimerData = null;
@@ -592,15 +621,33 @@ function initGame() {
 }
 
 function restoreFromState(gs) {
+  noteChange(gs);
   s1Pos       = gs.s1Pos;
   s2Pos       = gs.s2Pos;
   s1Walls     = gs.s1Walls !== undefined ? gs.s1Walls : 10;
   s2Walls     = gs.s2Walls !== undefined ? gs.s2Walls : 10;
+  hO          = QuoridorUI.mergeOwners(gs.hO, gs.hW, hO);
+  vO          = QuoridorUI.mergeOwners(gs.vO, gs.vW, vO);
   hW          = gs.hW;
   vW          = gs.vW;
   currentSlot = gs.currentSlot || 1;
-  gameOver    = false;
+  /* La fin du match ne se défait pas sur un état reçu : seul un nouveau départ la remet à zéro. */
   updWallsUI();
+}
+
+/* Ce qui a changé depuis l'état précédent : le pion qui a bougé (sa trace), le mur posé (il brille). */
+function noteChange(gs) {
+  if (!gs || !s1Pos || !s2Pos || !gs.s1Pos || !gs.s2Pos) return;
+  var m1 = gs.s1Pos.r !== s1Pos.r || gs.s1Pos.c !== s1Pos.c, m2 = gs.s2Pos.r !== s2Pos.r || gs.s2Pos.c !== s2Pos.c;
+  if (m1 && m2) { lastMove = null; fxWall = null; return; } /* nouvelle manche : les deux pions repartent */
+  var step = function (a, b) { return Math.abs(a.r - b.r) + Math.abs(a.c - b.c) <= 2; };
+  if (m1 && step(s1Pos, gs.s1Pos)) lastMove = { slot: 1, from: s1Pos, to: gs.s1Pos };
+  if (m2 && step(s2Pos, gs.s2Pos)) lastMove = { slot: 2, from: s2Pos, to: gs.s2Pos };
+  if (!hW || !vW || !gs.hW || !gs.vW) return;
+  for (var r = 0; r < 8; r++) for (var c = 0; c < 8; c++) {
+    if (gs.hW[r] && gs.hW[r][c] && !hW[r][c]) { fxWall = { kind: 'h', r: r, c: c, t0: performance.now() }; QuoridorUI.pulse(draw, 1700); }
+    if (gs.vW[r] && gs.vW[r][c] && !vW[r][c]) { fxWall = { kind: 'v', r: r, c: c, t0: performance.now() }; QuoridorUI.pulse(draw, 1700); }
+  }
 }
 
 function buildGameState() {
@@ -620,12 +667,29 @@ function updWallsUI() {
   var opWalls = IS_P1 ? s2Walls : s1Walls;
   document.getElementById('walls-me').textContent = myWalls;
   document.getElementById('walls-op').textContent = opWalls;
+  updDistances();
+}
+
+/* Sous chaque profil, ce qui reste à parcourir : « ▲ 6 cases ». Qui mène se lit d'un coup d'œil. */
+var lastDistances = '';
+function updDistances() {
+  if (!s1Pos || !s2Pos || !hW) return;
+  var d1 = bfsDist(s1Pos, 0), d2 = bfsDist(s2Pos, 8);
+  var me = IS_SPECTATOR ? 1 : MY_SLOT;
+  var dMe = me === 1 ? d1 : d2, dOp = me === 1 ? d2 : d1;
+  var key = dMe + '/' + dOp;
+  if (key === lastDistances) return;
+  lastDistances = key;
+  var a = QuoridorUI.distanceText(dMe), b = QuoridorUI.distanceText(dOp);
+  document.getElementById('goal-me').textContent = a ? '▲ ' + a : '';
+  document.getElementById('goal-op').textContent = b ? '▼ ' + b : '';
 }
 
 function setMode(m) {
   if (!gameReady || gameOver || isProcessing) return;
   if (currentSlot !== MY_SLOT) return;
   mode = m;
+  clearPendingWall();
   vmoves = []; vhw = []; vvw = [];
   var myPos  = IS_P1 ? s1Pos : s2Pos;
   var opPos  = IS_P1 ? s2Pos : s1Pos;
@@ -644,7 +708,15 @@ function setMode(m) {
   document.getElementById('btnV').className    = 'modeBtn' + (m === 'wallV' ? ' active' : '');
   document.getElementById('btnH').disabled = myWallsLeft <= 0;
   document.getElementById('btnV').disabled = myWallsLeft <= 0;
+  document.getElementById('statusTxt').innerHTML = m === 'move' ? 'Votre<br>tour' : 'Touchez<br>un espace';
   draw();
+}
+
+/* Un mur se pose en deux temps : on le voit à sa place, puis on le confirme. */
+function clearPendingWall() {
+  if (!pendingWall) return;
+  pendingWall = null;
+  QuoridorUI.hold(draw, false);
 }
 
 function lockButtons() {
@@ -654,6 +726,7 @@ function lockButtons() {
 }
 
 function updUI() {
+  clearPendingWall();
   var isMyTurn = currentSlot === MY_SLOT;
   document.getElementById('statusTxt').innerHTML = isMyTurn ? 'Votre<br>tour' : 'Tour<br>adverse';
   if (isMyTurn) {
@@ -672,6 +745,8 @@ function updUI() {
 function drawDirectionHint(){
   if(IS_SPECTATOR||!gameReady||gameOver)return;
   var own=MY_SLOT===1?s1Pos:s2Pos;
+  /* La flèche montre le sens au départ ; ensuite, l'arrivée cerclée et la bande suffisent. */
+  if(own.r!==(MY_SLOT===1?8:0))return;
   var x=cx(own.c)+CS/2, y=cy(own.r)+CS/2;
   if(MY_SLOT===2){x=canvas.width-x;y=canvas.height-y;}
   var len=Math.max(28,CS*1.05);
@@ -680,12 +755,33 @@ function drawDirectionHint(){
   ctx.beginPath();ctx.moveTo(x,y-CS*.7-len-10);ctx.lineTo(x-8,y-CS*.7-len+3);ctx.lineTo(x+8,y-CS*.7-len+3);ctx.closePath();ctx.fill();ctx.restore();
 }
 function draw() {
+  if (!G) return;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.save();
   if(!IS_SPECTATOR&&MY_SLOT===2){ctx.translate(canvas.width,canvas.height);ctx.rotate(Math.PI);}
-  drawCells(); drawGhosts(); drawWalls(); drawPawns();
+  QuoridorUI.drawCampBands(ctx, G);
+  drawCells();
+  if (!IS_SPECTATOR && !gameOver) QuoridorUI.drawGoal(ctx, G, MY_SLOT);
+  drawGhosts();
+  QuoridorUI.drawTrail(ctx, G, lastMove);
+  QuoridorUI.drawWalls(ctx, G, hW, vW, hO, vO, { lastWall: fxWall });
+  if (pendingWall) QuoridorUI.drawPreview(ctx, pendingWall.kind === 'h' ? hwRect(pendingWall.r, pendingWall.c) : vwRect(pendingWall.r, pendingWall.c), pendingWall.kind === 'h', MY_SLOT);
+  drawPawns();
+  QuoridorUI.drawRoundFx(ctx, G, fxRound);
   ctx.restore();
+  QuoridorUI.drawBandLabels(ctx, canvas.width, canvas.height, BAND, bandLabels());
   drawDirectionHint();
+  updDistances();
+}
+
+/* Les bandes : en haut l'arrivée du joueur (le camp adverse), en bas son propre camp. */
+function bandLabels() {
+  if (IS_SPECTATOR) return { top: { text: 'Camp de ' + P2_NAME, slot: 2 }, bottom: { text: 'Camp de ' + P1_NAME, slot: 1 } };
+  var op = MY_SLOT === 1 ? 2 : 1;
+  return {
+    top: { text: '▲ VOTRE ARRIVÉE', sub: 'camp de ' + OP_NAME, slot: op, gold: true },
+    bottom: { text: 'VOTRE CAMP', sub: 'départ', slot: MY_SLOT }
+  };
 }
 
 function drawCells() {
@@ -699,13 +795,10 @@ function drawCells() {
       }
       ctx.beginPath();
       rrect(x, y, CS, CS, 4);
-      if      (isMove)  ctx.fillStyle = 'rgba(251,191,36,0.28)';
-      else if (r === 0) ctx.fillStyle = 'rgba(226,232,240,0.11)';
-      else if (r === 8) ctx.fillStyle = 'rgba(248,113,113,0.11)';
-      else              ctx.fillStyle = 'rgba(255,255,255,0.05)';
-      ctx.fill();
-      ctx.strokeStyle = isMove ? 'rgba(251,191,36,0.55)' : 'rgba(255,255,255,0.07)';
-      ctx.lineWidth   = isMove ? 1.5 : 1;
+      /* Les deux camps sont teintés de la couleur de leur joueur (Blanc en bas du joueur 1, Rouge en haut). */
+      var st = QuoridorUI.cellStyle(r, isMove);
+      ctx.fillStyle = st.fill; ctx.fill();
+      ctx.strokeStyle = st.stroke; ctx.lineWidth = st.width;
       ctx.stroke();
     }
   }
@@ -816,29 +909,31 @@ function handleTap(pt) {
         doMyMove(mv.r, mv.c); return;
       }
     }
-  } else if (mode === 'wallH') {
-    slot = nearestHWSlot(x, y);
-    if (slot && canHW(slot.r, slot.c)) {
-      stopTimer();
-      hW[slot.r][slot.c] = true;
-      if (IS_P1) s1Walls--; else s2Walls--;
-      emitMyMove('wallH', slot);
-      updWallsUI();
-      endMyTurn();
-      return;
-    }
-  } else if (mode === 'wallV') {
-    slot = nearestVWSlot(x, y);
-    if (slot && canVW(slot.r, slot.c)) {
-      stopTimer();
-      vW[slot.r][slot.c] = true;
-      if (IS_P1) s1Walls--; else s2Walls--;
-      emitMyMove('wallV', slot);
-      updWallsUI();
-      endMyTurn();
-      return;
-    }
+  } else if (mode === 'wallH' || mode === 'wallV') {
+    var kind = mode === 'wallH' ? 'h' : 'v';
+    /* Deuxième toucher sur le mur montré : on le pose. */
+    if (pendingWall && pendingWall.kind === kind && insideWall(x, y, pendingWall)) { placeMyWall(pendingWall); return; }
+    slot = kind === 'h' ? nearestHWSlot(x, y) : nearestVWSlot(x, y);
+    if (!slot || !(kind === 'h' ? canHW(slot.r, slot.c) : canVW(slot.r, slot.c))) { clearPendingWall(); draw(); return; }
+    /* Premier toucher : le mur apparaît à sa place, à notre couleur ; rien n'est encore joué. */
+    pendingWall = { kind: kind, r: slot.r, c: slot.c };
+    document.getElementById('statusTxt').innerHTML = 'Touchez<br>pour poser';
+    QuoridorUI.hold(draw, true);
+    draw();
   }
+}
+
+function insideWall(x, y, w) {
+  var rect = w.kind === 'h' ? hwRect(w.r, w.c) : vwRect(w.r, w.c), m = Math.max(GAP, CS * 0.35);
+  return x >= rect.x - m && x <= rect.x + rect.w + m && y >= rect.y - m && y <= rect.y + rect.h + m;
+}
+
+function placeMyWall(w) {
+  var ok = w.kind === 'h' ? canHW(w.r, w.c) : canVW(w.r, w.c);
+  clearPendingWall();
+  if (!ok) { draw(); return; }
+  /* Le mur apparaîtra avec l'état du serveur, à notre couleur (hO / vO), et brillera un instant. */
+  sendMove(w.kind === 'h' ? 'wallH' : 'wallV', { r: w.r, c: w.c });
 }
 
 function nearestHWSlot(x, y) {
@@ -864,14 +959,41 @@ function nearestVWSlot(x, y) {
 }
 
 function doMyMove(r, c) {
+  /* Le serveur confirme seul le déplacement, la victoire et le règlement du match. */
+  sendMove('move', { r: r, c: c });
+}
+
+/* Envoie le coup et verrouille la saisie jusqu'à l'état du serveur (« Validation du coup »). */
+function sendMove(moveType, data) {
+  if (pendingMove || !gameReady || gameOver || currentSlot !== MY_SLOT || !socket || !socket.connected) return false;
+  pendingMove = true;
+  pendingBaseVersion = Number.isFinite(Number(lastStateVersion)) ? Number(lastStateVersion) : -1;
   stopTimer();
-  if (IS_P1) s1Pos = {r:r, c:c}; else s2Pos = {r:r, c:c};
-  emitMyMove('move', {r:r, c:c});
-  /* Le serveur confirme seul la victoire et le règlement du match. */
-  endMyTurn();
+  clearPendingWall();
+  isProcessing = true; mode = 'wait'; vmoves = []; vhw = []; vvw = [];
+  lockButtons();
+  document.getElementById('statusTxt').innerHTML = 'Validation<br>du coup';
+  draw();
+  socket.emit('quoridor_move', { room: ROOM_ID, player: MY_SLOT, moveType: moveType, data: { r: data.r, c: data.c } });
+  if (pendingMoveTimer) clearTimeout(pendingMoveTimer);
+  pendingMoveTimer = setTimeout(function () {
+    if (pendingMove && socket && socket.connected) socket.emit('quoridor_request_state', { room: ROOM_ID });
+  }, 2200);
+  return true;
+}
+function clearPendingMove() {
+  pendingMove = false;
+  pendingBaseVersion = -1;
+  if (pendingMoveTimer) { clearTimeout(pendingMoveTimer); pendingMoveTimer = null; }
+  isProcessing = false;
+}
+/* Un pion vient d'atteindre son arrivée : la manche est jouée, le serveur va la clore. */
+function roundDecided() {
+  return !!(s1Pos && s2Pos && (s1Pos.r === 0 || s2Pos.r === 8));
 }
 
 function endMyTurn() {
+  clearPendingWall();
   currentSlot = MY_SLOT === 1 ? 2 : 1;
   mode = 'wait';
   vmoves = []; vhw = []; vvw = [];
@@ -895,18 +1017,27 @@ function emitMyMove(moveType, data) {
 }
 
 function applyOpponentMove(moveType, data) {
+  var opSlot = MY_SLOT === 1 ? 2 : 1;
+  clearPendingWall();
   if (moveType === 'move') {
+    var from = IS_P1 ? s2Pos : s1Pos;
+    lastMove = { slot: opSlot, from: from, to: { r: data.r, c: data.c } };
     if (!IS_P1) s1Pos = {r:data.r, c:data.c}; else s2Pos = {r:data.r, c:data.c};
     updWallsUI(); draw();
     var opGoal = IS_P1 ? 8 : 0;
-    if (data.r === opGoal) { handleGameEnd(MY_SLOT === 1 ? 2 : 1, 'normal'); return; }
+    /* L'adversaire a atteint notre camp : la manche est à lui. C'est le SERVEUR qui la clôt
+       (quoridor_round_end, puis game:over au dernier point) ; la page attend, sans rien conclure.
+       Elle déclarait ici le match perdu — une « défaite » aussitôt effacée par l'état suivant. */
+    if (data.r === opGoal) { isProcessing = false; gameReady = false; mode = 'wait'; vmoves = []; vhw = []; vvw = []; lockButtons(); draw(); return; }
   } else if (moveType === 'wallH') {
-    hW[data.r][data.c] = true;
+    hW[data.r][data.c] = true; hO[data.r][data.c] = opSlot;
     if (!IS_P1) s1Walls--; else s2Walls--;
+    fxWall = { kind: 'h', r: data.r, c: data.c, t0: performance.now() }; QuoridorUI.pulse(draw, 1700);
     updWallsUI(); draw();
   } else if (moveType === 'wallV') {
-    vW[data.r][data.c] = true;
+    vW[data.r][data.c] = true; vO[data.r][data.c] = opSlot;
     if (!IS_P1) s1Walls--; else s2Walls--;
+    fxWall = { kind: 'v', r: data.r, c: data.c, t0: performance.now() }; QuoridorUI.pulse(draw, 1700);
     updWallsUI(); draw();
   }
   currentSlot = MY_SLOT;
@@ -926,27 +1057,36 @@ function handleGameEnd(winnerSlot, reason) {
   
   var iWon = winnerSlot === MY_SLOT;
   var outcome = iWon ? 'win' : 'lose';
+  var away = reason === 'forfeit' || reason === 'timeout';
+  var w = seriesState.wins || {}, me = IS_SPECTATOR ? 1 : MY_SLOT, op = me === 1 ? 2 : 1;
+  var winnerName = winnerSlot === 1 ? P1_NAME : P2_NAME;
 
-  var title, message, modalClass;
-  if (iWon) {
-    title = '🏆 VICTOIRE !';
-    modalClass = 'win-modal';
-    message = (reason === 'forfeit' || reason === 'timeout') ? 'L\'adversaire a abandonné/expiré.' : 'Bravo, vous avez atteint la ligne adverse !';
+  var title, message, modalClass, tone;
+  if (IS_SPECTATOR) {
+    title = winnerName + ' remporte le match';
+    modalClass = 'win-modal'; tone = 'info';
+    message = away ? 'L’adversaire n’a pas joué à temps.' : 'Série terminée.';
+  } else if (iWon) {
+    title = 'Victoire !';
+    modalClass = 'win-modal'; tone = 'win';
+    message = away ? OP_NAME + ' a abandonné ou n’a pas joué à temps.' : 'Vous remportez la série contre ' + OP_NAME + '.';
     createConfetti(); createConfetti();
   } else {
-    title = '💀 DÉFAITE';
-    modalClass = 'lose-modal';
-    message = (reason === 'forfeit' || reason === 'timeout') ? 'Vous avez abandonné/expiré.' : OP_NAME + ' a atteint votre ligne !';
+    title = 'Défaite';
+    modalClass = 'lose-modal'; tone = 'lose';
+    message = away ? 'Le temps de jeu est écoulé.' : OP_NAME + ' remporte la série.';
   }
 
   document.getElementById('modalTitle').textContent = title;
   document.getElementById('finalMessage').textContent = message;
   document.getElementById('modalContent').className = 'modal ' + modalClass;
+  QuoridorUI.decorateMatchCard({ tone: tone, title: title, score: [Number(w[me]) || 0, Number(w[op]) || 0], scoreSlots: [me, op] });
+  refreshScore();
 
-  if (BET_AMOUNT > 0) {
+  if (BET_AMOUNT > 0 && !IS_SPECTATOR) {
     var prizeLine = document.getElementById('prizeLine');
     prizeLine.style.display = 'block';
-    prizeLine.textContent = iWon ? '🤑 +' + (BET_AMOUNT * 2 * 0.9).toFixed(0) + ' ' + CURRENCY + ' (net)' : '😓 -' + BET_AMOUNT + ' ' + CURRENCY;
+    prizeLine.textContent = iWon ? '+' + (BET_AMOUNT * 2 * 0.9).toFixed(0) + ' ' + CURRENCY + ' (net)' : '−' + BET_AMOUNT + ' ' + CURRENCY;
   }
 
   document.getElementById('gameOverModal').classList.add('show');
@@ -1096,10 +1236,13 @@ function initSocket() {
       if (!gs || !gs.s1Pos || !gs.s2Pos) return;
       restoreFromState(gs);
       if (Number.isFinite(version)) lastStateVersion = version;
-      isProcessing = false;
+      if (pendingMove && Number.isFinite(version) && version > pendingBaseVersion) clearPendingMove();
+      if (!pendingMove) isProcessing = false;
       vmoves = []; vhw = []; vvw = [];
-      if (!IS_SPECTATOR && !gameReady) gameReady = true;
+      if (!IS_SPECTATOR && !gameReady && !roundDecided()) gameReady = true;
       draw();
+      if (pendingMove) { mode = 'wait'; lockButtons(); document.getElementById('statusTxt').innerHTML = 'Validation<br>du coup'; return; }
+      if (roundDecided()) { mode = 'wait'; lockButtons(); return; }
       if (gameReady && !gameOver) updUI();
     } catch (_) {}
   }
@@ -1245,15 +1388,36 @@ function initSocket() {
     else if (data.turnStartTime) startTimer(isMe, data.turnStartTime + offset);
   });
 
-  socket.on('quoridor_round_end',function(data){if(!data)return;if(data.series)updateSeriesUI(data.series);gameReady=false;stopTimer();stopGraceTimer();var mine=data.roundWinner===MY_SLOT,drawn=!data.roundWinner,sc=seriesState.wins||{1:0,2:0};showToast(drawn?'🤝':mine?'🏆':'🎯',drawn?'Manche nulle':mine?'Manche gagnée':'Manche perdue','Score : '+(sc[MY_SLOT]||0)+' — '+(sc[MY_SLOT===1?2:1]||0),1700);});
-socket.on('quoridor_round_start',function(data){if(!data||gameOver)return;if(data.series)updateSeriesUI(data.series);var st=data.gameState;if(typeof st==='string'){try{st=JSON.parse(st);}catch(e){st=null;}}if(st)applyAuthoritativeState({gameState:st,version:typeof data.version==='number'?data.version:undefined});gameReady=true;updUI();draw();});
+  /* Fin de manche : une carte en haut (le plateau reste lisible), le score, la rangée atteinte qui
+     clignote à la couleur du vainqueur, une lueur sur les bords, une vibration. Le plateau final
+     reste affiché ROUND_PROOF_MS (4 s) avant la manche suivante. */
+  socket.on('quoridor_round_end',function(data){
+    if(!data)return;
+    if(data.series)updateSeriesUI(data.series);
+    gameReady=false;stopTimer();stopGraceTimer();clearPendingWall();clearPendingMove();
+    mode='wait';vmoves=[];vhw=[];vvw=[];lockButtons();
+    document.getElementById('gameOverModal').classList.remove('show');
+    var w=data.roundWinner, me=IS_SPECTATOR?1:MY_SLOT, op=me===1?2:1, sc=seriesState.wins||{1:0,2:0};
+    var away=data.reason==='timeout'||data.reason==='forfeit';
+    fxRound={winner:w,pos:w===1?s1Pos:w===2?s2Pos:null,t0:performance.now()};
+    QuoridorUI.pulse(draw,3300);
+    var r=roundResultText(w,away);
+    QuoridorUI.showResult({tone:r.tone,title:r.title,sub:r.sub,score:[Number(sc[me])||0,Number(sc[op])||0],scoreSlots:[me,op],ms:3700});
+    if(r.tone==='win')createConfetti();
+    document.getElementById('statusTxt').innerHTML=r.tone==='win'?'Manche<br>gagnée':r.tone==='lose'?'Manche<br>perdue':'Fin de<br>manche';
+  });
+  function roundResultText(w,away){
+    if(!w)return{tone:'draw',title:'Manche nulle',sub:''};
+    if(IS_SPECTATOR){var n=w===1?P1_NAME:P2_NAME;return{tone:'info',title:n+' remporte la manche',sub:away?'Temps de jeu écoulé':'Arrivé dans le camp adverse'};}
+    if(w===MY_SLOT)return{tone:'win',title:'Manche gagnée',sub:away?OP_NAME+' n’a pas joué à temps':'Vous avez atteint l’arrivée'};
+    return{tone:'lose',title:'Manche perdue',sub:away?'Le temps de jeu est écoulé':OP_NAME+' a atteint votre camp'};
+  }
+socket.on('quoridor_round_start',function(data){if(!data||gameOver)return;clearPendingMove();fxRound=null;lastMove=null;fxWall=null;QuoridorUI.hideResult();if(data.series)updateSeriesUI(data.series);var st=data.gameState;if(typeof st==='string'){try{st=JSON.parse(st);}catch(e){st=null;}}if(st)applyAuthoritativeState({gameState:st,version:typeof data.version==='number'?data.version:undefined});lastMove=null;gameReady=true;updUI();draw();});
 
 socket.on('quoridor_move', function(data) {
     if (IS_SPECTATOR) { applySpectatorState(data.gameState); return; }
-    if (data.player !== MY_SLOT) {
-      isProcessing = true;
-      applyOpponentMove(data.moveType, data.data);
-    }
+    /* Un seul chemin pour les deux joueurs : l'état complet du serveur (positions, murs et leurs
+       auteurs). noteChange() en tire la trace du pion et la lueur du mur posé. */
     applyAuthoritativeState(data);
   });
 
@@ -1271,6 +1435,7 @@ socket.on('quoridor_move', function(data) {
 
   socket.on('game:error', function(data) {
     if (IS_SPECTATOR) return;
+    clearPendingMove();
     var message = data && data.message ? data.message : 'Le serveur a refusé cette action.';
     showToast('⚠️', 'Synchronisation', message, 1800);
     if (!gameOver && socket && socket.connected) socket.emit('quoridor_request_state', { room: ROOM_ID });
@@ -1346,13 +1511,9 @@ function startNewGame(starter) {
 
   applyProfiles();
 
-  if (IS_P1) {
-    document.getElementById('goal-me').textContent = '▲ OBJ';
-    document.getElementById('goal-op').textContent = '▼ OBJ';
-  } else {
-    document.getElementById('goal-me').textContent = '▼ OBJ';
-    document.getElementById('goal-op').textContent = '▲ OBJ';
-  }
+  /* Sous chaque profil : les cases qui restent jusqu'à l'arrivée (updDistances). */
+  lastDistances = ''; updDistances();
+  refreshScore();
 
   /* La pastille — ou la photo — de chaque joueur est posée par
      applyProfiles(), à sa couleur. Elle n'a plus d'id : la retoucher ici
@@ -1422,7 +1583,7 @@ window.addEventListener('message', function(e){
     var ov = document.getElementById('waiting-overlay');
     if (ov) { ov.style.opacity = '0'; setTimeout(function(){ ov.style.display = 'none'; }, 400); }
     gameReady = true; gameOver = false; resultSent = true;
-    restoreFromState({ s1Pos:a, s2Pos:b, s1Walls:Number(d.s1Walls), s2Walls:Number(d.s2Walls), hW:h, vW:v, currentSlot:(d.slot === 1 ? 2 : 1) });
+    restoreFromState({ s1Pos:a, s2Pos:b, s1Walls:Number(d.s1Walls), s2Walls:Number(d.s2Walls), hW:h, vW:v, hO:d.hO, vO:d.vO, currentSlot:(d.slot === 1 ? 2 : 1) });
     vmoves = []; vhw = []; vvw = []; mode = 'wait';
     if (d.wins) {
       /* Les manches gagnées et perdues de chaque camp (owner, 2026-10-26). */

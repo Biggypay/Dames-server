@@ -96,6 +96,7 @@ canvas{display:block;touch-action:none}
 #confetti-canvas{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:100}
 </style>
   <script defer src="/mindspille-i18n.js"></script>
+  <script src="/quoridor-ui.js"></script>
 </head>
 <body>
 
@@ -111,8 +112,8 @@ canvas{display:block;touch-action:none}
       <div class="profile-avatar" id="avatar-me"><div class="av-w" id="dot-me"></div></div>
     </div>
     <div class="profile-name" id="name-me">Vous</div>
-    <div class="walls-badge"><span class="walls-num" id="walls-me">10</span><span>🧱</span></div>
-    <div class="goal-hint" id="goal-me">▲ OBJ</div>
+    <div class="walls-badge"><span class="walls-num" id="walls-me">10</span><span class="q-wall-chip" id="chip-me"></span></div>
+    <div class="goal-hint" id="goal-me"></div>
   </div>
 
   <div class="top-center">
@@ -128,8 +129,8 @@ canvas{display:block;touch-action:none}
       <div class="profile-avatar" id="avatar-op"><div class="av-r" id="dot-op"></div></div>
     </div>
     <div class="profile-name" id="name-op">Adversaire</div>
-    <div class="walls-badge"><span class="walls-num" id="walls-op">10</span><span>🧱</span></div>
-    <div class="goal-hint" id="goal-op">▼ OBJ</div>
+    <div class="walls-badge"><span class="walls-num" id="walls-op">10</span><span class="q-wall-chip" id="chip-op"></span></div>
+    <div class="goal-hint" id="goal-op"></div>
   </div>
 </div>
 
@@ -197,14 +198,21 @@ if (BET_AMOUNT > 0) {
    ÉTAT GLOBAL
 ══════════════════════════════════════════ */
 var hW, vW;
+/* Qui a posé chaque mur (1 ou 2) : sa couleur à l'écran. Le dernier déplacement, le dernier mur,
+   la fin de manche et le mur choisi mais pas encore posé (quoridor-ui.js). */
+var hO, vO;
+var lastMove = null, fxWall = null, fxRound = null, pendingWall = null;
 var s1Pos, s2Pos;
 var s1Walls, s2Walls;
 var currentSlot;
 var mode;
 var vmoves, vhw, vvw;
+/* Le score de la série, en grand sous le titre, et la manche en cours. */
+function refreshScore(){if(!window.QuoridorUI||!practiceSeries)return;var w=practiceSeries.wins||{},lbl=QuoridorUI.roundLabel(practiceSeries);QuoridorUI.setScore(document.querySelector('#top .top-center'),Number(w[1])||0,Number(w[2])||0,matchFinished?'Match terminé':lbl.text,1,2,!matchFinished&&lbl.decisive);}
+var matchFinished=false;
 var practiceSeries={regularRounds:6,roundsPlayed:0,currentRound:1,wins:{1:0,2:0},draws:0,history:[],suddenDeath:false,roundStarter:1};
-function updatePracticeBars(){var el=document.getElementById('roundsProgress');if(!el)return;el.innerHTML='';for(var i=0;i<6;i++){var d=document.createElement('span');d.className='round-dot';if(i<Math.min(6,practiceSeries.roundsPlayed)){var r=practiceSeries.history[i];d.className+=' '+(r===MY_SLOT?'win':r===0?'draw':'lose');}else if(i===Math.min(6,practiceSeries.roundsPlayed)&&!practiceSeries.suddenDeath)d.className+=' current';el.appendChild(d);}}
-function resetPracticeSeries(){practiceSeries={regularRounds:6,roundsPlayed:0,currentRound:1,wins:{1:0,2:0},draws:0,history:[],suddenDeath:false,roundStarter:1};updatePracticeBars();}
+function updatePracticeBars(){refreshScore();var el=document.getElementById('roundsProgress');if(!el)return;el.innerHTML='';for(var i=0;i<6;i++){var d=document.createElement('span');d.className='round-dot';if(i<Math.min(6,practiceSeries.roundsPlayed)){var r=practiceSeries.history[i];d.className+=' '+(r===MY_SLOT?'win':r===0?'draw':'lose');}else if(i===Math.min(6,practiceSeries.roundsPlayed)&&!practiceSeries.suddenDeath)d.className+=' current';el.appendChild(d);}}
+function resetPracticeSeries(){matchFinished=false;practiceSeries={regularRounds:6,roundsPlayed:0,currentRound:1,wins:{1:0,2:0},draws:0,history:[],suddenDeath:false,roundStarter:1};updatePracticeBars();}
 function recordPracticeRound(w){practiceSeries.roundsPlayed++;if(w)practiceSeries.wins[w]=(practiceSeries.wins[w]||0)+1;else practiceSeries.draws++;if(practiceSeries.history.length<6)practiceSeries.history.push(w||0);var a=practiceSeries.wins[1]||0,b=practiceSeries.wins[2]||0,over=false,mw=0;if(practiceSeries.suddenDeath){if(w){over=true;mw=w;}}else if(practiceSeries.roundsPlayed<6){if(Math.abs(a-b)>6-practiceSeries.roundsPlayed){over=true;mw=a>b?1:2;}}else if(a!==b){over=true;mw=a>b?1:2;}else practiceSeries.suddenDeath=true;if(!over)practiceSeries.currentRound=practiceSeries.roundsPlayed+1;updatePracticeBars();return{matchOver:over,matchWinner:mw};}
 var gameOver = false, gameReady = false, resultSent = false;
 var isProcessing = false;
@@ -345,9 +353,11 @@ var CS, GAP, PAD;
 function calcLayout() {
   var topH = document.getElementById('top').offsetHeight || 86;
   var botH = document.getElementById('bot').offsetHeight || 50;
+  /* Deux bandes nommées encadrent le plateau : le camp de chaque joueur, et son arrivée. */
+  BAND = QuoridorUI.bandHeight(Math.floor(Math.min(window.innerWidth - 8, 500) / 11), window.innerHeight - topH - botH - 12);
   var avail = Math.min(
     window.innerWidth - 8,
-    window.innerHeight - topH - botH - 12,
+    window.innerHeight - topH - botH - 12 - BAND * 2,
     500
   );
   if (avail < 180) avail = 180;
@@ -356,11 +366,13 @@ function calcLayout() {
   var total = CS * 9 + GAP * 8;
   PAD = Math.floor((avail - total) / 2);
   canvas.width  = avail;
-  canvas.height = avail;
+  canvas.height = avail + BAND * 2;
+  G = { cx: cx, cy: cy, CS: CS, GAP: GAP, hwRect: hwRect, vwRect: vwRect };
 }
+var BAND = 0, G = null;
 
 function cx(c) { return PAD + c * (CS + GAP); }
-function cy(r) { return PAD + r * (CS + GAP); }
+function cy(r) { return BAND + PAD + r * (CS + GAP); }
 function hwRect(r, c) { return { x: cx(c), y: cy(r)+CS, w: 2*CS+GAP, h: GAP }; }
 function vwRect(r, c) { return { x: cx(c)+CS, y: cy(r), w: GAP, h: 2*CS+GAP }; }
 
@@ -471,6 +483,9 @@ function initGame() {
   s2Pos   = {r:0, c:4};
   s1Walls = 10;
   s2Walls = 10;
+  hO = QuoridorUI.ownerGrid(); vO = QuoridorUI.ownerGrid();
+  lastMove = null; fxWall = null; fxRound = null; pendingWall = null;
+  if (window.QuoridorUI) QuoridorUI.hold(draw, false);
   gameOver    = false;
   currentSlot = 1;
   pendingTimerData = null;
@@ -507,12 +522,32 @@ function updWallsUI() {
   var opWalls = IS_P1 ? s2Walls : s1Walls;
   document.getElementById('walls-me').textContent = myWalls;
   document.getElementById('walls-op').textContent = opWalls;
+  updDistances();
+}
+
+/* Sous chaque profil, ce qui reste à parcourir : « ▲ 6 cases ». */
+var lastDistances = '';
+function updDistances() {
+  if (!s1Pos || !s2Pos || !hW) return;
+  var d1 = bfsDist(s1Pos, 0), d2 = bfsDist(s2Pos, 8), key = d1 + '/' + d2;
+  if (key === lastDistances) return;
+  lastDistances = key;
+  var a = QuoridorUI.distanceText(d1), b = QuoridorUI.distanceText(d2);
+  document.getElementById('goal-me').textContent = a ? '▲ ' + a : '';
+  document.getElementById('goal-op').textContent = b ? '▼ ' + b : '';
+}
+/* Un mur se pose en deux temps : on le voit à sa place, puis on le confirme. */
+function clearPendingWall() {
+  if (!pendingWall) return;
+  pendingWall = null;
+  QuoridorUI.hold(draw, false);
 }
 
 function setMode(m) {
   if (!gameReady || gameOver || isProcessing) return;
   if (currentSlot !== MY_SLOT) return;
   mode = m;
+  clearPendingWall();
   vmoves = []; vhw = []; vvw = [];
   var myPos  = IS_P1 ? s1Pos : s2Pos;
   var opPos  = IS_P1 ? s2Pos : s1Pos;
@@ -531,6 +566,7 @@ function setMode(m) {
   document.getElementById('btnV').className    = 'modeBtn' + (m === 'wallV' ? ' active' : '');
   document.getElementById('btnH').disabled = myWallsLeft <= 0;
   document.getElementById('btnV').disabled = myWallsLeft <= 0;
+  document.getElementById('statusTxt').innerHTML = m === 'move' ? 'Votre<br>tour' : 'Touchez<br>un espace';
   draw();
 }
 
@@ -556,8 +592,21 @@ function updUI() {
 /* ══════════════════════════════════════════
    DESSIN
 ══════════════════════════════════════════ */
-function drawDirectionHint(){if(!gameReady||gameOver)return;var x=cx(s1Pos.c)+CS/2,y=cy(s1Pos.r)+CS/2,len=Math.max(28,CS*1.05);ctx.save();ctx.strokeStyle='rgba(251,191,36,.9)';ctx.fillStyle='rgba(251,191,36,.95)';ctx.lineWidth=Math.max(3,CS*.08);ctx.lineCap='round';ctx.beginPath();ctx.moveTo(x,y-CS*.7);ctx.lineTo(x,y-CS*.7-len);ctx.stroke();ctx.beginPath();ctx.moveTo(x,y-CS*.7-len-10);ctx.lineTo(x-8,y-CS*.7-len+3);ctx.lineTo(x+8,y-CS*.7-len+3);ctx.closePath();ctx.fill();ctx.restore();}
-function draw(){ctx.clearRect(0,0,canvas.width,canvas.height);drawCells();drawGhosts();drawWalls();drawPawns();drawDirectionHint();}
+function drawDirectionHint(){if(!gameReady||gameOver)return;if(s1Pos.r!==8)return;var x=cx(s1Pos.c)+CS/2,y=cy(s1Pos.r)+CS/2,len=Math.max(28,CS*1.05);ctx.save();ctx.strokeStyle='rgba(251,191,36,.9)';ctx.fillStyle='rgba(251,191,36,.95)';ctx.lineWidth=Math.max(3,CS*.08);ctx.lineCap='round';ctx.beginPath();ctx.moveTo(x,y-CS*.7);ctx.lineTo(x,y-CS*.7-len);ctx.stroke();ctx.beginPath();ctx.moveTo(x,y-CS*.7-len-10);ctx.lineTo(x-8,y-CS*.7-len+3);ctx.lineTo(x+8,y-CS*.7-len+3);ctx.closePath();ctx.fill();ctx.restore();}
+function draw(){
+  if(!G)return;
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  QuoridorUI.drawCampBands(ctx,G);drawCells();
+  if(!gameOver)QuoridorUI.drawGoal(ctx,G,MY_SLOT);
+  drawGhosts();QuoridorUI.drawTrail(ctx,G,lastMove);
+  QuoridorUI.drawWalls(ctx,G,hW,vW,hO,vO,{lastWall:fxWall});
+  if(pendingWall)QuoridorUI.drawPreview(ctx,pendingWall.kind==='h'?hwRect(pendingWall.r,pendingWall.c):vwRect(pendingWall.r,pendingWall.c),pendingWall.kind==='h',MY_SLOT);
+  drawPawns();QuoridorUI.drawRoundFx(ctx,G,fxRound);
+  QuoridorUI.drawBandLabels(ctx,canvas.width,canvas.height,BAND,{
+    top:{text:'▲ VOTRE ARRIVÉE',sub:'camp de '+OP_NAME,slot:2,gold:true},
+    bottom:{text:'VOTRE CAMP',sub:'départ',slot:1}});
+  drawDirectionHint();updDistances();
+}
 
 function drawCells() {
   var r, c, x, y, isMove, i;
@@ -570,13 +619,10 @@ function drawCells() {
       }
       ctx.beginPath();
       rrect(x, y, CS, CS, 4);
-      if      (isMove)  ctx.fillStyle = 'rgba(251,191,36,0.28)';
-      else if (r === 0) ctx.fillStyle = 'rgba(226,232,240,0.11)';
-      else if (r === 8) ctx.fillStyle = 'rgba(248,113,113,0.11)';
-      else              ctx.fillStyle = 'rgba(255,255,255,0.05)';
-      ctx.fill();
-      ctx.strokeStyle = isMove ? 'rgba(251,191,36,0.55)' : 'rgba(255,255,255,0.07)';
-      ctx.lineWidth   = isMove ? 1.5 : 1;
+      /* Les deux camps sont teintés de la couleur de leur joueur (Blanc en bas, Rouge en haut). */
+      var st = QuoridorUI.cellStyle(r, isMove);
+      ctx.fillStyle = st.fill; ctx.fill();
+      ctx.strokeStyle = st.stroke; ctx.lineWidth = st.width;
       ctx.stroke();
     }
   }
@@ -686,29 +732,38 @@ function handleTap(pt) {
         doMyMove(mv.r, mv.c); return;
       }
     }
-  } else if (mode === 'wallH') {
-    slot = nearestHWSlot(x, y);
-    if (slot && canHW(slot.r, slot.c)) {
-      stopTimer();
-      hW[slot.r][slot.c] = true;
-      if (IS_P1) s1Walls--; else s2Walls--;
-      emitMyMove('wallH', slot);
-      updWallsUI();
-      endMyTurn();
-      return;
-    }
-  } else if (mode === 'wallV') {
-    slot = nearestVWSlot(x, y);
-    if (slot && canVW(slot.r, slot.c)) {
-      stopTimer();
-      vW[slot.r][slot.c] = true;
-      if (IS_P1) s1Walls--; else s2Walls--;
-      emitMyMove('wallV', slot);
-      updWallsUI();
-      endMyTurn();
-      return;
-    }
+  } else if (mode === 'wallH' || mode === 'wallV') {
+    var kind = mode === 'wallH' ? 'h' : 'v';
+    /* Deuxième toucher sur le mur montré : on le pose. */
+    if (pendingWall && pendingWall.kind === kind && insideWall(x, y, pendingWall)) { placeMyWall(pendingWall); return; }
+    slot = kind === 'h' ? nearestHWSlot(x, y) : nearestVWSlot(x, y);
+    if (!slot || !(kind === 'h' ? canHW(slot.r, slot.c) : canVW(slot.r, slot.c))) { clearPendingWall(); draw(); return; }
+    /* Premier toucher : le mur apparaît à sa place, à la couleur du joueur ; rien n'est encore joué. */
+    pendingWall = { kind: kind, r: slot.r, c: slot.c };
+    document.getElementById('statusTxt').innerHTML = 'Touchez<br>pour poser';
+    QuoridorUI.hold(draw, true);
+    draw();
   }
+}
+
+function insideWall(x, y, w) {
+  var rect = w.kind === 'h' ? hwRect(w.r, w.c) : vwRect(w.r, w.c), m = Math.max(GAP, CS * 0.35);
+  return x >= rect.x - m && x <= rect.x + rect.w + m && y >= rect.y - m && y <= rect.y + rect.h + m;
+}
+
+function placeMyWall(w) {
+  var ok = w.kind === 'h' ? canHW(w.r, w.c) : canVW(w.r, w.c), owner = MY_SLOT;
+  clearPendingWall();
+  if (!ok) { draw(); return; }
+  stopTimer();
+  if (w.kind === 'h') { hW[w.r][w.c] = true; hO[w.r][w.c] = owner; }
+  else { vW[w.r][w.c] = true; vO[w.r][w.c] = owner; }
+  if (IS_P1) s1Walls--; else s2Walls--;
+  fxWall = { kind: w.kind, r: w.r, c: w.c, t0: performance.now() };
+  QuoridorUI.pulse(draw, 1700);
+  emitMyMove(w.kind === 'h' ? 'wallH' : 'wallV', { r: w.r, c: w.c });
+  updWallsUI();
+  endMyTurn();
 }
 
 function nearestHWSlot(x, y) {
@@ -735,6 +790,7 @@ function nearestVWSlot(x, y) {
 
 function doMyMove(r, c) {
   stopTimer();
+  lastMove = { slot: MY_SLOT, from: IS_P1 ? s1Pos : s2Pos, to: { r: r, c: c } };
   if (IS_P1) s1Pos = {r:r, c:c}; else s2Pos = {r:r, c:c};
   var goalRow = IS_P1 ? 0 : 8;
   emitMyMove('move', {r:r, c:c});
@@ -743,6 +799,7 @@ function doMyMove(r, c) {
 }
 
 function endMyTurn() {
+  clearPendingWall();
   currentSlot = MY_SLOT === 1 ? 2 : 1;
   mode = 'wait';
   vmoves = []; vhw = []; vvw = [];
@@ -768,17 +825,21 @@ function emitMyMove(moveType, data) {
 }
 
 function applyOpponentMove(moveType, data) {
+  var opSlot = MY_SLOT === 1 ? 2 : 1;
   if (moveType === 'move') {
+    lastMove = { slot: opSlot, from: IS_P1 ? s2Pos : s1Pos, to: { r: data.r, c: data.c } };
     if (!IS_P1) s1Pos = {r:data.r, c:data.c}; else s2Pos = {r:data.r, c:data.c};
     updWallsUI(); draw();
     var opGoal = IS_P1 ? 8 : 0;
     if (data.r === opGoal) { handleGameEnd(MY_SLOT === 1 ? 2 : 1, 'normal'); return; }
   } else if (moveType === 'wallH') {
-    hW[data.r][data.c] = true;
+    hW[data.r][data.c] = true; hO[data.r][data.c] = opSlot;
+    fxWall = { kind: 'h', r: data.r, c: data.c, t0: performance.now() }; QuoridorUI.pulse(draw, 1700);
     if (!IS_P1) s1Walls--; else s2Walls--;
     updWallsUI(); draw();
   } else if (moveType === 'wallV') {
-    vW[data.r][data.c] = true;
+    vW[data.r][data.c] = true; vO[data.r][data.c] = opSlot;
+    fxWall = { kind: 'v', r: data.r, c: data.c, t0: performance.now() }; QuoridorUI.pulse(draw, 1700);
     if (!IS_P1) s1Walls--; else s2Walls--;
     updWallsUI(); draw();
   }
@@ -791,7 +852,16 @@ function applyOpponentMove(moveType, data) {
 /* ══════════════════════════════════════════
    FIN DE PARTIE
 ══════════════════════════════════════════ */
-function handleGameEnd(winnerSlot,reason){if(gameOver)return;var rr=recordPracticeRound(winnerSlot);if(rr.matchOver)return showFinalGameEnd(rr.matchWinner,reason);gameOver=true;stopTimer();stopGraceTimer();var mine=winnerSlot===MY_SLOT,drawn=!winnerSlot,sc=practiceSeries.wins;showToast(drawn?'🤝':mine?'🏆':'🎯',drawn?'Manche nulle':mine?'Manche gagnée':'Manche perdue','Score : '+(sc[MY_SLOT]||0)+' — '+(sc[MY_SLOT===1?2:1]||0),1500,function(){gameOver=false;practiceSeries.roundStarter=practiceSeries.roundStarter===1?2:1;startNewGame();});}
+/* Fin de manche : la rangée atteinte clignote, une carte en haut dit qui marque et le score ; le
+   plateau final reste lisible 3 s avant la manche suivante. */
+function handleGameEnd(winnerSlot,reason){if(gameOver)return;var rr=recordPracticeRound(winnerSlot);
+  fxRound={winner:winnerSlot,pos:winnerSlot===1?s1Pos:winnerSlot===2?s2Pos:null,t0:performance.now()};clearPendingWall();
+  if(rr.matchOver)return showFinalGameEnd(rr.matchWinner,reason);
+  gameOver=true;stopTimer();stopGraceTimer();draw();QuoridorUI.pulse(draw,3300);
+  var mine=winnerSlot===MY_SLOT,drawn=!winnerSlot,sc=practiceSeries.wins;
+  QuoridorUI.showResult({tone:drawn?'draw':mine?'win':'lose',title:drawn?'Manche nulle':mine?'Manche gagnée':'Manche perdue',sub:drawn?'':mine?'Vous avez atteint l’arrivée':OP_NAME+' a atteint votre camp',score:[Number(sc[1])||0,Number(sc[2])||0],scoreSlots:[1,2],ms:3000});
+  if(mine)createConfetti();
+  setTimeout(function(){QuoridorUI.hideResult();gameOver=false;practiceSeries.roundStarter=practiceSeries.roundStarter===1?2:1;startNewGame();},3200);}
 
 function showFinalGameEnd(winnerSlot, reason) {
   if (gameOver) return;
@@ -817,6 +887,11 @@ function showFinalGameEnd(winnerSlot, reason) {
   document.getElementById('modalTitle').textContent = title;
   document.getElementById('finalMessage').textContent = message;
   document.getElementById('modalContent').className = 'modal ' + modalClass;
+  matchFinished = true;
+  var fw = practiceSeries.wins || {};
+  QuoridorUI.decorateMatchCard({ tone: iWon ? 'win' : 'lose', icon: 'crown', title: String(title).replace(/^\S+\s/, ''), score: [Number(fw[1]) || 0, Number(fw[2]) || 0], scoreSlots: [1, 2] });
+  refreshScore();
+  QuoridorUI.pulse(draw, 3300);
 
   if (BET_AMOUNT > 0) {
     var prizeLine = document.getElementById('prizeLine');
@@ -985,13 +1060,10 @@ function startNewGame() {
   document.getElementById('name-me').textContent = MY_NAME;
   document.getElementById('name-op').textContent = OP_NAME;
 
-  if (IS_P1) {
-    document.getElementById('goal-me').textContent = '▲ OBJ';
-    document.getElementById('goal-op').textContent = '▼ OBJ';
-  } else {
-    document.getElementById('goal-me').textContent = '▼ OBJ';
-    document.getElementById('goal-op').textContent = '▲ OBJ';
-  }
+  /* Les murs de chacun portent sa couleur, jusque dans le compteur ; sous chaque profil, les cases restantes. */
+  QuoridorUI.paintChip(document.getElementById('chip-me'), 1);
+  QuoridorUI.paintChip(document.getElementById('chip-op'), 2);
+  lastDistances = ''; updDistances(); refreshScore();
 
   document.getElementById('dot-me').className = IS_P1 ? 'av-w' : 'av-r';
   document.getElementById('dot-op').className = IS_P1 ? 'av-r' : 'av-w';

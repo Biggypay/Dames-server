@@ -531,6 +531,8 @@ function hydratePersistedRoom(record) {
   if (record.game_type === 'roulette') sanitizeRouletteRoom(room);
   if (record.game_type === 'quoridor') {
     room.gameState = room.gameState && typeof room.gameState === 'object' ? room.gameState : quoriInitialState();
+    room.gameState.hO = quoriOwnerGrid(room.gameState.hO, room.gameState.hW);
+    room.gameState.vO = quoriOwnerGrid(room.gameState.vO, room.gameState.vW);
     room.stateVersion = Math.max(0, Number(room.stateVersion ?? room.gameState.stateVersion) || 0);
     room.gameState.currentSlot = validPlayerSlot(room.currentSlot) ? room.currentSlot : (validPlayerSlot(room.gameState.currentSlot) ? room.gameState.currentSlot : 1);
     room.currentSlot = room.gameState.currentSlot;
@@ -1228,7 +1230,17 @@ function finishTTTRound(room, roomId, winnerSlot, winLine) {
 }
 
 function quoriInitialState() {
-  return { s1Pos: { r: 8, c: 4 }, s2Pos: { r: 0, c: 4 }, s1Walls: 10, s2Walls: 10, hW: Array.from({ length: 8 }, () => Array(8).fill(false)), vW: Array.from({ length: 8 }, () => Array(8).fill(false)), currentSlot: 1 };
+  return { s1Pos: { r: 8, c: 4 }, s2Pos: { r: 0, c: 4 }, s1Walls: 10, s2Walls: 10, hW: Array.from({ length: 8 }, () => Array(8).fill(false)), vW: Array.from({ length: 8 }, () => Array(8).fill(false)), hO: quoriOwnerGrid(), vO: quoriOwnerGrid(), currentSlot: 1 };
+}
+/* Qui a posé chaque mur (owner, 2026-11-18 : « on ne peut pas différencier les murs … de l'adversaire ») :
+   0 = inconnu (salle restaurée d'avant), 1 ou 2 = le joueur. Les règles n'en dépendent pas ; seul
+   l'affichage colore chaque mur à la couleur de celui qui l'a posé. */
+function quoriOwnerGrid(source, walls) {
+  return Array.from({ length: 8 }, (_, r) => Array.from({ length: 8 }, (_, c) => {
+    if (walls && !(Array.isArray(walls[r]) && walls[r][c] === true)) return 0;
+    const v = Array.isArray(source) && Array.isArray(source[r]) ? Number(source[r][c]) : 0;
+    return v === 1 || v === 2 ? v : 0;
+  }));
 }
 function quoriInBounds(r, c) { return Number.isInteger(r) && Number.isInteger(c) && r >= 0 && r <= 8 && c >= 0 && c <= 8; }
 function quoriBlocked(state, r1, c1, r2, c2) {
@@ -1983,6 +1995,8 @@ function quoriSnapshot(qroom) {
     s2Walls: Number(state.s2Walls),
     hW: Array.isArray(state.hW) ? state.hW.map(row => Array.isArray(row) ? [...row] : []) : [],
     vW: Array.isArray(state.vW) ? state.vW.map(row => Array.isArray(row) ? [...row] : []) : [],
+    hO: quoriOwnerGrid(state.hO, state.hW),
+    vO: quoriOwnerGrid(state.vO, state.vW),
     currentSlot: validPlayerSlot(qroom.currentSlot) ? qroom.currentSlot : 1
   };
   const snap = {
@@ -3699,6 +3713,14 @@ app.get('/roulette-board.js', (req, res) => {
   res.setHeader('Cache-Control', 'no-cache');
   res.sendFile(path.join(PUBLIC, 'roulette-board.js'));
 });
+// Quoridor : le dessin commun aux trois pages (en ligne, contre l'IA, entre amis) —
+// murs à la couleur de qui les a posés, camps de départ et d'arrivée, score,
+// cases restantes, aperçu du mur avant de le poser, carte de fin de manche.
+app.get('/quoridor-ui.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(PUBLIC, 'quoridor-ui.js'));
+});
 // La mise en page commune aux trois pages, et le moteur des deux pages hors
 // ligne (contre l'IA, entre amis sur le même appareil).
 app.get('/roulette-page.css', (req, res) => {
@@ -4601,6 +4623,9 @@ io.on('connection', (socket) => {
       const walls = player === 1 ? state.s1Walls : state.s2Walls;
       if (walls <= 0 || !quoriCanPlaceWall(state, moveType, data.r, data.c)) return rejectMove('Mur Quoridor invalide.');
       (moveType === 'wallH' ? state.hW : state.vW)[data.r][data.c] = true;
+      const owners = moveType === 'wallH' ? 'hO' : 'vO';
+      if (!Array.isArray(state[owners])) state[owners] = quoriOwnerGrid();
+      state[owners][data.r][data.c] = player;
       if (player === 1) state.s1Walls--; else state.s2Walls--;
     } else return rejectMove('Action Quoridor invalide.');
     const winnerSlot = (player === 1 && state.s1Pos.r === 0) || (player === 2 && state.s2Pos.r === 8) ? player : 0;
