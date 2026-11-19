@@ -148,8 +148,12 @@ async function quoridor(browser, game) {
   }, 12000);
   check('Quoridor : la partie démarre chez les deux joueurs', started === 1 || started === 2, started);
 
-  const guard = await p1.evaluate(() => String(handleTap).includes('sendAuthoritativeMove'));
-  check('Quoridor : le garde-fou de synchronisation est actif', guard);
+  /* La page fait elle-même ce que faisait le garde-fou de tournament-pause-client.js (2026-11-18) : le
+     coup part, la saisie attend l'état du serveur. Le garde-fou s'efface, sans quoi le mur en deux
+     temps sauterait. */
+  const guard = await p1.evaluate(() => window.QUORIDOR_NATIVE_SYNC === true && typeof sendMove === 'function'
+    && String(doMyMove).includes('sendMove') && String(handleTap).includes('pendingWall'));
+  check('Quoridor : le coup attend l’état du serveur (synchronisation dans la page)', guard);
 
   const mover = started === 2 ? p2 : p1;
   const other = mover === p1 ? p2 : p1;
