@@ -808,7 +808,7 @@
       do { window.crypto.getRandomValues(buf); v = buf[0]; } while (v >= limit);
       return v % n;
     } catch (_) {
-      return Math.floor(Math.random() * n);
+      throw new Error('Un générateur aléatoire sécurisé est requis pour Roulette Royale.');
     }
   }
   function randomSalt() {
@@ -816,9 +816,9 @@
     for (var i = 0; i < 16; i++) { var b = randomInt(256); hex += (b < 16 ? '0' : '') + b.toString(16); }
     return hex;
   }
-  /** Un tirage scellé local (IA, entre amis) : même forme que celui du serveur — une issue de 0 à 99, toute manche. */
+  /** Un tirage scellé local (IA, entre amis) : une couleur de 0 à 5, comme le serveur. */
   function localSeal(roomId, round, decisive) {
-    var kind = 'outcome';
+    var kind = 'color';
     var value = randomInt(R.OUTCOME_SPACE);
     var salt = randomSalt();
     return sha256Hex(R.sealText(roomId, round, kind, value, salt)).then(function (hash) {
