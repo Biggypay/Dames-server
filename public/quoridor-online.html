@@ -759,9 +759,7 @@ function draw() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.save();
   if(!IS_SPECTATOR&&MY_SLOT===2){ctx.translate(canvas.width,canvas.height);ctx.rotate(Math.PI);}
-  QuoridorUI.drawCampBands(ctx, G);
   drawCells();
-  if (!IS_SPECTATOR && !gameOver) QuoridorUI.drawGoal(ctx, G, MY_SLOT);
   drawGhosts();
   QuoridorUI.drawTrail(ctx, G, lastMove);
   QuoridorUI.drawWalls(ctx, G, hW, vW, hO, vO, { lastWall: fxWall });
@@ -849,12 +847,16 @@ function drawWalls() {
 }
 
 function drawPawns() {
-  drawPawn(s1Pos.r, s1Pos.c, '#e2e8f0', '#94a3b8');
-  drawPawn(s2Pos.r, s2Pos.c, '#f87171', '#b91c1c');
+  /* Chaque pion glisse vers sa nouvelle case (quoridor-ui.js, animPos). */
+  var a = QuoridorUI.animPos(1, s1Pos, draw), b = QuoridorUI.animPos(2, s2Pos, draw);
+  drawPawn(a.r, a.c, '#e2e8f0', '#94a3b8', a.lift);
+  drawPawn(b.r, b.c, '#f87171', '#b91c1c', b.lift);
 }
 
-function drawPawn(r, c, fill, rim) {
-  var pcx = cx(c) + CS/2, pcy = cy(r) + CS/2, rad = CS * 0.33;
+function drawPawn(r, c, fill, rim, lift) {
+  /* Pendant le glissement, le pion se soulève un peu : plus grand, l'ombre plus loin. */
+  var up = lift || 0;
+  var pcx = cx(c) + CS/2, pcy = cy(r) + CS/2 - up * CS * 0.08, rad = CS * 0.33 * (1 + up * 0.14);
   ctx.beginPath(); ctx.arc(pcx+2, pcy+3, rad, 0, 6.2832);
   ctx.fillStyle = 'rgba(0,0,0,0.4)'; ctx.fill();
   var grd = ctx.createRadialGradient(pcx-rad*0.3, pcy-rad*0.3, rad*0.05, pcx, pcy, rad);
@@ -911,15 +913,11 @@ function handleTap(pt) {
     }
   } else if (mode === 'wallH' || mode === 'wallV') {
     var kind = mode === 'wallH' ? 'h' : 'v';
-    /* Deuxième toucher sur le mur montré : on le pose. */
-    if (pendingWall && pendingWall.kind === kind && insideWall(x, y, pendingWall)) { placeMyWall(pendingWall); return; }
+    /* Un seul toucher pose le mur (owner, 2026-11-19 : « pas besoin de cliquer deux fois ») ; les
+       emplacements possibles sont déjà montrés en doré. */
     slot = kind === 'h' ? nearestHWSlot(x, y) : nearestVWSlot(x, y);
-    if (!slot || !(kind === 'h' ? canHW(slot.r, slot.c) : canVW(slot.r, slot.c))) { clearPendingWall(); draw(); return; }
-    /* Premier toucher : le mur apparaît à sa place, à notre couleur ; rien n'est encore joué. */
-    pendingWall = { kind: kind, r: slot.r, c: slot.c };
-    document.getElementById('statusTxt').innerHTML = 'Touchez<br>pour poser';
-    QuoridorUI.hold(draw, true);
-    draw();
+    if (!slot || !(kind === 'h' ? canHW(slot.r, slot.c) : canVW(slot.r, slot.c))) return;
+    placeMyWall({ kind: kind, r: slot.r, c: slot.c });
   }
 }
 

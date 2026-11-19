@@ -152,7 +152,7 @@ async function quoridor(browser, game) {
      coup part, la saisie attend l'état du serveur. Le garde-fou s'efface, sans quoi le mur en deux
      temps sauterait. */
   const guard = await p1.evaluate(() => window.QUORIDOR_NATIVE_SYNC === true && typeof sendMove === 'function'
-    && String(doMyMove).includes('sendMove') && String(handleTap).includes('pendingWall'));
+    && String(doMyMove).includes('sendMove') && String(handleTap).includes('placeMyWall'));
   check('Quoridor : le coup attend l’état du serveur (synchronisation dans la page)', guard);
 
   const mover = started === 2 ? p2 : p1;

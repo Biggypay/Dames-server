@@ -62,25 +62,9 @@
     ctx.closePath();
   }
 
-  /* Un cadre de rangée ne sort jamais du canevas (téléphone couché : le plateau touche ses bords). */
-  function inside(ctx, x, y, w, h) {
-    var W = ctx.canvas ? ctx.canvas.width : Infinity, H = ctx.canvas ? ctx.canvas.height : Infinity;
-    var x0 = Math.max(1, x), y0 = Math.max(1, y), x1 = Math.min(W - 1, x + w), y1 = Math.min(H - 1, y + h);
-    return { x: x0, y: y0, w: Math.max(0, x1 - x0), h: Math.max(0, y1 - y0) };
-  }
-
-  /* La bande derrière chaque camp, avant les cases. */
-  function drawCampBands(ctx, g) {
-    [0, 8].forEach(function (row) {
-      var col = color(campOwner(row)), pad = g.GAP * 0.45;
-      var b = inside(ctx, g.cx(0) - pad, g.cy(row) - pad, g.cx(8) + g.CS - g.cx(0) + pad * 2, g.CS + pad * 2);
-      ctx.save();
-      ctx.beginPath(); roundRect(ctx, b.x, b.y, b.w, b.h, 8);
-      ctx.fillStyle = 'rgba(' + col.rgb + ',0.10)'; ctx.fill();
-      ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(' + col.rgb + ',0.42)'; ctx.stroke();
-      ctx.restore();
-    });
-  }
+  /* Plus de cadre autour des camps ni de pointillé autour de l'arrivée (owner, 2026-11-19) : la teinte
+     des cases et la bande nommée suffisent. Gardées vides pour une page encore en cache. */
+  function drawCampBands() {}
 
   /* Le style d'une case : les deux camps sont teintés franchement, le reste reste sobre. */
   function cellStyle(row, highlighted) {
@@ -93,21 +77,7 @@
     return { fill: 'rgba(255,255,255,0.05)', stroke: 'rgba(255,255,255,0.07)', width: 1 };
   }
 
-  /* L'arrivée de celui qui joue : un pointillé doré autour de la rangée. */
-  function drawGoal(ctx, g, slot) {
-    if (slot !== 1 && slot !== 2) return;
-    var row = goalRow(slot), pad = g.GAP * 0.45 + 2;
-    ctx.save();
-    ctx.setLineDash([7, 5]);
-    ctx.lineDashOffset = -((now() / 60) % 12);
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = 'rgba(251,191,36,0.85)';
-    var b = inside(ctx, g.cx(0) - pad, g.cy(row) - pad, g.cx(8) + g.CS - g.cx(0) + pad * 2, g.CS + pad * 2);
-    ctx.beginPath();
-    roundRect(ctx, b.x, b.y, b.w, b.h, 10);
-    ctx.stroke();
-    ctx.restore();
-  }
+  function drawGoal() {}
 
   function wallFill(ctx, rect, horizontal, owner, glow, alpha) {
     var col = color(owner);
@@ -157,23 +127,44 @@
     ctx.stroke(); ctx.restore();
   }
 
-  /* Le dernier déplacement : la case quittée, cerclée en pointillé, reliée à la nouvelle. */
+  /* Le dernier déplacement : la case quittée garde une pastille douce de la couleur du pion — sans trait
+     ni pointillé (owner, 2026-11-19 : « enlève les petits traits et les contours transparents »). */
   function drawTrail(ctx, g, mv) {
     if (!mv || !mv.from || !mv.to) return;
     var col = color(mv.slot);
     var fx = g.cx(mv.from.c) + g.CS / 2, fy = g.cy(mv.from.r) + g.CS / 2;
-    var tx = g.cx(mv.to.c) + g.CS / 2, ty = g.cy(mv.to.r) + g.CS / 2, rad = g.CS * 0.3;
     ctx.save();
-    ctx.setLineDash([3, 4]);
-    ctx.lineWidth = Math.max(1.5, g.CS * 0.05);
-    ctx.lineCap = 'round';
-    ctx.strokeStyle = 'rgba(' + col.rgb + ',0.55)';
-    var d = Math.hypot(tx - fx, ty - fy) || 1, ux = (tx - fx) / d, uy = (ty - fy) / d;
-    ctx.beginPath(); ctx.moveTo(fx + ux * rad, fy + uy * rad); ctx.lineTo(tx - ux * g.CS * 0.36, ty - uy * g.CS * 0.36); ctx.stroke();
-    ctx.beginPath(); ctx.arc(fx, fy, rad, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(' + col.rgb + ',0.10)'; ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(fx, fy, g.CS * 0.16, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(' + col.rgb + ',0.28)'; ctx.fill();
     ctx.restore();
   }
+
+  /* Le pion glisse de sa case à la suivante (owner, 2026-11-19 : « rajoute de l'animation dans le
+     déplacement des pions ») : 260 ms en décélération, un léger soulèvement au milieu du trajet ; un saut
+     par-dessus l'adversaire prend un peu plus. Un retour au camp (nouvelle manche, resynchronisation)
+     ne glisse pas : le pion y est posé. */
+  var PAWN_MS = 260, pawnAnim = {};
+  function reducedMotion() {
+    try { return !!(root.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (_) { return false; }
+  }
+  function pawnAt(a, t) {
+    var k = a.dur ? Math.min(1, Math.max(0, (t - a.t0) / a.dur)) : 1;
+    var e = 1 - Math.pow(1 - k, 3);
+    return { r: a.from.r + (a.to.r - a.from.r) * e, c: a.from.c + (a.to.c - a.from.c) * e, lift: k < 1 ? Math.sin(Math.PI * k) : 0, moving: k < 1 };
+  }
+  function animPos(slot, pos, drawFn) {
+    if (!pos) return { r: 0, c: 0, lift: 0 };
+    var t = now(), a = pawnAnim[slot];
+    if (!a) a = pawnAnim[slot] = { from: { r: pos.r, c: pos.c }, to: { r: pos.r, c: pos.c }, t0: 0, dur: 0 };
+    if (a.to.r !== pos.r || a.to.c !== pos.c) {
+      var cur = pawnAt(a, t), dist = Math.abs(cur.r - pos.r) + Math.abs(cur.c - pos.c);
+      if (dist > 2.5 || reducedMotion()) { a.from = { r: pos.r, c: pos.c }; a.dur = 0; }
+      else { a.from = { r: cur.r, c: cur.c }; a.dur = PAWN_MS + (dist > 1.5 ? 90 : 0); pulse(drawFn, a.dur + 40); }
+      a.to = { r: pos.r, c: pos.c }; a.t0 = t;
+    }
+    return pawnAt(a, t);
+  }
+  function pawnMoving(slot) { var a = pawnAnim[slot]; return !!a && pawnAt(a, now()).moving; }
 
   /* Fin de manche : la rangée atteinte clignote à la couleur du vainqueur, un anneau part de son pion. */
   function drawRoundFx(ctx, g, fx) {
@@ -488,6 +479,8 @@
     drawWalls: drawWalls,
     drawPreview: drawPreview,
     drawTrail: drawTrail,
+    animPos: animPos,
+    pawnMoving: pawnMoving,
     drawRoundFx: drawRoundFx,
     drawBandLabels: drawBandLabels,
     bandHeight: bandHeight,

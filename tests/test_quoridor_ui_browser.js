@@ -6,7 +6,9 @@
  *    cases qui restent jusqu'à l'arrivée ; le compteur de murs à la couleur du joueur ;
  * 2. plateau : chaque camp teinté de la couleur de son joueur (Blanc en bas pour le joueur 1, Rouge en
  *    haut), les deux bandes nommées (« Votre arrivée », « Votre camp ») ;
- * 3. un mur se pose en deux temps : le premier toucher le montre (rien n'est joué), le second le pose ;
+ * 3. un seul toucher pose un mur (owner, 2026-11-19 : « pas besoin de cliquer deux fois ») ; chez
+ *    l'adversaire il apparaît à la couleur de celui qui l'a posé ; un pion GLISSE vers sa case ;
+ *    aucun cadre autour des camps, aucun pointillé (« enlève les petits traits ») ;
  *    chez l'adversaire il apparaît à la couleur de celui qui l'a posé — le serveur dit qui (hO / vO) ;
  * 4. fin de manche : la carte « Manche gagnée » / « Manche perdue » avec le score, chez chacun la
  *    sienne, et JAMAIS la fiche de fin de match chez le perdant (la page déclarait le match perdu dès
@@ -168,23 +170,24 @@ async function online(browser) {
   await shot(a, '01-depart-alice');
   await shot(b, '02-depart-bob');
 
-  // Le joueur qui a la main pose un mur horizontal, en deux temps.
+  // Plus aucun trait : ni cadre autour des camps, ni pointillé autour de l'arrivée. Entre la rangée 0 et
+  // le bord du plateau (la marge PAD), le canevas est vide.
+  const frame = await a.evaluate(() => {
+    const y = BAND + Math.max(1, Math.floor(PAD / 2)), d = ctx.getImageData(0, Math.max(0, y - 1), canvas.width, 2).data;
+    let ink = 0; for (let i = 3; i < d.length; i += 4) if (d[i] > 30) ink++;
+    return { ink, pad: PAD };
+  });
+  check('aucun cadre ni pointillé autour des camps', frame.ink === 0, frame);
+
+  // Le joueur qui a la main pose un mur horizontal, d'un seul toucher.
   const turn = ua.turn;
   const actor = turn === 1 ? a : b, other = turn === 1 ? b : a;
   const wr = turn === 1 ? 5 : 2, wc = 3;
   await actor.evaluate(() => setMode('wallH'));
   const w = await wallCenter(actor, 'h', wr, wc);
   await tapBoard(actor, w.x, w.y);
-  await sleep(300);
-  const pending = await actor.evaluate(() => pendingWall && { kind: pendingWall.kind, r: pendingWall.r, c: pendingWall.c });
-  const placedEarly = await other.evaluate(([r, c]) => hW[r][c], [wr, wc]);
-  check('premier toucher : le mur est montré à sa place, rien n\'est encore joué', pending && pending.kind === 'h' && pending.r === wr && pending.c === wc && !placedEarly, { pending, placedEarly });
-  const status = await actor.evaluate(() => document.getElementById('statusTxt').textContent);
-  check('la barre du bas dit « Touchez pour poser »', /Touchez\s*pour poser/.test(status), status);
-  await shot(actor, '03-mur-montre');
-  await tapBoard(actor, w.x, w.y);
   const arrived = await waitFor(() => other.evaluate(([r, c]) => hW[r][c] && hO[r][c], [wr, wc]), 6000);
-  check('second toucher : le mur est posé, chez l\'adversaire à la couleur de celui qui l\'a posé', arrived === turn, arrived);
+  check('un seul toucher : le mur est posé, chez l\'adversaire à la couleur de celui qui l\'a posé', arrived === turn, arrived);
   await sleep(1900); // la lueur du dernier mur s'éteint
   const wp = await wallCenter(other, 'h', wr, wc);
   const wallRgb = await pixelAt(other, wp.x, wp.y);
@@ -194,6 +197,7 @@ async function online(browser) {
   await shot(other, '04-mur-colore-chez-adversaire');
 
   // On joue la manche : Alice monte droit vers le camp de Bob ; Bob se range à gauche de son camp.
+  let glide = false;
   for (let i = 0; i < 40; i++) {
     const [sa, sb] = await Promise.all([readUi(a), readUi(b)]);
     if (sa.result || sb.result) break;
@@ -213,9 +217,16 @@ async function online(browser) {
     if (!target) { await sleep(150); continue; }
     const cpos = await cellCenter(mover, target.r, target.c);
     await tapBoard(mover, cpos.x, cpos.y);
-    await sleep(250);
+    if (!glide) {
+      // Chez l'adversaire, le pion qui vient de jouer glisse : il passe par des positions intermédiaires.
+      const watcher = mover === a ? b : a, slot = mover === a ? 1 : 2;
+      const seen = await waitFor(() => watcher.evaluate(s => QuoridorUI.pawnMoving(s) ? 'moving' : null, slot), 1500, 20);
+      glide = seen === 'moving';
+    }
+    await sleep(350);
   }
   const res = await waitFor(async () => { const [x, y] = await Promise.all([readUi(a), readUi(b)]); return x.result && y.result ? [x, y] : null; }, 8000);
+  check('le pion glisse de sa case à la suivante chez l\'adversaire', glide === true, glide);
   check('fin de manche : « Manche gagnée » chez Alice, « Manche perdue » chez Bob', res && res[0].result === 'Manche gagnée' && res[1].result === 'Manche perdue', res && [res[0].result, res[1].result]);
   check('la carte donne le score de chacun (1 – 0 / 0 – 1)', res && res[0].resultScore.join('-') === '1-0' && res[1].resultScore.join('-') === '0-1', res && [res[0].resultScore, res[1].resultScore]);
   check('le score de l\'en-tête suit (1 – 0 chez Alice)', res && res[0].score.join('-') === '1-0', res && res[0].score);
@@ -243,17 +254,14 @@ async function offline(browser, route, label, local) {
   check(`${label} : score « 0 – 0 » et « Manche 1 · 6 »`, ui.score.join('-') === '0-0' && ui.manche === 'Manche 1 · 6', [ui.score, ui.manche]);
   check(`${label} : cases restantes sous les profils`, /cases$/.test(ui.goalMe) && /cases$/.test(ui.goalOp), [ui.goalMe, ui.goalOp]);
   check(`${label} : compteurs de murs Blanc / Rouge`, /226, 232, 240/.test(ui.chipMe) && /248, 113, 113/.test(ui.chipOp), [ui.chipMe, ui.chipOp]);
-  // Le mur en deux temps, au tour du joueur 1 (contre l'IA : on attend son tour).
+  // Le mur d'un seul toucher, au tour du joueur 1 (contre l'IA : on attend son tour).
   await waitFor(() => page.evaluate(() => currentSlot === 1 && gameReady && !isProcessing), 8000);
   await page.evaluate(() => setMode('wallH'));
   const w = await wallCenter(page, 'h', 4, 2);
   await tapBoard(page, w.x, w.y);
   await sleep(250);
-  const shown = await page.evaluate(() => ({ pending: !!pendingWall, placed: hW[4][2] }));
-  await tapBoard(page, w.x, w.y);
-  await sleep(250);
   const placed = await page.evaluate(() => ({ placed: hW[4][2], owner: hO[4][2] }));
-  check(`${label} : le mur se montre, puis se pose au second toucher, à la couleur du joueur 1`, shown.pending && !shown.placed && placed.placed && placed.owner === 1, { shown, placed });
+  check(`${label} : un seul toucher pose le mur, à la couleur du joueur 1`, placed.placed && placed.owner === 1, placed);
   await shot(page, `07-${local ? 'entre-amis' : 'ia'}`);
   check(`${label} : aucune erreur JavaScript`, errors.length === 0, errors);
   await context.close();
