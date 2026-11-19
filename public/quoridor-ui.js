@@ -198,7 +198,7 @@
     var w = BAND_WORDS[lang];
     if (!w || !text) return text;
     var m;
-    if (text === '▲ VOTRE ARRIVÉE') return '▲ ' + w.arrival;
+    if (text === '▲ VOTRE ARRIVÉE' || text === 'VOTRE ARRIVÉE') return w.arrival;
     if (text === 'VOTRE CAMP') return w.camp;
     if (text === 'départ') return w.start;
     if ((m = /^camp de (.+)$/.exec(text))) return w.campOf(m[1]);
@@ -218,14 +218,25 @@
       var label = labels[entry[0]];
       if (!label || !label.text) return;
       var col = color(label.slot);
-      var text = bandText(label.text) + (label.sub ? '  ·  ' + bandText(label.sub) : '');
+      var arrow = /^▲\s*/.test(label.text);
+      var text = bandText(label.text).replace(/^▲\s*/, '') + (label.sub ? '  ·  ' + bandText(label.sub) : '');
       ctx.font = '700 ' + size + 'px Inter, system-ui, -apple-system, sans-serif';
       try { ctx.letterSpacing = '1.2px'; } catch (_) {}
       var w = ctx.measureText(text).width, y = entry[1];
       /* Une pastille de la couleur du camp, puis le texte. */
       var dot = size * 0.42, x0 = width / 2 - w / 2 - dot * 2.2;
-      ctx.beginPath(); ctx.arc(x0 + dot, y, dot, 0, Math.PI * 2);
-      ctx.fillStyle = col.fill; ctx.fill();
+      if (arrow) {
+        /* L'arrivée : un chevron doré à la place de la pastille. */
+        ctx.save();
+        ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        ctx.lineWidth = Math.max(1.6, size * 0.17);
+        ctx.strokeStyle = 'rgba(251,191,36,0.98)';
+        drawChevron(ctx, x0 + dot, y + dot * 0.15, dot * 1.05, -1);
+        ctx.restore();
+      } else {
+        ctx.beginPath(); ctx.arc(x0 + dot, y, dot, 0, Math.PI * 2);
+        ctx.fillStyle = col.fill; ctx.fill();
+      }
       ctx.fillStyle = label.gold ? 'rgba(251,191,36,0.98)' : 'rgba(' + col.rgb + ',0.92)';
       ctx.fillText(text, width / 2 + dot * 1.1, y + 0.5);
     });
@@ -268,7 +279,9 @@
     'html body .top-center h1{font-size:13px!important;letter-spacing:4px!important}',
     'html body .top-center .sub{display:none!important}',
     'html body .bet-badge{margin-top:6px!important}',
-    'html body .goal-hint{font-family:Inter,system-ui,sans-serif!important;font-size:10px!important;font-weight:600;letter-spacing:.02em!important;color:rgba(255,255,255,.72)!important;white-space:nowrap}',
+    'html body .goal-hint{font-family:Inter,system-ui,sans-serif!important;font-size:10px!important;font-weight:600;letter-spacing:.02em!important;color:rgba(255,255,255,.72)!important;white-space:nowrap;display:inline-flex!important;align-items:center;gap:3px}',
+    'html body .goal-hint .q-chev{width:11px;height:11px;flex:none;color:rgba(255,255,255,.55)}',
+    'html body .goal-hint[data-dir="up"] .q-chev{color:#fbbf24}',
     'html body .walls-badge{gap:5px!important;font-family:Inter,system-ui,sans-serif}',
     'html body .q-wall-chip{display:inline-block;width:16px;height:5px;border-radius:3px;background:var(--q-c,#fbbf24);}',
     /* La carte de fin de manche : en haut, au-dessus de l'en-tête, le plateau reste lisible. */
@@ -357,6 +370,68 @@
     if (n === 0) return 'Arrivé';
     return n === 1 ? '1 case' : n + ' cases';
   }
+
+  /* Le sens de la marche, dessiné (owner, 2026-11-19 : « change le design de la flèche montante… quelque
+     chose de plus professionnel ») : un chevron fin, jamais un caractère ▲ / ▼. */
+  var CHEVRON = {
+    up: '<svg class="q-chev" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 8L6 4.5 9.5 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    down: '<svg class="q-chev" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4L6 7.5 9.5 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+  };
+  /* Sous un profil : le chevron, puis « 6 cases » dans son propre nœud (le traducteur des plateaux le lit). */
+  function paintGoal(el, text, dir) {
+    if (!el) return;
+    var key = text ? dir + '|' + text : '';
+    if (el.getAttribute('data-goal') === key) return;
+    el.setAttribute('data-goal', key);
+    el.setAttribute('data-dir', dir);
+    if (!text) { el.innerHTML = ''; return; }
+    el.innerHTML = (CHEVRON[dir] || CHEVRON.up) + '<span class="q-goal-txt"></span>';
+    el.lastChild.textContent = text;
+  }
+
+  /* Le geste du départ : trois chevrons au-dessus du pion, qui s'allument l'un après l'autre dans le sens
+     de la marche — une vague dorée, sans lueur. `dir` : -1 vers le haut de l'écran, 1 vers le bas. */
+  function drawChevron(ctx, x, y, w, dir) {
+    var k = dir < 0 ? 1 : -1;
+    ctx.beginPath();
+    ctx.moveTo(x - w, y + k * w * 0.55);
+    ctx.lineTo(x, y - k * w * 0.45);
+    ctx.lineTo(x + w, y + k * w * 0.55);
+    ctx.stroke();
+  }
+  function drawDirectionCue(ctx, x, y, cs, dir, redraw) {
+    var still = reducedMotion();
+    var w = Math.max(7, cs * 0.24), gap = Math.max(7, cs * 0.21), lw = Math.max(2.2, cs * 0.07);
+    var base = y + dir * cs * 0.66, t = now() / 1000;
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (var i = 0; i < 3; i++) {
+      var yy = base + dir * i * gap, a;
+      if (still || now() - cue.since >= 6000) a = [0.95, 0.7, 0.45][i];
+      else {
+        var ph = (t / 1.5 - i * 0.17) % 1;
+        if (ph < 0) ph += 1;
+        a = 0.28 + 0.72 * Math.pow(Math.max(0, Math.sin(ph * Math.PI)), 1.6);
+      }
+      ctx.lineWidth = lw + 2;
+      ctx.strokeStyle = 'rgba(12,8,36,' + (0.32 * a).toFixed(3) + ')';
+      drawChevron(ctx, x, yy, w, dir);
+      ctx.lineWidth = lw;
+      ctx.strokeStyle = 'rgba(251,191,36,' + a.toFixed(3) + ')';
+      drawChevron(ctx, x, yy, w, dir);
+    }
+    ctx.restore();
+    /* La vague tourne 6 s à 20 images par seconde, puis reste immobile : le plateau entier se redessine à
+       chaque image, un téléphone n'a pas à le faire 60 fois par seconde pendant qu'on réfléchit. */
+    var tNow = now();
+    if (tNow - cue.last > 1000) cue.since = tNow;
+    cue.last = tNow;
+    if (!still && redraw && tNow - cue.since < 6000 && !cue.timer) {
+      cue.timer = setTimeout(function () { cue.timer = 0; if (!document.hidden) redraw(); }, 50);
+    }
+  }
+  var cue = { since: 0, last: 0, timer: 0 };
 
   /* ── Fin de manche, fin de match ────────────────────────────────────── */
   var ICONS = {
@@ -487,6 +562,8 @@
     roundLabel: roundLabel,
     paintChip: paintChip,
     distanceText: distanceText,
+    paintGoal: paintGoal,
+    drawDirectionCue: drawDirectionCue,
     showResult: showResult,
     hideResult: hideResult,
     decorateMatchCard: decorateMatchCard,

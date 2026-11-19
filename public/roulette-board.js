@@ -691,15 +691,15 @@
       sealBox.innerHTML = '';
       var intro = document.createElement('div');
       intro.textContent = s.revealed
-        ? 'L’issue a été tirée avant vos choix. Empreinte SHA-256 du texte révélé :'
-        : 'L’issue de cette manche est déjà tirée et scellée. Son empreinte SHA-256 :';
+        ? 'La couleur a été tirée avant vos choix. Empreinte SHA-256 du texte révélé :'
+        : 'La couleur de cette manche est déjà tirée et scellée. Son empreinte SHA-256 :';
       sealBox.appendChild(intro);
       var code = document.createElement('code'); code.textContent = s.hash; sealBox.appendChild(code);
       if (s.revealed) {
         var label = document.createElement('div'); label.textContent = 'Texte révélé :'; label.style.marginTop = '6px'; sealBox.appendChild(label);
         var raw = document.createElement('code'); raw.textContent = s.revealed; sealBox.appendChild(raw);
         var key = document.createElement('div'); key.style.marginTop = '6px';
-        key.textContent = 'Issue 0 à 39 : la couleur du joueur 1 ; 40 à 79 : celle du joueur 2 ; 80 à 99 : une couleur que personne n’a choisie.';
+        key.textContent = 'Le texte révélé contient la couleur tirée (0 à 5, dans l’ordre de la roue) : chacune avait 1 chance sur 6.';
         sealBox.appendChild(key);
       }
       sealDetail = s.hash;

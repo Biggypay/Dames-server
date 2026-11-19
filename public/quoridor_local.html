@@ -532,8 +532,8 @@ function updDistances() {
   if (key === lastDistances) return;
   lastDistances = key;
   var a = QuoridorUI.distanceText(d1), b = QuoridorUI.distanceText(d2);
-  document.getElementById('goal-me').textContent = a ? '▲ ' + a : '';
-  document.getElementById('goal-op').textContent = b ? '▼ ' + b : '';
+  QuoridorUI.paintGoal(document.getElementById('goal-me'), a, 'up');
+  QuoridorUI.paintGoal(document.getElementById('goal-op'), b, 'down');
 }
 /* Un mur se pose en deux temps : on le voit à sa place, puis on le confirme. */
 function clearPendingWall() {
@@ -570,7 +570,7 @@ function updUI() {
 /* ══════════════════════════════════════════
    DESSIN
 ══════════════════════════════════════════ */
-function drawDirectionHint(){if(!gameReady||gameOver)return;if((currentSlot===1?s1Pos:s2Pos).r!==(currentSlot===1?8:0))return;var p=currentSlot===1?s1Pos:s2Pos,dir=currentSlot===1?-1:1,x=cx(p.c)+CS/2,y=cy(p.r)+CS/2,len=Math.max(28,CS*1.05);ctx.save();ctx.strokeStyle='rgba(251,191,36,.9)';ctx.fillStyle='rgba(251,191,36,.95)';ctx.lineWidth=Math.max(3,CS*.08);ctx.lineCap='round';var sy=y+dir*CS*.7,ey=sy+dir*len;ctx.beginPath();ctx.moveTo(x,sy);ctx.lineTo(x,ey);ctx.stroke();ctx.beginPath();ctx.moveTo(x,ey+dir*10);ctx.lineTo(x-8,ey-dir*3);ctx.lineTo(x+8,ey-dir*3);ctx.closePath();ctx.fill();ctx.restore();}
+function drawDirectionHint(){if(!gameReady||gameOver)return;var p=currentSlot===1?s1Pos:s2Pos;if(p.r!==(currentSlot===1?8:0))return;QuoridorUI.drawDirectionCue(ctx,cx(p.c)+CS/2,cy(p.r)+CS/2,CS,currentSlot===1?-1:1,draw);}
 function draw(){
   if(!G)return;
   ctx.clearRect(0,0,canvas.width,canvas.height);

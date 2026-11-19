@@ -681,8 +681,8 @@ function updDistances() {
   if (key === lastDistances) return;
   lastDistances = key;
   var a = QuoridorUI.distanceText(dMe), b = QuoridorUI.distanceText(dOp);
-  document.getElementById('goal-me').textContent = a ? '▲ ' + a : '';
-  document.getElementById('goal-op').textContent = b ? '▼ ' + b : '';
+  QuoridorUI.paintGoal(document.getElementById('goal-me'), a, 'up');
+  QuoridorUI.paintGoal(document.getElementById('goal-op'), b, 'down');
 }
 
 function setMode(m) {
@@ -749,10 +749,7 @@ function drawDirectionHint(){
   if(own.r!==(MY_SLOT===1?8:0))return;
   var x=cx(own.c)+CS/2, y=cy(own.r)+CS/2;
   if(MY_SLOT===2){x=canvas.width-x;y=canvas.height-y;}
-  var len=Math.max(28,CS*1.05);
-  ctx.save();ctx.strokeStyle='rgba(251,191,36,.9)';ctx.fillStyle='rgba(251,191,36,.95)';ctx.lineWidth=Math.max(3,CS*.08);ctx.lineCap='round';
-  ctx.beginPath();ctx.moveTo(x,y-CS*.7);ctx.lineTo(x,y-CS*.7-len);ctx.stroke();
-  ctx.beginPath();ctx.moveTo(x,y-CS*.7-len-10);ctx.lineTo(x-8,y-CS*.7-len+3);ctx.lineTo(x+8,y-CS*.7-len+3);ctx.closePath();ctx.fill();ctx.restore();
+  QuoridorUI.drawDirectionCue(ctx, x, y, CS, -1, draw);
 }
 function draw() {
   if (!G) return;

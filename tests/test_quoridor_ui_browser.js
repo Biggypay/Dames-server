@@ -98,6 +98,7 @@ const readUi = page => page.evaluate(() => {
     manche: (document.querySelector('#top .manche-lbl') || {}).textContent || '',
     goalMe: document.getElementById('goal-me').textContent,
     goalOp: document.getElementById('goal-op').textContent,
+    goalDirs: ['goal-me', 'goal-op'].map(id => { const el = document.getElementById(id); return el.getAttribute('data-dir') + ':' + !!el.querySelector('svg.q-chev'); }),
     chipMe: chip('chip-me'), chipOp: chip('chip-op'),
     result: card && card.classList.contains('q-show') ? (card.querySelector('.q-title') || {}).textContent : null,
     resultScore: card && card.classList.contains('q-show') ? [...card.querySelectorAll('.q-final b')].map(b => b.textContent) : null,
@@ -149,7 +150,18 @@ async function online(browser) {
   const [ua, ub] = await Promise.all([readUi(a), readUi(b)]);
   check('en-tête : le score en grand, 0 – 0, des deux côtés', ua.score.join('-') === '0-0' && ub.score.join('-') === '0-0', { ua: ua.score, ub: ub.score });
   check('en-tête : « Manche 1 · 6 »', ua.manche === 'Manche 1 · 6' && ub.manche === 'Manche 1 · 6', [ua.manche, ub.manche]);
-  check('sous chaque profil : les cases restantes (8 au départ)', ua.goalMe === '▲ 8 cases' && ua.goalOp === '▼ 8 cases' && ub.goalMe === '▲ 8 cases', [ua.goalMe, ua.goalOp, ub.goalMe]);
+  check('sous chaque profil : les cases restantes (8 au départ)', ua.goalMe === '8 cases' && ua.goalOp === '8 cases' && ub.goalMe === '8 cases', [ua.goalMe, ua.goalOp, ub.goalMe]);
+  check('le sens est un chevron dessiné (jamais ▲ / ▼) : vers le haut sous son profil, vers le bas sous l’adversaire',
+    ua.goalDirs.join() === 'up:true,down:true' && ub.goalDirs.join() === 'up:true,down:true', [ua.goalDirs, ub.goalDirs]);
+  // Au départ, trois chevrons dorés montent au-dessus de son pion (plus la flèche pleine d'avant).
+  const cue = await a.evaluate(() => {
+    const x = cx(s1Pos.c) + CS / 2, y = cy(s1Pos.r) + CS / 2, gap = Math.max(7, CS * 0.21);
+    const top = Math.round(y - CS * 0.66 - 2 * gap - CS * 0.3), h = Math.round(CS * 0.66 + 2 * gap + CS * 0.3 - CS * 0.45);
+    const d = ctx.getImageData(Math.round(x - CS * 0.3), top, Math.round(CS * 0.6), h).data;
+    let gold = 0; for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 40 && d[i] > 180 && d[i + 1] > 120 && d[i + 2] < 110) gold++;
+    return { gold, cueFn: typeof QuoridorUI.drawDirectionCue === 'function', src: drawDirectionHint.toString().includes('drawDirectionCue') };
+  });
+  check('au départ, des chevrons dorés au-dessus de son pion (le nouveau dessin)', cue.cueFn && cue.src && cue.gold > 8, cue);
   check('compteur de murs à la couleur du joueur (Blanc / Rouge)',
     /226, 232, 240/.test(ua.chipMe) && /248, 113, 113/.test(ua.chipOp) && /248, 113, 113/.test(ub.chipMe) && /226, 232, 240/.test(ub.chipOp), [ua.chipMe, ua.chipOp, ub.chipMe, ub.chipOp]);
 

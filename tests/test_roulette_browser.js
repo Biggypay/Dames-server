@@ -71,7 +71,7 @@ const DRAWS = {
   // Identifiants des couleurs tirées (0 Rouge, 1 Orange, 2 Jaune, 3 Vert, 4 Bleu, 5 Violet).
   [GAME.match]: [0, 1, 1, 3, 4, 0, 2, 0, 4, 3],
   [GAME.grace]: [4, 4, 4, 4, 4],
-  [GAME.reload]: [5, 5, 5, 5, 5]
+  [GAME.reload]: [2, 2, 2, 2, 2]
 };
 
 let failures = 0;
@@ -371,7 +371,7 @@ async function fullMatch(browser) {
   check('en bas, seulement « Règles » (ni tirages, ni empreinte)', feet.every(f => JSON.stringify(f) === JSON.stringify(['rulesBtn'])) && !(await p1.$('#history')), feet);
   await p1.click('#rulesBtn');
   const rules = await p1.evaluate(() => ({ text: document.getElementById('rulesBox').textContent.replace(/\s+/g, ' '), seal: document.getElementById('seal').closest('#rulesBox') !== null }));
-  check('les règles disent la couleur exacte et les chances (4 sur 10 chacun)', /Seule la couleur exacte compte/.test(rules.text) && /4 chances sur 10/.test(rules.text) && !/plus proche/.test(rules.text), rules.text.slice(0, 160));
+  check('les règles disent les chances (1 sur 6 pour chaque couleur) et qui marque', /1 chance sur 6/.test(rules.text) && /Chaque joueur qui a choisi la couleur tirée marque 1 point/.test(rules.text) && !/4 chances sur 10/.test(rules.text) && !/plus proche/.test(rules.text), rules.text.slice(0, 200));
   check('les règles disent la même couleur : la manche se joue, 1 point chacun si elle sort', /Même couleur pour les deux : la manche se joue quand même/.test(rules.text) && /1 point chacun/.test(rules.text) && !/rechoisi/.test(rules.text), rules.text);
   check('la vérification du tirage est dans les règles', rules.seal);
   await p1.click('#rulesBtn');
