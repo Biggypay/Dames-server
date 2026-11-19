@@ -8,7 +8,7 @@
  *    haut), les deux bandes nommées (« Votre arrivée », « Votre camp ») ;
  * 3. un seul toucher pose un mur (owner, 2026-11-19 : « pas besoin de cliquer deux fois ») ; chez
  *    l'adversaire il apparaît à la couleur de celui qui l'a posé ; un pion GLISSE vers sa case ;
- *    aucun cadre autour des camps, aucun pointillé (« enlève les petits traits ») ;
+ *    aucun cadre autour des camps, aucun pointillé (« enlève les petits traits »), aucune lueur sur les murs ;
  *    chez l'adversaire il apparaît à la couleur de celui qui l'a posé — le serveur dit qui (hO / vO) ;
  * 4. fin de manche : la carte « Manche gagnée » / « Manche perdue » avec le score, chez chacun la
  *    sienne, et JAMAIS la fiche de fin de match chez le perdant (la page déclarait le match perdu dès
@@ -188,7 +188,17 @@ async function online(browser) {
   await tapBoard(actor, w.x, w.y);
   const arrived = await waitFor(() => other.evaluate(([r, c]) => hW[r][c] && hO[r][c], [wr, wc]), 6000);
   check('un seul toucher : le mur est posé, chez l\'adversaire à la couleur de celui qui l\'a posé', arrived === turn, arrived);
-  await sleep(1900); // la lueur du dernier mur s'éteint
+  // Aucune lueur sur les murs (owner, 2026-11-19 : « il y a des lueurs dans les murs, enlève-les ») :
+  // pendant un dessin complet du plateau, aucune ombre floue n'est jamais réglée.
+  const glows = await other.evaluate(() => {
+    const proto = CanvasRenderingContext2D.prototype, desc = Object.getOwnPropertyDescriptor(proto, 'shadowBlur');
+    let seen = 0;
+    Object.defineProperty(proto, 'shadowBlur', { configurable: true, get() { return desc.get.call(this); }, set(v) { if (v > 0) seen++; desc.set.call(this, v); } });
+    try { draw(); } finally { Object.defineProperty(proto, 'shadowBlur', desc); }
+    return seen;
+  });
+  check('aucune lueur autour des murs (aucune ombre floue au dessin)', glows === 0, glows);
+  await sleep(300);
   const wp = await wallCenter(other, 'h', wr, wc);
   const wallRgb = await pixelAt(other, wp.x, wp.y);
   check(`le mur se voit ${turn === 1 ? 'blanc' : 'rouge'} chez l'adversaire`, turn === 1 ? isWhite(wallRgb) : isRed(wallRgb), wallRgb);

@@ -633,7 +633,6 @@ function drawWalls() {
       if (hW[r][c]) {
         rect = hwRect(r, c);
         ctx.save();
-        ctx.shadowColor = 'rgba(251,191,36,0.65)'; ctx.shadowBlur = 9;
         ctx.beginPath(); rrect(rect.x, rect.y, rect.w, rect.h, 2);
         ctx.fillStyle = '#fbbf24'; ctx.fill();
         ctx.restore();
@@ -641,7 +640,6 @@ function drawWalls() {
       if (vW[r][c]) {
         rect = vwRect(r, c);
         ctx.save();
-        ctx.shadowColor = 'rgba(251,191,36,0.65)'; ctx.shadowBlur = 9;
         ctx.beginPath(); rrect(rect.x, rect.y, rect.w, rect.h, 2);
         ctx.fillStyle = '#fbbf24'; ctx.fill();
         ctx.restore();

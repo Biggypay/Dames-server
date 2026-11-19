@@ -83,20 +83,17 @@
     var col = color(owner);
     ctx.save();
     ctx.globalAlpha = alpha == null ? 1 : alpha;
-    ctx.shadowColor = 'rgba(' + col.rgb + ',' + Math.min(1, 0.5 + 0.45 * glow) + ')';
-    ctx.shadowBlur = 7 + 16 * glow;
     var grad = horizontal
       ? ctx.createLinearGradient(0, rect.y, 0, rect.y + rect.h)
       : ctx.createLinearGradient(rect.x, 0, rect.x + rect.w, 0);
     grad.addColorStop(0, col.light); grad.addColorStop(0.5, col.fill); grad.addColorStop(1, col.deep);
     ctx.beginPath(); roundRect(ctx, rect.x, rect.y, rect.w, rect.h, Math.min(rect.w, rect.h) / 2);
     ctx.fillStyle = grad; ctx.fill();
-    ctx.shadowBlur = 0;
     ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(15,10,40,0.45)'; ctx.stroke();
     ctx.restore();
   }
 
-  /* Tous les murs posés, chacun à la couleur de son auteur ; le dernier brille un instant. */
+  /* Tous les murs posés, chacun à la couleur de son auteur, nets : aucune lueur (propriétaire, 2026-11-19). */
   function drawWalls(ctx, g, hW, vW, hO, vO, fx) {
     var last = fx && fx.lastWall, t = now();
     for (var r = 0; r < 8; r++) for (var c = 0; c < 8; c++) {
@@ -273,7 +270,7 @@
     'html body .bet-badge{margin-top:6px!important}',
     'html body .goal-hint{font-family:Inter,system-ui,sans-serif!important;font-size:10px!important;font-weight:600;letter-spacing:.02em!important;color:rgba(255,255,255,.72)!important;white-space:nowrap}',
     'html body .walls-badge{gap:5px!important;font-family:Inter,system-ui,sans-serif}',
-    'html body .q-wall-chip{display:inline-block;width:16px;height:5px;border-radius:3px;background:var(--q-c,#fbbf24);box-shadow:0 0 6px var(--q-g,rgba(251,191,36,.6))}',
+    'html body .q-wall-chip{display:inline-block;width:16px;height:5px;border-radius:3px;background:var(--q-c,#fbbf24);}',
     /* La carte de fin de manche : en haut, au-dessus de l'en-tête, le plateau reste lisible. */
     'html body #q-result{position:fixed;left:50%;top:calc(env(safe-area-inset-top,0px) + 10px);z-index:170;display:flex;align-items:center;gap:12px;'
       + 'max-width:calc(100% - 24px);width:max-content;box-sizing:border-box;padding:10px 16px 10px 12px;border-radius:18px;'
