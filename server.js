@@ -26,6 +26,9 @@ const TikanEngine = require('./lib/tikan-engine.js');
 const ChessEngine = ChessEngineFactory();
 const crypto     = require('crypto');
 const { ensureSeriesState, seriesPayload, recordRoundResult, advanceRoundStarter } = require('./lib/gomoku-series');
+/* Quoridor se joue en une seule partie (propriétaire, 2026-11-20 : « pas 6 manches mais de préférence une seule
+   comme celui de dames ») ; le Morpion à 5 garde ses six manches. */
+const QUORIDOR_ROUNDS = 1;
 const Roulette = require('./lib/color-roulette');
 const PORT       = process.env.PORT || 3000;
 
@@ -4533,7 +4536,8 @@ io.on('connection', (socket) => {
     if (!databaseCheck.ok) return rejectSocket(socket, databaseCheck.message);
     let qroom = quoriRooms.get(room);
     if (!qroom) {
-      qroom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, gameState: quoriInitialState(), currentSlot: 1, stateVersion: 0, turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null, turnPlayer: null };
+      // Une seule partie, comme les Dames (propriétaire, 2026-11-20) : le premier arrivé gagne le match.
+      qroom = { id: room, players: {}, status: 'waiting', betAmount: bet || 0, currency: currency || 'HTG', disconnectTimer: null, gameState: quoriInitialState(), currentSlot: 1, stateVersion: 0, turnTimer: null, graceTimer: null, turnStartTime: null, graceStartTime: null, turnPlayer: null, regularRounds: QUORIDOR_ROUNDS };
       ensureSeriesState(qroom);
       quoriRooms.set(room, qroom);
     }

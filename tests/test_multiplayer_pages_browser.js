@@ -179,33 +179,38 @@ async function quoridor(browser, game) {
     check('Quoridor : le joueur voit son propre coup confirmé, sans retour en arrière', moverSynced === true);
   }
 
-  /* Une manche entière, jusqu'à la ligne d'arrivée : chacun avance au plus
-     court. La manche suivante appelait `applyServerState`, recopiée du
-     Morpion à cinq mais absente de cette page — une exception à chaque
-     nouvelle manche de la série. */
-  const roundOver = () => Promise.all(match.pages.map(p => p.evaluate(() => seriesState.roundsPlayed >= 1)));
-  for (let turn = 0; turn < 60 && !(await roundOver()).every(Boolean); turn++) {
-    const states = await Promise.all(match.pages.map(p => p.evaluate(() => ({ ready: gameReady, slot: currentSlot, mine: MY_SLOT, waiting: isProcessing }))));
-    const active = match.pages.find((p, i) => states[i].ready && states[i].slot === states[i].mine && !states[i].waiting);
-    if (!active) { await sleep(150); continue; }
-    await active.evaluate(() => {
-      if (mode !== 'move' || !vmoves.length) return;
-      const goal = MY_SLOT === 1 ? 0 : 8;
-      const best = vmoves.slice().sort((a, b) => Math.abs(a.r - goal) - Math.abs(b.r - goal))[0];
-      let x = cx(best.c) + CS / 2, y = cy(best.r) + CS / 2;
-      if (MY_SLOT === 2) { x = canvas.width - x; y = canvas.height - y; }
-      handleTap({ x, y });
-    });
-    await sleep(250);
-  }
-  check('Quoridor : une manche se joue jusqu à la ligne d arrivée', (await roundOver()).every(Boolean));
-  const secondRound = await waitFor(async () => (await Promise.all(match.pages.map(p => p.evaluate(() =>
-    gameReady && seriesState.currentRound === 2 && s1Pos.r === 8 && s2Pos.r === 0)))).every(Boolean), 12000);
-  check('Quoridor : la manche 2 repart d un plateau neuf chez les deux joueurs', secondRound === true);
-  const finalModal = await Promise.all(match.pages.map(p => p.evaluate(() =>
-    document.getElementById('gameOverModal').classList.contains('show'))));
-  check('Quoridor : perdre une manche n ouvre pas l écran de fin de match', finalModal.every(shown => !shown), finalModal);
-
+  /* Une seule partie, comme les Dames (2026-11-20) : elle se joue jusqu'à l'arrivée APRÈS les contrôles du chrono
+     et de la pause (main appelle `finish`) — une fois l'arrivée atteinte, le match est fini. */
+  match.finish = async () => {
+    const over = () => Promise.all(match.pages.map(p => p.evaluate(() => document.getElementById('gameOverModal').classList.contains('show'))));
+    for (let turn = 0; turn < 80 && !(await over()).every(Boolean); turn++) {
+      const states = await Promise.all(match.pages.map(p => p.evaluate(() => ({ ready: gameReady, slot: currentSlot, mine: MY_SLOT, waiting: isProcessing }))));
+      const active = match.pages.find((p, i) => states[i].ready && states[i].slot === states[i].mine && !states[i].waiting);
+      if (!active) { await sleep(150); continue; }
+      await active.evaluate(() => {
+        if (mode !== 'move' || !vmoves.length) return;
+        const goal = MY_SLOT === 1 ? 0 : 8;
+        const best = vmoves.slice().sort((a, b) => Math.abs(a.r - goal) - Math.abs(b.r - goal))[0];
+        let x = cx(best.c) + CS / 2, y = cy(best.r) + CS / 2;
+        if (MY_SLOT === 2) { x = canvas.width - x; y = canvas.height - y; }
+        handleTap({ x, y });
+      });
+      await sleep(250);
+    }
+    const ends = await waitFor(async () => {
+      const cards = await Promise.all(match.pages.map(p => p.evaluate(() => ({
+        shown: document.getElementById('gameOverModal').classList.contains('show'),
+        title: document.getElementById('modalTitle').textContent,
+        single: QuoridorUI.isSingle(seriesState)
+      }))));
+      return cards.every(c => c.shown) ? cards : null;
+    }, 12000);
+    check('Quoridor : une seule partie — le premier arrivé gagne le match, chez les deux joueurs',
+      !!ends && ends.every(c => c.single) && ends.some(c => /Victoire/.test(c.title)) && ends.some(c => /Défaite/.test(c.title)), ends);
+    await sleep(4500);
+    const noNext = await Promise.all(match.pages.map(p => p.evaluate(() => !gameReady && seriesState.roundsPlayed === 1)));
+    check('Quoridor : aucune manche suivante après l’arrivée', noNext.every(Boolean), noNext);
+  };
   return match;
 }
 
@@ -372,6 +377,7 @@ async function main() {
       const match = await (scenarios[game.key] || startsCleanly)(browser, game);
       await turnRingMoves(game, match);
       await tournamentPause(game, match);
+      if (typeof match.finish === 'function') await match.finish();
       check(`${game.key} : aucune exception JavaScript, aucune ressource manquante`, match.errors.length === 0, [...new Set(match.errors)]);
       await match.close();
     }

@@ -317,10 +317,15 @@ var s1Walls, s2Walls;
 var currentSlot;
 var mode;
 var vmoves, vhw, vvw;
-var seriesState={regularRounds:6,roundsPlayed:0,currentRound:1,wins:{1:0,2:0},draws:0,history:[],suddenDeath:false};
+/* Une seule partie (2026-11-20) : le serveur annonce `regularRounds: 1` ; une salle d'avant garde ses six manches. */
+var seriesState={regularRounds:1,roundsPlayed:0,currentRound:1,wins:{1:0,2:0},draws:0,history:[],suddenDeath:false};
+function singleGame(){return QuoridorUI.isSingle(seriesState);}
 function updateSeriesUI(next){
   if(next&&typeof next==='object') seriesState=next;
   var el=document.getElementById('roundsProgress'); if(!el)return; el.innerHTML='';
+  /* Une partie unique : aucun repère de manche. */
+  el.style.display=singleGame()?'none':'';
+  if(singleGame()){if(window.MindspilleHud)MindspilleHud.decisive(el,[],false);refreshScore();return;}
   var played=Math.min(6,Number(seriesState.roundsPlayed)||0), hist=Array.isArray(seriesState.history)?seriesState.history:[];
   for(var i=0;i<6;i++){var d=document.createElement('span');d.className='round-dot';
     if(i<played){var r=hist[i];d.className+=' '+(r===MY_SLOT?'win':r===0?'draw':(r===1||r===2)?'lose':'');}
@@ -337,7 +342,7 @@ function updateSeriesUI(next){
 function refreshScore(){
   var w=seriesState.wins||{}, me=IS_SPECTATOR?1:MY_SLOT, op=me===1?2:1, lbl=QuoridorUI.roundLabel(seriesState);
   QuoridorUI.setScore(document.querySelector('#top .top-center'), Number(w[me])||0, Number(w[op])||0,
-    gameOver ? 'Match terminé' : lbl.text, me, op, !gameOver && lbl.decisive);
+    gameOver ? (singleGame() ? 'Partie terminée' : 'Match terminé') : lbl.text, me, op, !gameOver && lbl.decisive, singleGame());
 }
 var gameOver = false, gameReady = false, resultSent = false;
 var isProcessing = false;
@@ -750,8 +755,8 @@ function draw() {
   drawCells();
   drawGhosts();
   QuoridorUI.drawTrail(ctx, G, lastMove);
-  /* Une flèche dans chaque case jaune, vers le déplacement qu'elle offre (le plateau retourné la tourne avec lui). */
-  if (vmoves.length) QuoridorUI.drawMoveArrows(ctx, MY_SLOT === 1 ? s1Pos : s2Pos, vmoves, cx, cy, CS);
+  /* Dans chaque case jaune, les trois chevrons animés vers le déplacement qu'elle offre (le plateau retourné les tourne avec lui). */
+  if (vmoves.length) QuoridorUI.drawMoveArrows(ctx, MY_SLOT === 1 ? s1Pos : s2Pos, vmoves, cx, cy, CS, draw);
   QuoridorUI.drawWalls(ctx, G, hW, vW, hO, vO, { lastWall: fxWall });
   if (pendingWall) QuoridorUI.drawPreview(ctx, pendingWall.kind === 'h' ? hwRect(pendingWall.r, pendingWall.c) : vwRect(pendingWall.r, pendingWall.c), pendingWall.kind === 'h', MY_SLOT);
   drawPawns();
@@ -1047,25 +1052,27 @@ function handleGameEnd(winnerSlot, reason) {
   var winnerName = winnerSlot === 1 ? P1_NAME : P2_NAME;
 
   var title, message, modalClass, tone;
+  var single = singleGame();
   if (IS_SPECTATOR) {
-    title = winnerName + ' remporte le match';
+    title = winnerName + (single ? ' remporte la partie' : ' remporte le match');
     modalClass = 'win-modal'; tone = 'info';
-    message = away ? 'L’adversaire n’a pas joué à temps.' : 'Série terminée.';
+    message = away ? 'L’adversaire n’a pas joué à temps.' : single ? winnerName + ' a atteint le camp adverse.' : 'Série terminée.';
   } else if (iWon) {
     title = 'Victoire !';
     modalClass = 'win-modal'; tone = 'win';
-    message = away ? OP_NAME + ' a abandonné ou n’a pas joué à temps.' : 'Vous remportez la série contre ' + OP_NAME + '.';
+    message = away ? OP_NAME + ' a abandonné ou n’a pas joué à temps.' : single ? 'Vous avez atteint le camp de ' + OP_NAME + '.' : 'Vous remportez la série contre ' + OP_NAME + '.';
     createConfetti(); createConfetti();
   } else {
     title = 'Défaite';
     modalClass = 'lose-modal'; tone = 'lose';
-    message = away ? 'Le temps de jeu est écoulé.' : OP_NAME + ' remporte la série.';
+    message = away ? 'Le temps de jeu est écoulé.' : single ? OP_NAME + ' a atteint votre camp.' : OP_NAME + ' remporte la série.';
   }
 
   document.getElementById('modalTitle').textContent = title;
   document.getElementById('finalMessage').textContent = message;
   document.getElementById('modalContent').className = 'modal ' + modalClass;
-  QuoridorUI.decorateMatchCard({ tone: tone, title: title, score: [Number(w[me]) || 0, Number(w[op]) || 0], scoreSlots: [me, op] });
+  /* Une partie unique n'a pas de score de série à montrer. */
+  QuoridorUI.decorateMatchCard({ tone: tone, title: title, score: single ? null : [Number(w[me]) || 0, Number(w[op]) || 0], scoreSlots: [me, op] });
   refreshScore();
 
   if (BET_AMOUNT > 0 && !IS_SPECTATOR) {
@@ -1386,6 +1393,13 @@ function initSocket() {
     var away=data.reason==='timeout'||data.reason==='forfeit';
     fxRound={winner:w,pos:w===1?s1Pos:w===2?s2Pos:null,t0:performance.now()};
     QuoridorUI.pulse(draw,3300);
+    /* Une partie unique : la fin de la manche EST la fin du match — la carte de fin suit (game:over), sans carte
+       de manche entre les deux ; la rangée atteinte clignote et le plateau reste lisible. */
+    if(singleGame()){
+      var won=!IS_SPECTATOR&&w===MY_SLOT;
+      document.getElementById('statusTxt').innerHTML=IS_SPECTATOR?'Partie<br>terminée':won?'Partie<br>gagnée':'Partie<br>perdue';
+      return;
+    }
     var r=roundResultText(w,away);
     QuoridorUI.showResult({tone:r.tone,title:r.title,sub:r.sub,score:[Number(sc[me])||0,Number(sc[op])||0],scoreSlots:[me,op],ms:3700});
     if(r.tone==='win')createConfetti();
@@ -1574,7 +1588,9 @@ window.addEventListener('message', function(e){
       /* Les manches gagnées et perdues de chaque camp (owner, 2026-10-26). */
       var played = Array.isArray(d.history) ? d.history.filter(function(w){ return w === 0 || w === 1 || w === 2; }).slice(0, 99) : [];
       var tied = (Number(d.wins[1]) || 0) === (Number(d.wins[2]) || 0);
-      updateSeriesUI({ regularRounds:6, roundsPlayed:played.length, currentRound:played.length + 1, wins:d.wins,
+      /* Un match d'une seule manche (depuis le 2026-11-20) est une partie unique ; les anciens en avaient six. */
+      var regular = Number(d.regularRounds) === 1 || Number(d.regularRounds) === 6 ? Number(d.regularRounds) : (played.length <= 1 ? 1 : 6);
+      updateSeriesUI({ regularRounds:regular, roundsPlayed:played.length, currentRound:played.length + 1, wins:d.wins,
         draws:0, history:played.slice(0, 6), decisive:played.slice(6), suddenDeath:played.length >= 6 && tied });
     }
     draw();

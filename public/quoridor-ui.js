@@ -319,9 +319,26 @@
 
   /* Le score de la série (« 2 – 1 ») et « Manche 4 · 6 », sous le titre. Les deux `.snum` et
      `.manche-lbl` sont lus par mindspille-split.js pour le panneau de l'application. */
-  function setScore(center, mine, theirs, label, mineSlot, theirSlot, decisive) {
+  /* Une seule partie (propriétaire, 2026-11-20 : « pas 6 manches mais une seule comme celui de dames ») : la série
+     annonce `regularRounds: 1`. Pas de score de série ni de repères de manches : « Partie unique » sous le titre. */
+  function isSingle(series) { return (Number(series && series.regularRounds) || 6) === 1; }
+  function setScore(center, mine, theirs, label, mineSlot, theirSlot, decisive, single) {
     if (!center) return;
     var row = center.querySelector('.q-score');
+    if (single) {
+      /* Le score d'une série n'a pas de sens pour une partie unique (et le panneau de l'application le lirait). */
+      if (row) row.parentNode.removeChild(row);
+      var only = center.querySelector('.q-manche');
+      if (!only) {
+        only = document.createElement('div');
+        only.className = 'manche-lbl q-manche';
+        var title = center.querySelector('h1');
+        if (title && title.nextSibling) center.insertBefore(only, title.nextSibling); else center.appendChild(only);
+      }
+      only.textContent = label || '';
+      only.setAttribute('data-decisive', '0');
+      return;
+    }
     if (!row) {
       row = document.createElement('div');
       row.className = 'score-row q-score';
@@ -351,6 +368,7 @@
   /* « Manche 4 · 6 », puis « Manche 8 · décisive » en mort subite. */
   function roundLabel(series) {
     var s = series || {}, regular = Number(s.regularRounds) || 6;
+    if (regular === 1) return { text: 'Partie unique', decisive: false };
     var played = Number(s.roundsPlayed) || 0;
     var w = s.wins || {};
     var tied = (Number(w[1]) || 0) === (Number(w[2]) || 0);
@@ -399,56 +417,84 @@
     ctx.stroke();
   }
 
-  /* Où aller : une flèche DANS chaque case jaune, tournée vers le déplacement qu'elle offre (propriétaire,
-     2026-11-20 : « la direction de la flèche doit se trouver à l'intérieur des casiers jaunes … même dimension que
-     le casier … sans débordement … de manière constante »). Elle remplace les chevrons au-dessus du pion.
-     Taillée sur la case (la flèche en couvre ~70 % sur sa longueur et sa largeur, toujours dedans), fixe — elle
-     reste tant que la case est proposée —, dorée sur un liseré sombre, sans lueur. `dr`, `dc` : le sens du
-     déplacement sur le plateau (−1, 0, 1 ; un saut droit compte comme un pas, un saut en biais va en diagonale). */
-  function moveArrowGeometry(x, y, cs, dr, dc) {
+  /* Où aller : dans CHAQUE case jaune, les trois chevrons qui s'allument l'un après l'autre dans le sens du
+     déplacement (propriétaire, 2026-11-20 : « l'animation de la flèche d'avant … c'est elle qui devrait être dans
+     les casiers, les flèches à trois têtes uniquement qui s'animaient … même dimension que le casier … sans
+     débordement … de manière constante »). Taillés sur la case (environ 65 % de sa longueur et de sa largeur),
+     découpés sur elle : jamais dehors, à toutes les tailles. La vague dorée court de l'arrière vers l'avant tant que
+     la case est proposée (20 images/s, seulement page visible) ; immobile si l'appareil demande moins
+     d'animations. `dr`, `dc` : le sens du déplacement sur le plateau (un saut droit compte comme un pas, un saut
+     en biais va en diagonale). */
+  function moveChevronGeometry(x, y, cs, dr, dc) {
     var sr = dr > 0 ? 1 : dr < 0 ? -1 : 0, sc = dc > 0 ? 1 : dc < 0 ? -1 : 0;
     if (!sr && !sc) return null;
     var diag = sr !== 0 && sc !== 0, len = diag ? Math.SQRT2 : 1;
-    var ux = sc / len, uy = sr / len;
-    /* La longueur : 70 % de la case en ligne droite ; en biais, la même emprise sur chaque axe. */
-    var L = cs * 0.70 * (diag ? Math.SQRT2 * 0.9 : 1), head = cs * 0.30, wing = Math.PI / 4;
-    var mx = x + cs / 2, my = y + cs / 2;
-    var tip = { x: mx + ux * L / 2, y: my + uy * L / 2 }, tail = { x: mx - ux * L / 2, y: my - uy * L / 2 };
-    var back = function (a) {
-      var cos = Math.cos(a), sin = Math.sin(a);
-      return { x: tip.x - head * (ux * cos - uy * sin), y: tip.y - head * (ux * sin + uy * cos) };
-    };
-    return { tip: tip, tail: tail, left: back(wing), right: back(-wing), width: Math.max(2, cs * 0.09) };
+    var ux = sc / len, uy = sr / len, px = -uy, py = ux;
+    var w = cs * (diag ? 0.24 : 0.27), depth = w * 0.95, gap = cs * (diag ? 0.17 : 0.2);
+    var mx = x + cs / 2, my = y + cs / 2, chevrons = [];
+    for (var i = 0; i < 3; i++) {
+      var off = (i - 1) * gap;
+      var ax = mx + ux * (off + depth / 2), ay = my + uy * (off + depth / 2);
+      var bx = mx + ux * (off - depth / 2), by = my + uy * (off - depth / 2);
+      chevrons.push({ apex: { x: ax, y: ay }, left: { x: bx + px * w, y: by + py * w }, right: { x: bx - px * w, y: by - py * w } });
+    }
+    return { chevrons: chevrons, width: Math.max(2, cs * 0.085), dir: { x: ux, y: uy } };
   }
-  function strokeArrow(ctx, g) {
+  /* L'éclat de chaque chevron (0 l'arrière, 2 l'avant) : la vague va vers l'avant ; immobile, l'avant brille le plus. */
+  function chevronAlpha(i, t, still) {
+    if (still) return [0.5, 0.75, 1][i];
+    var ph = (t / 1.2 - i * 0.17) % 1;
+    if (ph < 0) ph += 1;
+    return 0.3 + 0.7 * Math.pow(Math.max(0, Math.sin(ph * Math.PI)), 1.6);
+  }
+  function strokeChevron(ctx, c) {
     ctx.beginPath();
-    ctx.moveTo(g.tail.x, g.tail.y); ctx.lineTo(g.tip.x, g.tip.y);
-    ctx.moveTo(g.left.x, g.left.y); ctx.lineTo(g.tip.x, g.tip.y); ctx.lineTo(g.right.x, g.right.y);
+    ctx.moveTo(c.left.x, c.left.y); ctx.lineTo(c.apex.x, c.apex.y); ctx.lineTo(c.right.x, c.right.y);
     ctx.stroke();
   }
-  function drawMoveArrow(ctx, x, y, cs, dr, dc) {
-    var g = moveArrowGeometry(x, y, cs, dr, dc);
+  function drawMoveArrow(ctx, x, y, cs, dr, dc, t, still) {
+    var g = moveChevronGeometry(x, y, cs, dr, dc);
     if (!g) return;
     ctx.save();
     /* La case limite le dessin : rien ne déborde, quelle que soit la taille de l'écran. */
     ctx.beginPath(); roundRect(ctx, x + 1, y + 1, cs - 2, cs - 2, 4); ctx.clip();
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    ctx.lineWidth = g.width + 2.5;
-    ctx.strokeStyle = 'rgba(12,8,36,0.42)';
-    strokeArrow(ctx, g);
-    ctx.lineWidth = g.width;
-    ctx.strokeStyle = '#fbbf24';
-    strokeArrow(ctx, g);
+    for (var i = 0; i < 3; i++) {
+      var a = chevronAlpha(i, t, still);
+      ctx.lineWidth = g.width + 2.5;
+      ctx.strokeStyle = 'rgba(12,8,36,' + (0.4 * a).toFixed(3) + ')';
+      strokeChevron(ctx, g.chevrons[i]);
+      ctx.lineWidth = g.width;
+      ctx.strokeStyle = 'rgba(251,191,36,' + a.toFixed(3) + ')';
+      strokeChevron(ctx, g.chevrons[i]);
+    }
     ctx.restore();
   }
-  /* Toutes les cases proposées depuis `from` ; `cellX(c)`, `cellY(r)` : le coin de la case (ceux de la page). */
-  function drawMoveArrows(ctx, from, moves, cellX, cellY, cs) {
+  var arrowsAnim = { timer: 0, redraw: null, last: 0 };
+  /* Toutes les cases proposées depuis `from` ; `cellX(c)`, `cellY(r)` : le coin de la case (ceux de la page) ;
+     `redraw` : la fonction de dessin de la page, rappelée pour faire courir la vague. */
+  function drawMoveArrows(ctx, from, moves, cellX, cellY, cs, redraw) {
     if (!from || !moves || !moves.length) return;
+    var still = reducedMotion(), t = now() / 1000;
     for (var i = 0; i < moves.length; i++) {
       var m = moves[i];
-      drawMoveArrow(ctx, cellX(m.c), cellY(m.r), cs, m.r - from.r, m.c - from.c);
+      drawMoveArrow(ctx, cellX(m.c), cellY(m.r), cs, m.r - from.r, m.c - from.c, t, still);
     }
+    arrowsAnim.last = now();
+    if (typeof redraw === 'function') arrowsAnim.redraw = redraw;
+    if (!still && arrowsAnim.redraw && !arrowsAnim.timer && !(root.document && root.document.hidden)) {
+      arrowsAnim.timer = setTimeout(function () {
+        arrowsAnim.timer = 0;
+        if (!(root.document && root.document.hidden) && arrowsAnim.redraw) arrowsAnim.redraw();
+      }, 50);
+    }
+  }
+  /* Revenu sur la page, la vague reprend (une page cachée ne redessine rien). */
+  if (root.document && root.document.addEventListener) {
+    root.document.addEventListener('visibilitychange', function () {
+      if (!root.document.hidden && arrowsAnim.redraw && now() - arrowsAnim.last < 180000) arrowsAnim.redraw();
+    });
   }
 
   /* ── Fin de manche, fin de match ────────────────────────────────────── */
@@ -578,12 +624,14 @@
     hold: hold,
     setScore: setScore,
     roundLabel: roundLabel,
+    isSingle: isSingle,
     paintChip: paintChip,
     distanceText: distanceText,
     paintGoal: paintGoal,
     drawMoveArrow: drawMoveArrow,
     drawMoveArrows: drawMoveArrows,
-    moveArrowGeometry: moveArrowGeometry,
+    moveChevronGeometry: moveChevronGeometry,
+    chevronAlpha: chevronAlpha,
     showResult: showResult,
     hideResult: hideResult,
     decorateMatchCard: decorateMatchCard,

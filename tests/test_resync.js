@@ -364,20 +364,12 @@ async function main() {
       return { ended, winner: await overWinner, loser: await overLoser };
     };
 
-    const quoriRound1 = await quoriPlayRound({ starter: quoriRunner, ri: 1, ii: 1 });
-    check('Quoridor attributes the round to the pawn that reached its goal', quoriRound1.ended.roundWinner === quoriRunner, quoriRound1.ended);
-    check('Quoridor does not end the match on the first round of a six-round series',
-      quoriRound1.ended.series.roundsPlayed === 1 && quoriRound1.ended.series.wins[quoriRunner] === 1, quoriRound1.ended.series);
-
-    /* Quatre manches suffisent : 4 - 0 avec deux manches restantes, l'ecart
-       n'est plus rattrapable. Le starter alterne a chaque manche, et
-       quoridor_round_start l'annonce — on le lit plutot que de le deduire. */
-    let quoriResult1, quoriResult2;
-    for (let round = 2; round <= 4; round++) {
-      const nextRound = await once(quoriSockets[quoriRunner], 'quoridor_round_start', 8000);
-      const outcome = await quoriPlayRound({ starter: Number(nextRound.currentSlot), expectMatchOver: round === 4 });
-      if (round === 4) { quoriResult1 = outcome.winner; quoriResult2 = outcome.loser; }
-    }
+    /* Une seule partie, comme les Dames (propriétaire, 2026-11-20) : le premier arrivé gagne le MATCH. */
+    const quoriFinal = await quoriPlayRound({ starter: quoriRunner, ri: 1, ii: 1, expectMatchOver: true });
+    check('Quoridor attributes the game to the pawn that reached its goal', quoriFinal.ended.roundWinner === quoriRunner, quoriFinal.ended);
+    check('Quoridor is one single game: the first arrival ends the match',
+      quoriFinal.ended.series.regularRounds === 1 && quoriFinal.ended.series.roundsPlayed === 1 && quoriFinal.ended.series.wins[quoriRunner] === 1, quoriFinal.ended.series);
+    const quoriResult1 = quoriFinal.winner, quoriResult2 = quoriFinal.loser;
     check('Quoridor winner receives only a win', quoriResult1.game === 'quoridor' && quoriResult1.result === 'win' && quoriResult1.myResult > 0, quoriResult1);
     check('Quoridor loser receives only a loss', quoriResult2.game === 'quoridor' && quoriResult2.result === 'loss' && quoriResult2.myResult < 0, quoriResult2);
     check('Sync de reprise diffusée à la reconnexion (version 2)', rsync.version === 2, rsync.version);

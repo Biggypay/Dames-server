@@ -2,17 +2,17 @@
  * Quoridor, intuitif et immersif (owner, 2026-11-18) — public/quoridor-ui.js et les trois pages.
  *
  * Deux vrais navigateurs, une vraie partie en ligne, puis l'IA et « entre amis » :
- * 1. en-tête : le score de la série en grand (« 0 – 0 ») et « Manche 1 · 6 » ; sous chaque profil, les
- *    cases qui restent jusqu'à l'arrivée ; le compteur de murs à la couleur du joueur ;
+ * 1. en-tête : une seule partie, comme les Dames (2026-11-20) — « Partie unique », ni score de série ni repères de
+ *    manches ; sous chaque profil, les cases qui restent ; le compteur de murs à la couleur du joueur ;
  * 2. plateau : chaque camp teinté de la couleur de son joueur (Blanc en bas pour le joueur 1, Rouge en
  *    haut), les deux bandes nommées (« Votre arrivée », « Votre camp ») ;
  * 3. un seul toucher pose un mur (owner, 2026-11-19 : « pas besoin de cliquer deux fois ») ; chez
  *    l'adversaire il apparaît à la couleur de celui qui l'a posé ; un pion GLISSE vers sa case ;
  *    aucun cadre autour des camps, aucun pointillé (« enlève les petits traits »), aucune lueur sur les murs ;
  *    chez l'adversaire il apparaît à la couleur de celui qui l'a posé — le serveur dit qui (hO / vO) ;
- * 4. fin de manche : la carte « Manche gagnée » / « Manche perdue » avec le score, chez chacun la
- *    sienne, et JAMAIS la fiche de fin de match chez le perdant (la page déclarait le match perdu dès
- *    que l'adversaire touchait son camp) ; puis la manche suivante repart des camps ;
+ * 4. le premier arrivé gagne le MATCH : la fiche de fin « Victoire ! » / « Défaite », sans score de série, et rien
+ *    avant que le serveur ne le dise (la page ne conclut jamais seule) ; aucune « manche suivante » ;
+ *    les trois chevrons animés dans chaque case jaune, vers le déplacement, sans déborder ;
  * 5. l'IA et « entre amis » : le même en-tête, les mêmes camps, le mur en deux temps.
  */
 const { spawn } = require('child_process');
@@ -103,6 +103,10 @@ const readUi = page => page.evaluate(() => {
     result: card && card.classList.contains('q-show') ? (card.querySelector('.q-title') || {}).textContent : null,
     resultScore: card && card.classList.contains('q-show') ? [...card.querySelectorAll('.q-final b')].map(b => b.textContent) : null,
     modal: document.getElementById('gameOverModal').classList.contains('show'),
+    modalTitle: (document.getElementById('modalTitle') || {}).textContent || '',
+    modalScore: (() => { const fs = document.querySelector('#modalContent .final-score'); return fs && fs.style.display !== 'none' ? fs.textContent : null; })(),
+    markers: (() => { const el = document.getElementById('roundsProgress'); return el ? (el.style.display === 'none' ? 'hidden' : String(el.children.length)) : 'none'; })(),
+    status: (document.getElementById('statusTxt') || {}).textContent || '',
     ready: typeof gameReady !== 'undefined' && gameReady,
     mySlot: MY_SLOT, turn: currentSlot, s1: s1Pos, s2: s2Pos
   };
@@ -148,44 +152,66 @@ async function online(browser) {
   await sleep(400);
 
   const [ua, ub] = await Promise.all([readUi(a), readUi(b)]);
-  check('en-tête : le score en grand, 0 – 0, des deux côtés', ua.score.join('-') === '0-0' && ub.score.join('-') === '0-0', { ua: ua.score, ub: ub.score });
-  check('en-tête : « Manche 1 · 6 »', ua.manche === 'Manche 1 · 6' && ub.manche === 'Manche 1 · 6', [ua.manche, ub.manche]);
+  check('une seule partie : ni score de série ni repères de manches dans l’en-tête', ua.score.length === 0 && ub.score.length === 0 && ua.markers === 'hidden' && ub.markers === 'hidden', { ua: [ua.score, ua.markers], ub: [ub.score, ub.markers] });
+  check('en-tête : « Partie unique »', ua.manche === 'Partie unique' && ub.manche === 'Partie unique', [ua.manche, ub.manche]);
   check('sous chaque profil : les cases restantes (8 au départ)', ua.goalMe === '8 cases' && ua.goalOp === '8 cases' && ub.goalMe === '8 cases', [ua.goalMe, ua.goalOp, ub.goalMe]);
   check('le sens est un chevron dessiné (jamais ▲ / ▼) : vers le haut sous son profil, vers le bas sous l’adversaire',
     ua.goalDirs.join() === 'up:true,down:true' && ub.goalDirs.join() === 'up:true,down:true', [ua.goalDirs, ub.goalDirs]);
-  // Une flèche DANS chaque case jaune, tournée vers le déplacement (propriétaire, 2026-11-20) : dorée, dans la
-  // case (rien dans l'espace entre les cases), et plus aucun chevron au-dessus du pion.
-  for (const page of [a, b]) {
-    const arrows = await page.evaluate(() => {
+  // Dans CHAQUE case jaune, les trois chevrons animés de la flèche d'avant (propriétaire, 2026-11-20) : dorés,
+  // dans la case (rien dans l'espace autour), la pointe vers le déplacement ; la vague court ; plus de chevrons
+  // au-dessus du pion.
+  /* Le tour doit être établi chez les deux joueurs avant d'agir (sous charge, il arrive après « prêt »). */
+  const turnNow = () => waitFor(async () => {
+    const [x, y] = await Promise.all([a, b].map(pg => pg.evaluate(() => ({ ready: gameReady, turn: currentSlot, busy: isProcessing }))));
+    return x.ready && y.ready && !x.busy && !y.busy && x.turn === y.turn && (x.turn === 1 || x.turn === 2) ? x.turn : null;
+  }, 10000);
+  const firstTurn = await turnNow();
+  let chevronChecked = 0;
+  for (const page of [firstTurn === 2 ? b : a]) {
+    const chevrons = await page.evaluate(async () => {
       if (currentSlot !== MY_SLOT || !vmoves.length) return { skip: true };
       const flip = MY_SLOT === 2, from = MY_SLOT === 1 ? s1Pos : s2Pos;
-      const gold = (d, i) => d[i + 3] > 200 && d[i] > 220 && d[i + 1] > 150 && d[i + 1] < 215 && d[i + 2] < 90;
-      const cells = vmoves.map((m) => {
-        /* La case à l'écran (le plateau du joueur 2 est retourné). */
+      const gold = (d, i) => d[i + 3] > 120 && d[i] > 200 && d[i + 1] > 140 && d[i + 2] < 100;
+      const sample = () => vmoves.map((m) => {
         let x = cx(m.c), y = cy(m.r);
         if (flip) { x = canvas.width - x - CS; y = canvas.height - y - CS; }
-        const d = ctx.getImageData(Math.round(x), Math.round(y), Math.round(CS), Math.round(CS)).data;
-        let n = 0, sx = 0, sy = 0;
-        for (let i = 0; i < d.length; i += 4) if (gold(d, i)) { n++; sx += (i / 4) % Math.round(CS); sy += Math.floor(i / 4 / Math.round(CS)); }
-        /* Le sens à l'écran, du centre vers les pixels dorés de la pointe (le centre de gravité penche vers elle). */
-        const dirR = Math.sign(m.r - from.r) * (flip ? -1 : 1), dirC = Math.sign(m.c - from.c) * (flip ? -1 : 1);
-        const gx = n ? sx / n - CS / 2 : 0, gy = n ? sy / n - CS / 2 : 0;
-        /* L'anneau juste autour de la case (l'espace entre les cases) : pas d'or qui déborde. */
-        const ring = [[x - 2, y - 2, CS + 4, 2], [x - 2, y + CS, CS + 4, 2], [x - 2, y, 2, CS], [x + CS, y, 2, CS]];
+        const size = Math.round(CS), d = ctx.getImageData(Math.round(x), Math.round(y), size, size).data;
+        // Le sens à l'écran ; puis, pour chaque pixel doré, son avance dans ce sens et son écart à l'axe.
+        const ux = Math.sign(m.c - from.c) * (flip ? -1 : 1), uy = Math.sign(m.r - from.r) * (flip ? -1 : 1);
+        const len = Math.hypot(ux, uy) || 1, u = [ux / len, uy / len], v = [-u[1], u[0]];
+        let n = 0, sig = 0, nearSum = 0, nearN = 0, farSum = 0, farN = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          if (!gold(d, i)) continue;
+          n++; sig = (sig * 31 + i) % 1000003;
+          const px = (i / 4) % size - size / 2, py = Math.floor(i / 4 / size) - size / 2;
+          const along = px * u[0] + py * u[1], across = Math.abs(px * v[0] + py * v[1]);
+          if (across < size * 0.06) { nearSum += along; nearN++; } else if (across > size * 0.16) { farSum += along; farN++; }
+        }
+        // Un chevron : sa pointe (sur l'axe) est en avant de ses ailes (loin de l'axe).
+        const pointsRight = nearN > 0 && farN > 0 && nearSum / nearN > farSum / farN;
+        // L'anneau à 2–3 px hors de la case (le liseré de la case elle-même déborde de 0,8 px).
+        const ring = [[x - 3, y - 3, CS + 6, 1], [x - 3, y + CS + 2, CS + 6, 1], [x - 3, y - 3, 1, CS + 6], [x + CS + 2, y - 3, 1, CS + 6]];
         let spill = 0;
         for (const [rx, ry, rw, rh] of ring) {
           const e = ctx.getImageData(Math.round(rx), Math.round(ry), Math.max(1, Math.round(rw)), Math.max(1, Math.round(rh))).data;
           for (let i = 0; i < e.length; i += 4) if (gold(e, i)) spill++;
         }
-        return { m, n, spill, pointsRight: (dirC === 0 || Math.sign(gx) === dirC) && (dirR === 0 || Math.sign(gy) === dirR), gx: +gx.toFixed(1), gy: +gy.toFixed(1), cs: CS };
+        return { m, n, sig, pointsRight, spill, cs: CS };
       });
-      return { cells, hint: typeof drawDirectionHint, cue: typeof QuoridorUI.drawDirectionCue };
+      const first = sample();
+      await new Promise((r) => setTimeout(r, 260));
+      const second = sample();
+      const moving = first.some((c, i) => c.n !== second[i].n || c.sig !== second[i].sig);
+      return { cells: first, moving, hint: typeof drawDirectionHint, cue: typeof QuoridorUI.drawDirectionCue };
     });
-    if (arrows.skip) continue;
-    check('une flèche dorée dans chaque case jaune, tournée vers le déplacement, sans déborder de la case',
-      arrows.cells.length >= 2 && arrows.cells.every((c) => c.n > c.cs * 1.5 && c.pointsRight && c.spill === 0), arrows.cells);
-    check('plus aucun chevron hors des cases (au-dessus du pion)', arrows.hint === 'undefined' && arrows.cue === 'undefined', arrows);
+    if (chevrons.skip) continue;
+    chevronChecked++;
+    check('les trois chevrons dorés dans chaque case jaune, la pointe vers le déplacement, sans déborder',
+      chevrons.cells.length >= 2 && chevrons.cells.every((c) => c.n > c.cs && c.pointsRight && c.spill === 0), chevrons.cells);
+    check('la vague des chevrons court tant que la case est proposée', chevrons.moving === true, chevrons.moving);
+    check('plus aucun chevron hors des cases (au-dessus du pion)', chevrons.hint === 'undefined' && chevrons.cue === 'undefined', chevrons);
   }
+  check('les chevrons ont été contrôlés chez le joueur au trait', chevronChecked === 1, { firstTurn, chevronChecked });
   check('compteur de murs à la couleur du joueur (Blanc / Rouge)',
     /226, 232, 240/.test(ua.chipMe) && /248, 113, 113/.test(ua.chipOp) && /248, 113, 113/.test(ub.chipMe) && /226, 232, 240/.test(ub.chipOp), [ua.chipMe, ua.chipOp, ub.chipMe, ub.chipOp]);
 
@@ -216,7 +242,7 @@ async function online(browser) {
   check('aucun cadre ni pointillé autour des camps', frame.ink === 0, frame);
 
   // Le joueur qui a la main pose un mur horizontal, d'un seul toucher.
-  const turn = ua.turn;
+  const turn = await turnNow();
   const actor = turn === 1 ? a : b, other = turn === 1 ? b : a;
   const wr = turn === 1 ? 5 : 2, wc = 3;
   await actor.evaluate(() => setMode('wallH'));
@@ -271,19 +297,20 @@ async function online(browser) {
     }
     await sleep(350);
   }
-  const res = await waitFor(async () => { const [x, y] = await Promise.all([readUi(a), readUi(b)]); return x.result && y.result ? [x, y] : null; }, 8000);
+  // Le premier arrivé gagne le MATCH : la fiche de fin, de chaque côté, sans score de série — jamais de « manche
+  // suivante ». Entre l'arrivée et la fiche, la carte de manche ne s'affiche pas (la fin suit à 1,6 s).
+  const res = await waitFor(async () => { const [x, y] = await Promise.all([readUi(a), readUi(b)]); return x.modal && y.modal ? [x, y] : null; }, 9000);
   check('le pion glisse de sa case à la suivante chez l\'adversaire', glide === true, glide);
-  check('fin de manche : « Manche gagnée » chez Alice, « Manche perdue » chez Bob', res && res[0].result === 'Manche gagnée' && res[1].result === 'Manche perdue', res && [res[0].result, res[1].result]);
-  check('la carte donne le score de chacun (1 – 0 / 0 – 1)', res && res[0].resultScore.join('-') === '1-0' && res[1].resultScore.join('-') === '0-1', res && [res[0].resultScore, res[1].resultScore]);
-  check('le score de l\'en-tête suit (1 – 0 chez Alice)', res && res[0].score.join('-') === '1-0', res && res[0].score);
-  check('Bob ne voit PAS la fiche de fin de match pour une manche perdue', res && !res[1].modal && !res[0].modal, res && [res[0].modal, res[1].modal]);
+  check('le premier arrivé gagne le match : « Victoire ! » chez Alice, « Défaite » chez Bob', res && /Victoire/.test(res[0].modalTitle) && /Défaite/.test(res[1].modalTitle), res && [res[0].modalTitle, res[1].modalTitle]);
+  check('aucune carte « Manche gagnée / perdue » pour une partie unique', res && !res[0].result && !res[1].result, res && [res[0].result, res[1].result]);
+  check('la fiche de fin sans score de série', res && res[0].modalScore === null && res[1].modalScore === null, res && [res[0].modalScore, res[1].modalScore]);
+  check('l’en-tête dit « Partie terminée », toujours sans score', res && res[0].manche === 'Partie terminée' && res[0].score.length === 0, res && [res[0].manche, res[0].score]);
   await sleep(300);
-  await shot(a, '05-manche-gagnee');
-  await shot(b, '06-manche-perdue');
-  const next = await waitFor(async () => { const [x, y] = await Promise.all([readUi(a), readUi(b)]); return x.ready && y.ready && x.s1.r === 8 && y.s2.r === 0 && !x.result ? [x, y] : null; }, 9000);
-  check('la manche suivante repart des camps, « Manche 2 · 6 », la carte rangée', next && next[0].manche === 'Manche 2 · 6' && next[1].manche === 'Manche 2 · 6', next && [next[0].manche, next[1].manche]);
-  const fresh = next && await a.evaluate(() => hW.every(row => row.every(v => !v)) && hO.every(row => row.every(v => v === 0)));
-  check('nouvelle manche : plus aucun mur, plus aucun propriétaire', fresh === true, fresh);
+  await shot(a, '05-partie-gagnee');
+  await shot(b, '06-partie-perdue');
+  await sleep(4500);
+  const after = await Promise.all([readUi(a), readUi(b)]);
+  check('pas de manche suivante : les pions restent où la partie s’est jouée', after[0].s1.r === 0 && !after[0].ready && !after[1].ready, after.map(u => [u.s1, u.ready]));
   check('aucune erreur JavaScript en ligne', errors.length === 0, errors);
   await Promise.all(pages.map(p => p.context().close()));
 }
@@ -297,33 +324,38 @@ async function offline(browser, route, label, local) {
   await waitFor(() => page.evaluate(() => gameReady), 8000);
   await sleep(600);
   const ui = await readUi(page);
-  check(`${label} : score « 0 – 0 » et « Manche 1 · 6 »`, ui.score.join('-') === '0-0' && ui.manche === 'Manche 1 · 6', [ui.score, ui.manche]);
+  check(`${label} : une seule partie, « Partie unique », ni score ni repères de manches`, ui.score.length === 0 && ui.manche === 'Partie unique' && ui.markers === 'hidden', [ui.score, ui.manche, ui.markers]);
   check(`${label} : cases restantes sous les profils`, /cases$/.test(ui.goalMe) && /cases$/.test(ui.goalOp), [ui.goalMe, ui.goalOp]);
   check(`${label} : compteurs de murs Blanc / Rouge`, /226, 232, 240/.test(ui.chipMe) && /248, 113, 113/.test(ui.chipOp), [ui.chipMe, ui.chipOp]);
   // Le mur d'un seul toucher, au tour du joueur 1 (contre l'IA : on attend son tour).
   await waitFor(() => page.evaluate(() => currentSlot === 1 && gameReady && !isProcessing), 8000);
-  // Les flèches dans les cases jaunes, ici aussi ; et, pour chaque sens possible (pas, saut droit, saut en
-  // biais), la flèche tient dans la case, à toutes les tailles de case.
+  // Les chevrons dans les cases jaunes, ici aussi ; et, pour chaque sens possible (pas, saut droit, saut en
+  // biais), les trois chevrons tiennent dans la case, à toutes les tailles de case.
   const offArrows = await page.evaluate(() => {
-    const gold = (d, i) => d[i + 3] > 200 && d[i] > 220 && d[i + 1] > 150 && d[i + 1] < 215 && d[i + 2] < 90;
+    const gold = (d, i) => d[i + 3] > 120 && d[i] > 200 && d[i + 1] > 140 && d[i + 2] < 100;
     const from = currentSlot === 1 ? s1Pos : s2Pos;
     const cells = vmoves.map((m) => {
-      const d = ctx.getImageData(Math.round(cx(m.c)), Math.round(cy(m.r)), Math.round(CS), Math.round(CS)).data;
-      let n = 0, sx = 0, sy = 0;
-      for (let i = 0; i < d.length; i += 4) if (gold(d, i)) { n++; sx += (i / 4) % Math.round(CS); sy += Math.floor(i / 4 / Math.round(CS)); }
-      const gx = n ? sx / n - CS / 2 : 0, gy = n ? sy / n - CS / 2 : 0;
-      const dr = Math.sign(m.r - from.r), dc = Math.sign(m.c - from.c);
-      return { n, ok: n > CS * 1.5 && (dc === 0 || Math.sign(gx) === dc) && (dr === 0 || Math.sign(gy) === dr) };
+      const size = Math.round(CS), d = ctx.getImageData(Math.round(cx(m.c)), Math.round(cy(m.r)), size, size).data;
+      const ux = Math.sign(m.c - from.c), uy = Math.sign(m.r - from.r), len = Math.hypot(ux, uy) || 1, u = [ux / len, uy / len], v = [-u[1], u[0]];
+      let n = 0, nearSum = 0, nearN = 0, farSum = 0, farN = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        if (!gold(d, i)) continue;
+        n++;
+        const px = (i / 4) % size - size / 2, py = Math.floor(i / 4 / size) - size / 2;
+        const along = px * u[0] + py * u[1], across = Math.abs(px * v[0] + py * v[1]);
+        if (across < size * 0.06) { nearSum += along; nearN++; } else if (across > size * 0.16) { farSum += along; farN++; }
+      }
+      return { n, ok: n > CS && nearN > 0 && farN > 0 && nearSum / nearN > farSum / farN };
     });
     let inside = true;
     for (const cs of [18, 30, 44, 70]) for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1], [-2, 0], [2, 0], [-1, -1], [-1, 1], [1, -1], [1, 1]]) {
-      const g = QuoridorUI.moveArrowGeometry(0, 0, cs, dr, dc), half = (g.width + 2.5) / 2;
-      for (const pt of [g.tip, g.tail, g.left, g.right]) if (pt.x - half < 0 || pt.y - half < 0 || pt.x + half > cs || pt.y + half > cs) inside = false;
+      const g = QuoridorUI.moveChevronGeometry(0, 0, cs, dr, dc), half = (g.width + 2.5) / 2;
+      for (const c of g.chevrons) for (const pt of [c.apex, c.left, c.right]) if (pt.x - half < 0 || pt.y - half < 0 || pt.x + half > cs || pt.y + half > cs) inside = false;
     }
     return { cells, inside };
   });
-  check(`${label} : une flèche dans chaque case jaune, dans le bon sens`, offArrows.cells.length >= 2 && offArrows.cells.every((c) => c.ok), offArrows.cells);
-  check(`${label} : la flèche tient dans la case, dans les dix sens, à toutes les tailles`, offArrows.inside, offArrows);
+  check(`${label} : les chevrons dans chaque case jaune, la pointe vers le déplacement`, offArrows.cells.length >= 2 && offArrows.cells.every((c) => c.ok), offArrows.cells);
+  check(`${label} : les trois chevrons tiennent dans la case, dans les dix sens, à toutes les tailles`, offArrows.inside, offArrows);
   await page.evaluate(() => setMode('wallH'));
   const w = await wallCenter(page, 'h', 4, 2);
   await tapBoard(page, w.x, w.y);

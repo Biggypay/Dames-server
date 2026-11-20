@@ -209,12 +209,13 @@ var currentSlot;
 var mode;
 var vmoves, vhw, vvw;
 /* Le score de la série, en grand sous le titre, et la manche en cours. */
-function refreshScore(){if(!window.QuoridorUI||!practiceSeries)return;var w=practiceSeries.wins||{},lbl=QuoridorUI.roundLabel(practiceSeries);QuoridorUI.setScore(document.querySelector('#top .top-center'),Number(w[1])||0,Number(w[2])||0,matchFinished?'Match terminé':lbl.text,1,2,!matchFinished&&lbl.decisive);}
+function refreshScore(){if(!window.QuoridorUI||!practiceSeries)return;var w=practiceSeries.wins||{},lbl=QuoridorUI.roundLabel(practiceSeries);var one=QuoridorUI.isSingle(practiceSeries);QuoridorUI.setScore(document.querySelector('#top .top-center'),Number(w[1])||0,Number(w[2])||0,matchFinished?(one?'Partie terminée':'Match terminé'):lbl.text,1,2,!matchFinished&&lbl.decisive,one);}
 var matchFinished=false;
-var practiceSeries={regularRounds:6,roundsPlayed:0,currentRound:1,wins:{1:0,2:0},draws:0,history:[],suddenDeath:false,roundStarter:1};
-function updatePracticeBars(){refreshScore();var el=document.getElementById('roundsProgress');if(!el)return;el.innerHTML='';for(var i=0;i<6;i++){var d=document.createElement('span');d.className='round-dot';if(i<Math.min(6,practiceSeries.roundsPlayed)){var r=practiceSeries.history[i];d.className+=' '+(r===MY_SLOT?'win':r===0?'draw':'lose');}else if(i===Math.min(6,practiceSeries.roundsPlayed)&&!practiceSeries.suddenDeath)d.className+=' current';el.appendChild(d);}}
-function resetPracticeSeries(){matchFinished=false;practiceSeries={regularRounds:6,roundsPlayed:0,currentRound:1,wins:{1:0,2:0},draws:0,history:[],suddenDeath:false,roundStarter:1};updatePracticeBars();}
-function recordPracticeRound(w){practiceSeries.roundsPlayed++;if(w)practiceSeries.wins[w]=(practiceSeries.wins[w]||0)+1;else practiceSeries.draws++;if(practiceSeries.history.length<6)practiceSeries.history.push(w||0);var a=practiceSeries.wins[1]||0,b=practiceSeries.wins[2]||0,over=false,mw=0;if(practiceSeries.suddenDeath){if(w){over=true;mw=w;}}else if(practiceSeries.roundsPlayed<6){if(Math.abs(a-b)>6-practiceSeries.roundsPlayed){over=true;mw=a>b?1:2;}}else if(a!==b){over=true;mw=a>b?1:2;}else practiceSeries.suddenDeath=true;if(!over)practiceSeries.currentRound=practiceSeries.roundsPlayed+1;updatePracticeBars();return{matchOver:over,matchWinner:mw};}
+/* Une seule partie, comme les Dames (propriétaire, 2026-11-20) : le premier arrivé gagne. */
+var practiceSeries={regularRounds:1,roundsPlayed:0,currentRound:1,wins:{1:0,2:0},draws:0,history:[],suddenDeath:false,roundStarter:1};
+function updatePracticeBars(){refreshScore();var el=document.getElementById('roundsProgress');if(!el)return;el.innerHTML='';el.style.display=QuoridorUI.isSingle(practiceSeries)?'none':'';if(QuoridorUI.isSingle(practiceSeries))return;for(var i=0;i<6;i++){var d=document.createElement('span');d.className='round-dot';if(i<Math.min(6,practiceSeries.roundsPlayed)){var r=practiceSeries.history[i];d.className+=' '+(r===MY_SLOT?'win':r===0?'draw':'lose');}else if(i===Math.min(6,practiceSeries.roundsPlayed)&&!practiceSeries.suddenDeath)d.className+=' current';el.appendChild(d);}}
+function resetPracticeSeries(){matchFinished=false;practiceSeries={regularRounds:1,roundsPlayed:0,currentRound:1,wins:{1:0,2:0},draws:0,history:[],suddenDeath:false,roundStarter:1};updatePracticeBars();}
+function recordPracticeRound(w){var R=Number(practiceSeries.regularRounds)||6;practiceSeries.roundsPlayed++;if(w)practiceSeries.wins[w]=(practiceSeries.wins[w]||0)+1;else practiceSeries.draws++;if(practiceSeries.history.length<R)practiceSeries.history.push(w||0);var a=practiceSeries.wins[1]||0,b=practiceSeries.wins[2]||0,over=false,mw=0;if(practiceSeries.suddenDeath){if(w){over=true;mw=w;}}else if(practiceSeries.roundsPlayed<R){if(Math.abs(a-b)>R-practiceSeries.roundsPlayed){over=true;mw=a>b?1:2;}}else if(a!==b){over=true;mw=a>b?1:2;}else practiceSeries.suddenDeath=true;if(!over)practiceSeries.currentRound=practiceSeries.roundsPlayed+1;updatePracticeBars();return{matchOver:over,matchWinner:mw};}
 var gameOver = false, gameReady = false, resultSent = false;
 var isProcessing = false;
 
@@ -575,8 +576,8 @@ function draw(){
   ctx.clearRect(0,0,canvas.width,canvas.height);
   drawCells();
   drawGhosts();QuoridorUI.drawTrail(ctx,G,lastMove);
-  /* Une flèche dans chaque case jaune, vers le déplacement qu'elle offre au joueur qui a la main. */
-  if(vmoves.length)QuoridorUI.drawMoveArrows(ctx,currentSlot===1?s1Pos:s2Pos,vmoves,cx,cy,CS);
+  /* Dans chaque case jaune, les trois chevrons animés vers le déplacement offert au joueur qui a la main. */
+  if(vmoves.length)QuoridorUI.drawMoveArrows(ctx,currentSlot===1?s1Pos:s2Pos,vmoves,cx,cy,CS,draw);
   QuoridorUI.drawWalls(ctx,G,hW,vW,hO,vO,{lastWall:fxWall});
   if(pendingWall)QuoridorUI.drawPreview(ctx,pendingWall.kind==='h'?hwRect(pendingWall.r,pendingWall.c):vwRect(pendingWall.r,pendingWall.c),pendingWall.kind==='h',currentSlot);
   drawPawns();QuoridorUI.drawRoundFx(ctx,G,fxRound);
@@ -843,7 +844,7 @@ function showFinalGameEnd(winnerSlot, reason) {
   document.getElementById('modalContent').className = 'modal ' + modalClass;
   matchFinished = true;
   var fw = practiceSeries.wins || {};
-  QuoridorUI.decorateMatchCard({ tone: 'info', icon: 'crown', title: String(title).replace(/^\S+\s/, ''), score: [Number(fw[1]) || 0, Number(fw[2]) || 0], scoreSlots: [1, 2] });
+  QuoridorUI.decorateMatchCard({ tone: 'info', icon: 'crown', title: String(title).replace(/^\S+\s/, ''), score: QuoridorUI.isSingle(practiceSeries) ? null : [Number(fw[1]) || 0, Number(fw[2]) || 0], scoreSlots: [1, 2] });
   refreshScore();
   QuoridorUI.pulse(draw, 3300);
 

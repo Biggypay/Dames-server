@@ -72,4 +72,19 @@ function room() {
   assert.strictEqual(advanceRoundStarter(r), 1);
 }
 
+{
+  // Quoridor en une seule partie (2026-11-20) : la salle annonce une manche ; le premier arrivé gagne le match.
+  const r = { currentSlot: 1, regularRounds: 1 };
+  assert.strictEqual(seriesPayload(r).regularRounds, 1);
+  const end = recordRoundResult(r, 2);
+  assert.strictEqual(end.matchOver, true);
+  assert.strictEqual(end.matchWinner, 2);
+  assert.deepStrictEqual(end.series.history, [2]);
+  assert.strictEqual(end.series.suddenDeath, false);
+  // Une salle sans ce champ garde ses six manches (Morpion à 5), et une série déjà commencée garde son nombre.
+  assert.strictEqual(seriesPayload({ currentSlot: 1 }).regularRounds, 6);
+  const restored = { currentSlot: 1, regularRounds: 1, series: { regularRounds: 6, roundsPlayed: 2, currentRound: 3, wins: { 1: 1, 2: 1 }, draws: 0, history: [1, 2], suddenDeath: false } };
+  assert.strictEqual(recordRoundResult(restored, 1).matchOver, false, 'a 6-round match restored after the change ends as it began');
+}
+
 console.log('OK Gomoku series logic');
