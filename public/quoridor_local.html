@@ -570,12 +570,13 @@ function updUI() {
 /* ══════════════════════════════════════════
    DESSIN
 ══════════════════════════════════════════ */
-function drawDirectionHint(){if(!gameReady||gameOver)return;var p=currentSlot===1?s1Pos:s2Pos;if(p.r!==(currentSlot===1?8:0))return;QuoridorUI.drawDirectionCue(ctx,cx(p.c)+CS/2,cy(p.r)+CS/2,CS,currentSlot===1?-1:1,draw);}
 function draw(){
   if(!G)return;
   ctx.clearRect(0,0,canvas.width,canvas.height);
   drawCells();
   drawGhosts();QuoridorUI.drawTrail(ctx,G,lastMove);
+  /* Une flèche dans chaque case jaune, vers le déplacement qu'elle offre au joueur qui a la main. */
+  if(vmoves.length)QuoridorUI.drawMoveArrows(ctx,currentSlot===1?s1Pos:s2Pos,vmoves,cx,cy,CS);
   QuoridorUI.drawWalls(ctx,G,hW,vW,hO,vO,{lastWall:fxWall});
   if(pendingWall)QuoridorUI.drawPreview(ctx,pendingWall.kind==='h'?hwRect(pendingWall.r,pendingWall.c):vwRect(pendingWall.r,pendingWall.c),pendingWall.kind==='h',currentSlot);
   drawPawns();QuoridorUI.drawRoundFx(ctx,G,fxRound);
@@ -583,7 +584,7 @@ function draw(){
   QuoridorUI.drawBandLabels(ctx,canvas.width,canvas.height,BAND,{
     top:{text:'Camp de '+OP_NAME,sub:currentSlot===1&&!gameOver?'arrivée de '+MY_NAME:'',slot:2,gold:currentSlot===1&&!gameOver},
     bottom:{text:'Camp de '+MY_NAME,sub:currentSlot===2&&!gameOver?'arrivée de '+OP_NAME:'',slot:1,gold:currentSlot===2&&!gameOver}});
-  drawDirectionHint();updDistances();
+  updDistances();
 }
 
 function drawCells() {

@@ -592,19 +592,20 @@ function updUI() {
 /* ══════════════════════════════════════════
    DESSIN
 ══════════════════════════════════════════ */
-function drawDirectionHint(){if(!gameReady||gameOver)return;if(s1Pos.r!==8)return;QuoridorUI.drawDirectionCue(ctx,cx(s1Pos.c)+CS/2,cy(s1Pos.r)+CS/2,CS,-1,draw);}
 function draw(){
   if(!G)return;
   ctx.clearRect(0,0,canvas.width,canvas.height);
   drawCells();
   drawGhosts();QuoridorUI.drawTrail(ctx,G,lastMove);
+  /* Une flèche dans chaque case jaune, vers le déplacement qu'elle offre. */
+  if(vmoves.length)QuoridorUI.drawMoveArrows(ctx,s1Pos,vmoves,cx,cy,CS);
   QuoridorUI.drawWalls(ctx,G,hW,vW,hO,vO,{lastWall:fxWall});
   if(pendingWall)QuoridorUI.drawPreview(ctx,pendingWall.kind==='h'?hwRect(pendingWall.r,pendingWall.c):vwRect(pendingWall.r,pendingWall.c),pendingWall.kind==='h',MY_SLOT);
   drawPawns();QuoridorUI.drawRoundFx(ctx,G,fxRound);
   QuoridorUI.drawBandLabels(ctx,canvas.width,canvas.height,BAND,{
     top:{text:'▲ VOTRE ARRIVÉE',sub:'camp de '+OP_NAME,slot:2,gold:true},
     bottom:{text:'VOTRE CAMP',sub:'départ',slot:1}});
-  drawDirectionHint();updDistances();
+  updDistances();
 }
 
 function drawCells() {

@@ -389,8 +389,7 @@
     el.lastChild.textContent = text;
   }
 
-  /* Le geste du départ : trois chevrons au-dessus du pion, qui s'allument l'un après l'autre dans le sens
-     de la marche — une vague dorée, sans lueur. `dir` : -1 vers le haut de l'écran, 1 vers le bas. */
+  /* Un chevron tracé (celui de « ▲ VOTRE ARRIVÉE ») : `dir` −1 vers le haut de l'écran, 1 vers le bas. */
   function drawChevron(ctx, x, y, w, dir) {
     var k = dir < 0 ? 1 : -1;
     ctx.beginPath();
@@ -399,39 +398,58 @@
     ctx.lineTo(x + w, y + k * w * 0.55);
     ctx.stroke();
   }
-  function drawDirectionCue(ctx, x, y, cs, dir, redraw) {
-    var still = reducedMotion();
-    var w = Math.max(7, cs * 0.24), gap = Math.max(7, cs * 0.21), lw = Math.max(2.2, cs * 0.07);
-    var base = y + dir * cs * 0.66, t = now() / 1000;
+
+  /* Où aller : une flèche DANS chaque case jaune, tournée vers le déplacement qu'elle offre (propriétaire,
+     2026-11-20 : « la direction de la flèche doit se trouver à l'intérieur des casiers jaunes … même dimension que
+     le casier … sans débordement … de manière constante »). Elle remplace les chevrons au-dessus du pion.
+     Taillée sur la case (la flèche en couvre ~70 % sur sa longueur et sa largeur, toujours dedans), fixe — elle
+     reste tant que la case est proposée —, dorée sur un liseré sombre, sans lueur. `dr`, `dc` : le sens du
+     déplacement sur le plateau (−1, 0, 1 ; un saut droit compte comme un pas, un saut en biais va en diagonale). */
+  function moveArrowGeometry(x, y, cs, dr, dc) {
+    var sr = dr > 0 ? 1 : dr < 0 ? -1 : 0, sc = dc > 0 ? 1 : dc < 0 ? -1 : 0;
+    if (!sr && !sc) return null;
+    var diag = sr !== 0 && sc !== 0, len = diag ? Math.SQRT2 : 1;
+    var ux = sc / len, uy = sr / len;
+    /* La longueur : 70 % de la case en ligne droite ; en biais, la même emprise sur chaque axe. */
+    var L = cs * 0.70 * (diag ? Math.SQRT2 * 0.9 : 1), head = cs * 0.30, wing = Math.PI / 4;
+    var mx = x + cs / 2, my = y + cs / 2;
+    var tip = { x: mx + ux * L / 2, y: my + uy * L / 2 }, tail = { x: mx - ux * L / 2, y: my - uy * L / 2 };
+    var back = function (a) {
+      var cos = Math.cos(a), sin = Math.sin(a);
+      return { x: tip.x - head * (ux * cos - uy * sin), y: tip.y - head * (ux * sin + uy * cos) };
+    };
+    return { tip: tip, tail: tail, left: back(wing), right: back(-wing), width: Math.max(2, cs * 0.09) };
+  }
+  function strokeArrow(ctx, g) {
+    ctx.beginPath();
+    ctx.moveTo(g.tail.x, g.tail.y); ctx.lineTo(g.tip.x, g.tip.y);
+    ctx.moveTo(g.left.x, g.left.y); ctx.lineTo(g.tip.x, g.tip.y); ctx.lineTo(g.right.x, g.right.y);
+    ctx.stroke();
+  }
+  function drawMoveArrow(ctx, x, y, cs, dr, dc) {
+    var g = moveArrowGeometry(x, y, cs, dr, dc);
+    if (!g) return;
     ctx.save();
+    /* La case limite le dessin : rien ne déborde, quelle que soit la taille de l'écran. */
+    ctx.beginPath(); roundRect(ctx, x + 1, y + 1, cs - 2, cs - 2, 4); ctx.clip();
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    for (var i = 0; i < 3; i++) {
-      var yy = base + dir * i * gap, a;
-      if (still || now() - cue.since >= 6000) a = [0.95, 0.7, 0.45][i];
-      else {
-        var ph = (t / 1.5 - i * 0.17) % 1;
-        if (ph < 0) ph += 1;
-        a = 0.28 + 0.72 * Math.pow(Math.max(0, Math.sin(ph * Math.PI)), 1.6);
-      }
-      ctx.lineWidth = lw + 2;
-      ctx.strokeStyle = 'rgba(12,8,36,' + (0.32 * a).toFixed(3) + ')';
-      drawChevron(ctx, x, yy, w, dir);
-      ctx.lineWidth = lw;
-      ctx.strokeStyle = 'rgba(251,191,36,' + a.toFixed(3) + ')';
-      drawChevron(ctx, x, yy, w, dir);
-    }
+    ctx.lineWidth = g.width + 2.5;
+    ctx.strokeStyle = 'rgba(12,8,36,0.42)';
+    strokeArrow(ctx, g);
+    ctx.lineWidth = g.width;
+    ctx.strokeStyle = '#fbbf24';
+    strokeArrow(ctx, g);
     ctx.restore();
-    /* La vague tourne 6 s à 20 images par seconde, puis reste immobile : le plateau entier se redessine à
-       chaque image, un téléphone n'a pas à le faire 60 fois par seconde pendant qu'on réfléchit. */
-    var tNow = now();
-    if (tNow - cue.last > 1000) cue.since = tNow;
-    cue.last = tNow;
-    if (!still && redraw && tNow - cue.since < 6000 && !cue.timer) {
-      cue.timer = setTimeout(function () { cue.timer = 0; if (!document.hidden) redraw(); }, 50);
+  }
+  /* Toutes les cases proposées depuis `from` ; `cellX(c)`, `cellY(r)` : le coin de la case (ceux de la page). */
+  function drawMoveArrows(ctx, from, moves, cellX, cellY, cs) {
+    if (!from || !moves || !moves.length) return;
+    for (var i = 0; i < moves.length; i++) {
+      var m = moves[i];
+      drawMoveArrow(ctx, cellX(m.c), cellY(m.r), cs, m.r - from.r, m.c - from.c);
     }
   }
-  var cue = { since: 0, last: 0, timer: 0 };
 
   /* ── Fin de manche, fin de match ────────────────────────────────────── */
   var ICONS = {
@@ -563,7 +581,9 @@
     paintChip: paintChip,
     distanceText: distanceText,
     paintGoal: paintGoal,
-    drawDirectionCue: drawDirectionCue,
+    drawMoveArrow: drawMoveArrow,
+    drawMoveArrows: drawMoveArrows,
+    moveArrowGeometry: moveArrowGeometry,
     showResult: showResult,
     hideResult: hideResult,
     decorateMatchCard: decorateMatchCard,

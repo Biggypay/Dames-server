@@ -742,15 +742,6 @@ function updUI() {
 /* ══════════════════════════════════════════
    DESSIN
 ══════════════════════════════════════════ */
-function drawDirectionHint(){
-  if(IS_SPECTATOR||!gameReady||gameOver)return;
-  var own=MY_SLOT===1?s1Pos:s2Pos;
-  /* La flèche montre le sens au départ ; ensuite, l'arrivée cerclée et la bande suffisent. */
-  if(own.r!==(MY_SLOT===1?8:0))return;
-  var x=cx(own.c)+CS/2, y=cy(own.r)+CS/2;
-  if(MY_SLOT===2){x=canvas.width-x;y=canvas.height-y;}
-  QuoridorUI.drawDirectionCue(ctx, x, y, CS, -1, draw);
-}
 function draw() {
   if (!G) return;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -759,13 +750,14 @@ function draw() {
   drawCells();
   drawGhosts();
   QuoridorUI.drawTrail(ctx, G, lastMove);
+  /* Une flèche dans chaque case jaune, vers le déplacement qu'elle offre (le plateau retourné la tourne avec lui). */
+  if (vmoves.length) QuoridorUI.drawMoveArrows(ctx, MY_SLOT === 1 ? s1Pos : s2Pos, vmoves, cx, cy, CS);
   QuoridorUI.drawWalls(ctx, G, hW, vW, hO, vO, { lastWall: fxWall });
   if (pendingWall) QuoridorUI.drawPreview(ctx, pendingWall.kind === 'h' ? hwRect(pendingWall.r, pendingWall.c) : vwRect(pendingWall.r, pendingWall.c), pendingWall.kind === 'h', MY_SLOT);
   drawPawns();
   QuoridorUI.drawRoundFx(ctx, G, fxRound);
   ctx.restore();
   QuoridorUI.drawBandLabels(ctx, canvas.width, canvas.height, BAND, bandLabels());
-  drawDirectionHint();
   updDistances();
 }
 

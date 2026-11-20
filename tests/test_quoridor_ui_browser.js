@@ -153,15 +153,39 @@ async function online(browser) {
   check('sous chaque profil : les cases restantes (8 au départ)', ua.goalMe === '8 cases' && ua.goalOp === '8 cases' && ub.goalMe === '8 cases', [ua.goalMe, ua.goalOp, ub.goalMe]);
   check('le sens est un chevron dessiné (jamais ▲ / ▼) : vers le haut sous son profil, vers le bas sous l’adversaire',
     ua.goalDirs.join() === 'up:true,down:true' && ub.goalDirs.join() === 'up:true,down:true', [ua.goalDirs, ub.goalDirs]);
-  // Au départ, trois chevrons dorés montent au-dessus de son pion (plus la flèche pleine d'avant).
-  const cue = await a.evaluate(() => {
-    const x = cx(s1Pos.c) + CS / 2, y = cy(s1Pos.r) + CS / 2, gap = Math.max(7, CS * 0.21);
-    const top = Math.round(y - CS * 0.66 - 2 * gap - CS * 0.3), h = Math.round(CS * 0.66 + 2 * gap + CS * 0.3 - CS * 0.45);
-    const d = ctx.getImageData(Math.round(x - CS * 0.3), top, Math.round(CS * 0.6), h).data;
-    let gold = 0; for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 40 && d[i] > 180 && d[i + 1] > 120 && d[i + 2] < 110) gold++;
-    return { gold, cueFn: typeof QuoridorUI.drawDirectionCue === 'function', src: drawDirectionHint.toString().includes('drawDirectionCue') };
-  });
-  check('au départ, des chevrons dorés au-dessus de son pion (le nouveau dessin)', cue.cueFn && cue.src && cue.gold > 8, cue);
+  // Une flèche DANS chaque case jaune, tournée vers le déplacement (propriétaire, 2026-11-20) : dorée, dans la
+  // case (rien dans l'espace entre les cases), et plus aucun chevron au-dessus du pion.
+  for (const page of [a, b]) {
+    const arrows = await page.evaluate(() => {
+      if (currentSlot !== MY_SLOT || !vmoves.length) return { skip: true };
+      const flip = MY_SLOT === 2, from = MY_SLOT === 1 ? s1Pos : s2Pos;
+      const gold = (d, i) => d[i + 3] > 200 && d[i] > 220 && d[i + 1] > 150 && d[i + 1] < 215 && d[i + 2] < 90;
+      const cells = vmoves.map((m) => {
+        /* La case à l'écran (le plateau du joueur 2 est retourné). */
+        let x = cx(m.c), y = cy(m.r);
+        if (flip) { x = canvas.width - x - CS; y = canvas.height - y - CS; }
+        const d = ctx.getImageData(Math.round(x), Math.round(y), Math.round(CS), Math.round(CS)).data;
+        let n = 0, sx = 0, sy = 0;
+        for (let i = 0; i < d.length; i += 4) if (gold(d, i)) { n++; sx += (i / 4) % Math.round(CS); sy += Math.floor(i / 4 / Math.round(CS)); }
+        /* Le sens à l'écran, du centre vers les pixels dorés de la pointe (le centre de gravité penche vers elle). */
+        const dirR = Math.sign(m.r - from.r) * (flip ? -1 : 1), dirC = Math.sign(m.c - from.c) * (flip ? -1 : 1);
+        const gx = n ? sx / n - CS / 2 : 0, gy = n ? sy / n - CS / 2 : 0;
+        /* L'anneau juste autour de la case (l'espace entre les cases) : pas d'or qui déborde. */
+        const ring = [[x - 2, y - 2, CS + 4, 2], [x - 2, y + CS, CS + 4, 2], [x - 2, y, 2, CS], [x + CS, y, 2, CS]];
+        let spill = 0;
+        for (const [rx, ry, rw, rh] of ring) {
+          const e = ctx.getImageData(Math.round(rx), Math.round(ry), Math.max(1, Math.round(rw)), Math.max(1, Math.round(rh))).data;
+          for (let i = 0; i < e.length; i += 4) if (gold(e, i)) spill++;
+        }
+        return { m, n, spill, pointsRight: (dirC === 0 || Math.sign(gx) === dirC) && (dirR === 0 || Math.sign(gy) === dirR), gx: +gx.toFixed(1), gy: +gy.toFixed(1), cs: CS };
+      });
+      return { cells, hint: typeof drawDirectionHint, cue: typeof QuoridorUI.drawDirectionCue };
+    });
+    if (arrows.skip) continue;
+    check('une flèche dorée dans chaque case jaune, tournée vers le déplacement, sans déborder de la case',
+      arrows.cells.length >= 2 && arrows.cells.every((c) => c.n > c.cs * 1.5 && c.pointsRight && c.spill === 0), arrows.cells);
+    check('plus aucun chevron hors des cases (au-dessus du pion)', arrows.hint === 'undefined' && arrows.cue === 'undefined', arrows);
+  }
   check('compteur de murs à la couleur du joueur (Blanc / Rouge)',
     /226, 232, 240/.test(ua.chipMe) && /248, 113, 113/.test(ua.chipOp) && /248, 113, 113/.test(ub.chipMe) && /226, 232, 240/.test(ub.chipOp), [ua.chipMe, ua.chipOp, ub.chipMe, ub.chipOp]);
 
@@ -278,6 +302,28 @@ async function offline(browser, route, label, local) {
   check(`${label} : compteurs de murs Blanc / Rouge`, /226, 232, 240/.test(ui.chipMe) && /248, 113, 113/.test(ui.chipOp), [ui.chipMe, ui.chipOp]);
   // Le mur d'un seul toucher, au tour du joueur 1 (contre l'IA : on attend son tour).
   await waitFor(() => page.evaluate(() => currentSlot === 1 && gameReady && !isProcessing), 8000);
+  // Les flèches dans les cases jaunes, ici aussi ; et, pour chaque sens possible (pas, saut droit, saut en
+  // biais), la flèche tient dans la case, à toutes les tailles de case.
+  const offArrows = await page.evaluate(() => {
+    const gold = (d, i) => d[i + 3] > 200 && d[i] > 220 && d[i + 1] > 150 && d[i + 1] < 215 && d[i + 2] < 90;
+    const from = currentSlot === 1 ? s1Pos : s2Pos;
+    const cells = vmoves.map((m) => {
+      const d = ctx.getImageData(Math.round(cx(m.c)), Math.round(cy(m.r)), Math.round(CS), Math.round(CS)).data;
+      let n = 0, sx = 0, sy = 0;
+      for (let i = 0; i < d.length; i += 4) if (gold(d, i)) { n++; sx += (i / 4) % Math.round(CS); sy += Math.floor(i / 4 / Math.round(CS)); }
+      const gx = n ? sx / n - CS / 2 : 0, gy = n ? sy / n - CS / 2 : 0;
+      const dr = Math.sign(m.r - from.r), dc = Math.sign(m.c - from.c);
+      return { n, ok: n > CS * 1.5 && (dc === 0 || Math.sign(gx) === dc) && (dr === 0 || Math.sign(gy) === dr) };
+    });
+    let inside = true;
+    for (const cs of [18, 30, 44, 70]) for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1], [-2, 0], [2, 0], [-1, -1], [-1, 1], [1, -1], [1, 1]]) {
+      const g = QuoridorUI.moveArrowGeometry(0, 0, cs, dr, dc), half = (g.width + 2.5) / 2;
+      for (const pt of [g.tip, g.tail, g.left, g.right]) if (pt.x - half < 0 || pt.y - half < 0 || pt.x + half > cs || pt.y + half > cs) inside = false;
+    }
+    return { cells, inside };
+  });
+  check(`${label} : une flèche dans chaque case jaune, dans le bon sens`, offArrows.cells.length >= 2 && offArrows.cells.every((c) => c.ok), offArrows.cells);
+  check(`${label} : la flèche tient dans la case, dans les dix sens, à toutes les tailles`, offArrows.inside, offArrows);
   await page.evaluate(() => setMode('wallH'));
   const w = await wallCenter(page, 'h', 4, 2);
   await tapBoard(page, w.x, w.y);
